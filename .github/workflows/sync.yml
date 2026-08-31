@@ -9,21 +9,21 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout dev branch
+      - name: Checkout main branch
         uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: main
           fetch-depth: 0
 
-      - name: Sync upstream dev branch
+      - name: Sync upstream main branch
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
           # 添加上游仓库源
           git remote add upstream https://github.com/starcat-app/Starcat.git
-          git fetch upstream dev
+          git fetch upstream main
           
-          # 合并上游 dev 分支并推送到你自己的仓库
-          git merge upstream/dev --ff-only || git merge upstream/dev -m "chore: sync with upstream"
-          git push origin dev
+          # 合并上游 main 分支并推送到你自己的仓库
+          git merge upstream/main --ff-only || git merge upstream/main -m "chore: sync with upstream"
+          git push origin main
