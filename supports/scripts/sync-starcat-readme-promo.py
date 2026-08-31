@@ -63,6 +63,14 @@ PROJECTS = [
         "Official open-source website for Starcat, including Direct and Mac App Store landing pages, the product blog, release notes, and public legal pages.",
     ),
     Project(
+        Path("supports/starcat-admin-console"),
+        "Starcat Admin Console",
+        "admin-console",
+        "Starcat 管理控制台",
+        "这是 Starcat 配套服务、数据工作流、精选发布与 Awesome 来源管理的本地优先运营控制台。",
+        "Local-first operations console for Starcat services, data workflows, curated publishing, and Awesome source management.",
+    ),
+    Project(
         Path("supports/homebrew-starcat"),
         "Homebrew Starcat",
         "homebrew",
@@ -151,6 +159,14 @@ PROJECTS = [
         "Private backend service for Starcat Direct licensing flows.",
     ),
     Project(
+        Path("supports/starcat-collection-api"),
+        "Starcat Collection API",
+        "private-api",
+        "Starcat 数据收集服务",
+        "这是在用户同意后静默收集匿名公开 Star 快照、并为离线推荐训练交付数据的私有服务。",
+        "Private service that collects consented anonymous public Star snapshots for offline recommendation training.",
+    ),
+    Project(
         Path("supports/starcat-api-kit"),
         "starcat-api-kit",
         "library",
@@ -221,15 +237,12 @@ def promo(project: Project, lang: str) -> str:
     is_zh = lang == "zh"
     summary = project.zh_summary if is_zh else project.en_summary
     app_desc = (
-        "Starcat 是一款原生 macOS 应用，可以把 GitHub Stars 变成可搜索、可整理、可用 AI 追问的本地知识库。"
-        "当前 1.4.0 支持 README 渲染、知识库 RAG、GitHub 通知、我的项目、全局与仓库洞察、macOS 桌面小组件、标签与私有笔记、"
-        "Release 追踪、仓库健康度、AI 摘要、语义搜索、浏览器插件，以及 Alfred / uTools / Raycast 外部搜索，并提供多个可自部署 API。"
+        "Starcat 是一款原生 macOS 应用，可以把 GitHub Stars 变成可搜索、可整理、可用 AI 追问的本地知识库，"
+        "并通过桌面客户端、插件、CLI 与可自部署服务组成完整生态。"
         if is_zh
         else
-        "Starcat is a native macOS app that turns GitHub Stars into a searchable, organized and AI-assisted local knowledge base. "
-        "Version 1.4.0 includes README rendering, knowledge-base RAG, GitHub notifications, My Projects, library and repository insights, macOS desktop widgets, "
-        "tags and private notes, release tracking, repository health signals, AI summaries, semantic search, browser plugins, "
-        "Alfred / uTools / Raycast search integrations, and self-hostable support APIs."
+        "Starcat is a native macOS app that turns GitHub Stars into a searchable, organized and AI-assisted local knowledge base, "
+        "with a broader ecosystem of desktop clients, plugins, CLI tools, and self-hostable services."
     )
     install = (
         "首选 Homebrew 安装"
@@ -242,7 +255,6 @@ def promo(project: Project, lang: str) -> str:
     link_rows = (
         """- 官网与下载: https://starcat.ink
 - Mac App Store: 搜索 Starcat for GitHub
-- 当前 Direct 版本: https://starcat.ink/downloads/Starcat-1.4.0-arm64.dmg
 - 公开支持与发布说明: https://github.com/starcat-app/starcat-pro
 - Starcat App Homebrew tap: https://github.com/starcat-app/homebrew-starcat
 - CLI / MCP: [starcat-cli](https://github.com/starcat-app/starcat-cli) / [Homebrew tap](https://github.com/starcat-app/homebrew-starcat-cli)
@@ -255,7 +267,6 @@ def promo(project: Project, lang: str) -> str:
         if is_zh
         else """- Home and downloads: https://starcat.ink
 - Mac App Store: search for Starcat for GitHub
-- Current Direct build: https://starcat.ink/downloads/Starcat-1.4.0-arm64.dmg
 - Public support and release notes: https://github.com/starcat-app/starcat-pro
 - Starcat App Homebrew tap: https://github.com/starcat-app/homebrew-starcat
 - CLI / MCP: [starcat-cli](https://github.com/starcat-app/starcat-cli) / [Homebrew tap](https://github.com/starcat-app/homebrew-starcat-cli)

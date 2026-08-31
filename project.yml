@@ -58,6 +58,9 @@ packages:
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui
     from: "2.4.1"
+  SwiftMarkdown:
+    url: https://github.com/swiftlang/swift-markdown
+    exactVersion: "0.8.0"
   OpenAI:
     url: https://github.com/MacPaw/OpenAI.git
     branch: main
@@ -141,6 +144,9 @@ targets:
         STARCAT_PRODUCTION_API_KEY_WIKI: $(STARCAT_PRODUCTION_API_KEY_WIKI)
         STARCAT_PRODUCTION_API_KEY_RECOMMEND: $(STARCAT_PRODUCTION_API_KEY_RECOMMEND)
         STARCAT_PRODUCTION_API_KEY_DISCOVERY: $(STARCAT_PRODUCTION_API_KEY_DISCOVERY)
+        STARCAT_PRODUCTION_API_KEY_HISTORY: $(STARCAT_PRODUCTION_API_KEY_HISTORY)
+        STARCAT_COLLECTION_API_KEY: $(STARCAT_COLLECTION_API_KEY)
+        STARCAT_COLLECTION_API_BASE_URL: $(STARCAT_COLLECTION_API_BASE_URL)
         # 匿名产品事件后端。留空时遥测保持 no-op；用户开关关闭时也不会发送。
         STARCAT_APTABASE_APP_KEY: $(STARCAT_APTABASE_APP_KEY)
         # 显式构建渠道。App Store build 默认 appstore；Direct build 后续覆盖为 direct。
@@ -156,6 +162,8 @@ targets:
       - package: KeychainAccess
       - package: Kingfisher
       - package: MarkdownUI
+      - package: SwiftMarkdown
+        product: Markdown
       - package: OpenAI
       - package: ConfettiSwiftUI
       - package: ZIPFoundation
@@ -257,6 +265,9 @@ targets:
         STARCAT_PRODUCTION_API_KEY_WIKI: $(STARCAT_PRODUCTION_API_KEY_WIKI)
         STARCAT_PRODUCTION_API_KEY_RECOMMEND: $(STARCAT_PRODUCTION_API_KEY_RECOMMEND)
         STARCAT_PRODUCTION_API_KEY_DISCOVERY: $(STARCAT_PRODUCTION_API_KEY_DISCOVERY)
+        STARCAT_PRODUCTION_API_KEY_HISTORY: $(STARCAT_PRODUCTION_API_KEY_HISTORY)
+        STARCAT_COLLECTION_API_KEY: $(STARCAT_COLLECTION_API_KEY)
+        STARCAT_COLLECTION_API_BASE_URL: $(STARCAT_COLLECTION_API_BASE_URL)
         STARCAT_LICENSE_API_ENVIRONMENT: $(STARCAT_LICENSE_API_ENVIRONMENT)
         STARCAT_LICENSE_API_TEST_BASE_URL: $(STARCAT_LICENSE_API_TEST_BASE_URL)
         STARCAT_LICENSE_API_TEST_KEY: $(STARCAT_LICENSE_API_TEST_KEY)
@@ -278,6 +289,8 @@ targets:
       - package: KeychainAccess
       - package: Kingfisher
       - package: MarkdownUI
+      - package: SwiftMarkdown
+        product: Markdown
       - package: OpenAI
       - package: ConfettiSwiftUI
       - package: ZIPFoundation

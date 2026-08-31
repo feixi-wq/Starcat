@@ -94,7 +94,14 @@ extension GitHubAPIClient {
     /// Issue / PR / Discussion / Release 字段不完全相同，松散取 html_url / user|author.login / body。
     nonisolated private static func parseSubjectHydration(from data: Data) -> GitHubNotificationSubjectHydration {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return GitHubNotificationSubjectHydration(htmlURL: nil, actorLogin: nil, excerpt: nil, createdAt: nil, state: nil)
+            return GitHubNotificationSubjectHydration(
+                htmlURL: nil,
+                actorLogin: nil,
+                excerpt: nil,
+                createdAt: nil,
+                state: nil,
+                labels: []
+            )
         }
         let htmlURL = obj["html_url"] as? String
         let user = obj["user"] as? [String: Any]
@@ -102,13 +109,19 @@ extension GitHubAPIClient {
         let actorLogin = (user?["login"] as? String) ?? (author?["login"] as? String)
         let excerpt = GitHubNotificationMapper.bodyMarkdown(obj["body"] as? String)
         let createdAt = (obj["created_at"] as? String) ?? (obj["published_at"] as? String)
-        let state = obj["state"] as? String
+        // Issues API 的 `state` 对已合并 PR 仍是 closed；PR API 才带 merged / merged_at。
+        let state = GitHubNotificationMapper.resolvedIssueState(
+            rawState: obj["state"] as? String,
+            merged: obj["merged"] as? Bool,
+            mergedAt: obj["merged_at"] as? String
+        )
         return GitHubNotificationSubjectHydration(
             htmlURL: htmlURL,
             actorLogin: actorLogin,
             excerpt: excerpt,
             createdAt: createdAt,
-            state: state
+            state: state,
+            labels: GitHubNotificationMapper.labels(from: obj["labels"])
         )
     }
 
@@ -141,6 +154,22 @@ extension GitHubAPIClient {
             let state: String
         }
         try await patch(path: path, body: Payload(state: state))
+    }
+
+    /// 编辑自己的评论。返回值不解码：本地已经有 id / login / html_url。
+    func updateNotificationIssueComment(path: String, body: String) async throws {
+        struct Payload: Encodable {
+            let body: String
+        }
+        try await patch(path: path, body: Payload(body: body))
+    }
+
+    /// 编辑开帖正文。不要和改 `state` 合成一次 PATCH，避免关帖误带上旧 body。
+    func updateNotificationIssueBody(path: String, body: String) async throws {
+        struct Payload: Encodable {
+            let body: String
+        }
+        try await patch(path: path, body: Payload(body: body))
     }
 
     nonisolated private static func parseIssueComments(from data: Data) -> [GitHubNotificationComment] {

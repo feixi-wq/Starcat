@@ -40,6 +40,7 @@ private enum ExploreSidebarSelection: Hashable {
     case language(String?)
     case trendingLanguage(TrendingLanguage)
     case weeklyLanguage(String?)
+    case awesomeSource(String?)
 }
 
 /// 探索侧栏图标色：未选中用语义色；明亮主题选中时跟系统蓝底反成白色。
@@ -97,6 +98,8 @@ struct SidebarView: View {
     @Binding var showTagManagement: Bool
     /// HOM-47：触发 Release 时间线 sheet。
     @Binding var showReleaseTimeline: Bool
+    /// GitHub Lists AI 手动整理与审核 Sheet。真源在 HomeView，侧栏 popover「打开审核」与中栏横幅共用。
+    @Binding var showGitHubStarListAIGroupingSheet: Bool
     /// Root page 切换允许 HomeView 在写入 `selectedPage` 前先准备跨页状态。
     ///
     /// 这里保持 Sidebar 只表达“用户想切到哪个 root page”，真正的 Manage /
@@ -125,6 +128,10 @@ struct SidebarView: View {
     @State private var hoveredSummaryTaskID: RepoAISummaryBackgroundTask.ID?
     /// GitHub Stars List 创建 / 编辑 Sheet。
     @State private var gitHubStarListEditorItem: GitHubStarListEditorItem?
+    /// 侧边栏分组行 hover 时才显示编辑入口，避免每行常驻铅笔切断扫描线。
+    @State private var hoveredGitHubStarListID: String?
+    /// 分组行右键删除的二次确认对象。「未分组」没有删除入口。
+    @State private var gitHubStarListPendingDelete: GitHubStarList?
     /// “我的项目”独立授权和同步状态 Sheet。
     @State private var showProjectAccessSheet = false
     /// 探索页当前由系统 `List(selection:)` 高亮的行。
@@ -202,8 +209,12 @@ struct SidebarView: View {
     }
 
     var body: some View {
+        @Bindable var awesomeStore = dependencies.awesomeStore
         VStack(spacing: 0) {
             sidebarFixedHeader
+                // macOS Sheet 不会让宿主窗口退出前台。AI 分组窗口展示期间把侧栏的
+                // 12/20 FPS 装饰时钟切成静态分支，让出转场渲染预算。
+                .environment(\.starcatContinuousAnimationsPaused, showGitHubStarListAIGroupingSheet)
             sidebarList
             // 后台任务区统一承载自动/手动整理与面板已关闭的单仓摘要。
             // 手动整理会抢占本轮自动整理，因此两者不会同时出现。
@@ -225,6 +236,15 @@ struct SidebarView: View {
             )
             .appLocaleEnvironment()
         }
+        .onChange(of: showGitHubStarListAIGroupingSheet) { _, isPresented in
+            if isPresented {
+                presentGitHubStarListAIGroupingWindow()
+            } else {
+                GitHubStarListAIGroupingWindowController.dismissIfPresented()
+                // 只释放未启动的人工会话；开始页数据仍由 HomeViewModel 的 Sidebar 内存快照持有。
+                dependencies.githubStarListAIGroupingSession.releaseManualContextIfUnused()
+            }
+        }
         .sheet(isPresented: $showProjectAccessSheet) {
             ProjectAccessSheet {
                 // 授权 / 同步后关系表可能新增 Private 仓库：先清快照，再按需重查中栏。
@@ -236,11 +256,72 @@ struct SidebarView: View {
             }
             .appLocaleEnvironment()
         }
+        .sheet(isPresented: $awesomeStore.isSourceManagerPresented) {
+            AwesomeSourceManagerSheet(store: awesomeStore)
+                .appLocaleEnvironment()
+        }
         .onChange(of: hasAnyBackgroundTask) { _, hasTask in
             if !hasTask {
                 showBackgroundTaskPopover = false
             }
         }
+        .onAppear {
+            // 后台自动分组不依赖审核 Sheet 是否打开；回调必须在 Sidebar 生命周期内常驻。
+            dependencies.githubStarListAIGroupingSession.onMembershipsChanged = {
+                Task { @MainActor in
+                    await viewModel.refreshSidebar()
+                    await viewModel.reloadItems(forceRefresh: true)
+                }
+            }
+            dependencies.githubStarListAIGroupingSession.onAutoIgnoredReposChanged = {
+                Task { @MainActor in
+                    await viewModel.refreshSidebar()
+                }
+            }
+        }
+        .alert(
+            "githubStarLists.editor.delete.title",
+            isPresented: Binding(
+                get: { gitHubStarListPendingDelete != nil },
+                set: { if !$0 { gitHubStarListPendingDelete = nil } }
+            ),
+            presenting: gitHubStarListPendingDelete
+        ) { list in
+            Button("action.delete", role: .destructive) {
+                Task { await deleteGitHubStarListFromSidebar(list) }
+            }
+            Button("common.cancel", role: .cancel) {}
+        } message: { _ in
+            Text("githubStarLists.editor.delete.message")
+        }
+    }
+
+    /// 使用固定尺寸的 AppKit sheet 承载审核工作区。
+    ///
+    /// SwiftUI `.sheet` 会在 AppKit 正式展示前反复询问整棵双栏视图的 fitting size；
+    /// 这里先用 Sidebar 的内存快照一次性准备会话，再交给固定几何窗口，避免首帧布局参与尺寸猜测。
+    private func presentGitHubStarListAIGroupingWindow() {
+        let automaticallyIgnoredRepoIDs = viewModel.githubStarListAIAutoIgnoredRepoIDs.filter { repoID in
+            viewModel.githubStarListIDsByRepo[repoID]?.isEmpty ?? true
+        }
+        GitHubStarListAIGroupingWindowController.present(
+            dependencies: dependencies,
+            preflightContext: GitHubStarListAIGroupingPreflightContext(
+                repositoryCount: viewModel.totalCount,
+                ungroupedRepositoryCount: viewModel.githubStarListUngroupedCount,
+                analysisRepositoryCount: max(
+                    0,
+                    viewModel.githubStarListUngroupedCount - automaticallyIgnoredRepoIDs.count
+                ),
+                automaticallyIgnoredRepoIDs: automaticallyIgnoredRepoIDs,
+                availableLists: viewModel.githubStarLists,
+                membershipCountByListID: viewModel.githubStarListCounts,
+                rulesByListID: viewModel.githubStarListAIRulesByListID
+            ),
+            onDismiss: {
+                showGitHubStarListAIGroupingSheet = false
+            }
+        )
     }
 
     // MARK: - 底部后台任务状态条
@@ -254,12 +335,27 @@ struct SidebarView: View {
         return service.isRunning && !service.silent
     }
 
+    private var isManualBatchReviewPending: Bool {
+        let service = dependencies.batchAIQueueService
+        return service.hasPendingTagReview && !service.silent
+    }
+
+    private var isManualBatchActive: Bool {
+        isManualBatchRunning || isManualBatchReviewPending
+    }
+
     private var summaryBackgroundTasks: [RepoAISummaryBackgroundTask] {
         dependencies.repoAIInsightSessionStore.backgroundTasks
     }
 
+    private var isGitHubListGroupingActive: Bool {
+        let session = dependencies.githubStarListAIGroupingSession
+        return session.isRunning || session.isApplying
+    }
+
     private var hasAnyBackgroundTask: Bool {
-        isManualBatchRunning
+        isManualBatchActive
+            || isGitHubListGroupingActive
             || autoTidyScheduler.isAutoTidyRunning
             || !summaryBackgroundTasks.isEmpty
     }
@@ -275,9 +371,16 @@ struct SidebarView: View {
                 showBackgroundTaskPopover.toggle()
             } label: {
                 HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .frame(width: 12, height: 12)
+                    if isManualBatchReviewPending, !isManualBatchRunning {
+                        Image(systemName: "checklist")
+                            .font(interfaceScale.font(.captionSmall))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 12, height: 12)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 12, height: 12)
+                    }
                     Text(backgroundTaskStatusText)
                         .font(interfaceScale.font(.captionSmall))
                         .foregroundStyle(.secondary)
@@ -308,13 +411,36 @@ struct SidebarView: View {
 
     private var backgroundTaskStatusText: String {
         let summaryCount = summaryBackgroundTasks.count
-        if isManualBatchRunning {
-            let service = dependencies.batchAIQueueService
-            let tidy = String(
-                format: String.l10n("sidebar.background.manual.runningFormat"),
-                service.finishedCount,
-                service.totalCount
+        if isGitHubListGroupingActive {
+            let session = dependencies.githubStarListAIGroupingSession
+            let grouping = String(
+                format: String.l10n("sidebar.githubStarLists.aiGrouping.runningFormat"),
+                session.analyzedCount,
+                session.totalCount
             )
+            if summaryCount > 0 {
+                return String(
+                    format: String.l10n("sidebar.background.combinedFormat"),
+                    grouping,
+                    summaryCount
+                )
+            }
+            return grouping
+        }
+        if isManualBatchActive {
+            let service = dependencies.batchAIQueueService
+            let tidy = if isManualBatchReviewPending, !isManualBatchRunning {
+                String(
+                    format: String.l10n("sidebar.background.manual.pendingReviewFormat"),
+                    service.pendingTagReviewCount
+                )
+            } else {
+                String(
+                    format: String.l10n("sidebar.background.manual.runningFormat"),
+                    service.finishedCount,
+                    service.totalCount
+                )
+            }
             if summaryCount > 0 {
                 return String(
                     format: String.l10n("sidebar.background.combinedFormat"),
@@ -351,7 +477,10 @@ struct SidebarView: View {
     }
 
     private var backgroundTaskTooltipKey: LocalizedStringKey {
-        if isManualBatchRunning {
+        if isGitHubListGroupingActive {
+            return "sidebar.githubStarLists.aiGrouping.tooltip"
+        }
+        if isManualBatchActive {
             return "sidebar.background.manual.tooltip"
         }
         if autoTidyScheduler.isAutoTidyRunning {
@@ -378,14 +507,16 @@ struct SidebarView: View {
                 .focusEffectDisabled()
             }
 
-            if isManualBatchRunning {
+            if isGitHubListGroupingActive {
+                githubStarListGroupingPopoverSection
+            } else if isManualBatchActive {
                 manualBatchPopoverSection
             } else if autoTidyScheduler.isAutoTidyRunning {
                 autoTidyPopoverSection
             }
 
             if !summaryBackgroundTasks.isEmpty {
-                if isManualBatchRunning || autoTidyScheduler.isAutoTidyRunning {
+                if isGitHubListGroupingActive || isManualBatchActive || autoTidyScheduler.isAutoTidyRunning {
                     Divider()
                 }
                 summaryTasksPopoverSection
@@ -396,12 +527,39 @@ struct SidebarView: View {
     }
 
     private var backgroundTaskPopoverTitleKey: LocalizedStringKey {
-        if isManualBatchRunning {
+        if isGitHubListGroupingActive {
+            "sidebar.githubStarLists.aiGrouping.popover.title"
+        } else if isManualBatchActive {
             "sidebar.background.manual.popover.title"
         } else if autoTidyScheduler.isAutoTidyRunning {
             "sidebar.autoTidy.popover.title"
         } else {
             "sidebar.background.summary.popover.title"
+        }
+    }
+
+    private var githubStarListGroupingPopoverSection: some View {
+        let session = dependencies.githubStarListAIGroupingSession
+        return VStack(alignment: .leading, spacing: 10) {
+            ProgressView(
+                value: Double(session.analyzedCount),
+                total: Double(max(session.totalCount, 1))
+            )
+            Text(String(
+                format: String.l10n("sidebar.autoTidy.popover.progressFormat"),
+                session.analyzedCount,
+                session.totalCount
+            ))
+            .font(interfaceScale.font(.captionSmall))
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+
+            Button("sidebar.githubStarLists.aiGrouping.openReview") {
+                showBackgroundTaskPopover = false
+                PerformanceTracer.shared.mark(.gitHubStarListAIGroupingRequested)
+                showGitHubStarListAIGroupingSheet = true
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -421,6 +579,20 @@ struct SidebarView: View {
                 .font(interfaceScale.font(.captionSmall))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+            }
+
+            if service.pendingTagReviewCount > 0 {
+                Label {
+                    Text(String(
+                        format: String.l10n("sidebar.background.manual.pendingReviewFormat"),
+                        service.pendingTagReviewCount
+                    ))
+                    .monospacedDigit()
+                } icon: {
+                    Image(systemName: "checklist")
+                }
+                .font(interfaceScale.font(.captionSmall))
+                .foregroundStyle(Color.accentColor)
             }
 
             // 与自动整理同一套三卡片口径：已应用 / 已忽略 / 失败。
@@ -716,6 +888,8 @@ struct SidebarView: View {
             return .trendingLanguage(selectedTrendingLanguage)
         case .weekly:
             return .weeklyLanguage(selectedWeeklyLanguage)
+        case .awesome:
+            return .awesomeSource(dependencies.awesomeStore.selectedSourceID)
         }
     }
 
@@ -736,14 +910,23 @@ struct SidebarView: View {
             return selectedExploreMode == .trending && selectedTrendingLanguage == language
         case .weeklyLanguage(let key):
             return selectedExploreMode == .weekly && selectedWeeklyLanguage == key
+        case .awesomeSource(let sourceID):
+            return selectedExploreMode == .awesome
+                && dependencies.awesomeStore.selectedSourceID == sourceID
         }
     }
 
     private func applyExploreSelection(_ selection: ExploreSidebarSelection) {
         switch selection {
         case .mode(let mode):
-            guard selectedExploreMode != mode else { return }
             selectedExploreMode = mode
+            if mode == .awesome {
+                guard authSession.state.isAuthenticated else {
+                    showLoginSheet = true
+                    return
+                }
+                Task { await dependencies.awesomeStore.enterAwesomeFromUserSelection() }
+            }
         case .topic(let code):
             selectedExploreMode = .discover
             selectedDiscoveryTopic = code
@@ -758,6 +941,9 @@ struct SidebarView: View {
         case .weeklyLanguage(let key):
             selectedExploreMode = .weekly
             selectedWeeklyLanguage = key
+        case .awesomeSource(let sourceID):
+            selectedExploreMode = .awesome
+            dependencies.awesomeStore.selectSource(sourceID)
         }
     }
 
@@ -909,9 +1095,29 @@ struct SidebarView: View {
         ) {
             exploreSidebarSystemIcon(mode.systemImage, color: mode.sidebarIconColor)
         } title: {
-            // 分类备注入口已挪到中栏数量行，侧栏只保留「图标 + 名称 + 计数」。
-            Text(mode.titleKey)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(mode.titleKey)
+                    .lineLimit(1)
+                if mode == .awesome {
+                    Button {
+                        guard authSession.state.isAuthenticated else {
+                            showLoginSheet = true
+                            return
+                        }
+                        Task { await dependencies.awesomeStore.presentSourceManager() }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(interfaceScale.font(.captionSmall))
+                            .foregroundStyle(ExploreSidebarIconStyle(semanticColor: .secondary))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .help(Text("awesome.sources.manage"))
+                    .accessibilityLabel(Text("awesome.sources.manage"))
+                }
+            }
         }
     }
 
@@ -923,6 +1129,8 @@ struct SidebarView: View {
             return dependencies.exploreCatalogStore.total(for: mode)
         case .weekly:
             return dependencies.weeklySelectionService.total
+        case .awesome:
+            return dependencies.awesomeStore.allRepositoryCount
         }
     }
 
@@ -937,7 +1145,50 @@ struct SidebarView: View {
             trendingSidebarContent
         case .weekly:
             weeklyLanguageSidebarContent
+        case .awesome:
+            awesomeSourceSidebarContent
         }
+    }
+
+    @ViewBuilder
+    private var awesomeSourceSidebarContent: some View {
+        Section("awesome.sidebar.sources") {
+            awesomeSourceRow(nil)
+            ForEach(dependencies.awesomeStore.enabledSources) { source in
+                awesomeSourceRow(source)
+            }
+        }
+    }
+
+    private func awesomeSourceRow(_ source: AwesomeSource?) -> some View {
+        exploreSelectableRow(
+            selection: .awesomeSource(source?.id),
+            count: source?.totalEntryCount ?? dependencies.awesomeStore.allRepositoryCount
+        ) {
+            if let source {
+                AwesomeSourceLogo(source: source, size: 18)
+                    .id(source.imageURL?.absoluteString ?? source.repoFullName)
+            } else {
+                exploreSidebarSystemIcon(
+                    "sparkles.rectangle.stack",
+                    color: ExploreMode.awesomeAllSourcesIconColor
+                )
+            }
+        } title: {
+            HStack(spacing: 5) {
+                Text(source?.displayName ?? String.l10n("awesome.sidebar.all"))
+                    .lineLimit(1)
+                if source?.isAvailable == false || source.flatMap({ dependencies.awesomeStore.sourceRefreshErrors[$0.id] }) != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(Text(LocalizedStringKey(source?.isAvailable == false
+                            ? "awesome.sources.unavailable"
+                            : "awesome.sources.stale")))
+                }
+            }
+        }
+        .disabled(source?.isAvailable == false)
     }
 
     @ViewBuilder
@@ -2000,28 +2251,26 @@ struct SidebarView: View {
         row(.githubStarListUngrouped, count: viewModel.githubStarListUngroupedCount)
     }
 
-    /// GitHub Stars List 真实分组行：颜色点 + 名称 + 编辑按钮 + 计数。
+    /// GitHub Stars List 真实分组行：颜色点 + 名称 + 计数。
+    ///
+    /// 编辑入口不常驻：hover 时紧跟分组名，计数仍走右侧固定槽。
+    /// 未 hover 时按钮不进视图树，避免抢走 List 选中。右键提供编辑 / 删除。「未分组」没有这些入口。
+    ///
+    /// 不要在 Label 上挂 `TapGesture`：macOS `List(selection:)` 会把单击交给手势，
+    /// 结果变成点名称无法选中、只能点行空白。
     @ViewBuilder
     private func githubStarListRow(_ list: GitHubStarList) -> some View {
         let item = SidebarItem.githubStarList(list.id)
+        let isHovered = hoveredGitHubStarListID == list.id
         Label {
             HStack(spacing: 4) {
                 Text(verbatim: list.name)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Button {
-                    gitHubStarListEditorItem = GitHubStarListEditorItem(list: list)
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(interfaceScale.font(.captionSmall))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
+                if isHovered {
+                    githubStarListEditButton(list)
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .help(Text("sidebar.githubStarLists.edit"))
 
                 Spacer(minLength: 4)
 
@@ -2046,12 +2295,58 @@ struct SidebarView: View {
                 .frame(width: 14, height: 14)
         }
         .tag(item)
+        .contextMenu {
+            Button {
+                gitHubStarListEditorItem = GitHubStarListEditorItem(list: list)
+            } label: {
+                Label("sidebar.githubStarLists.edit", systemImage: "slider.horizontal.2.square")
+            }
+            Divider()
+            Button(role: .destructive) {
+                gitHubStarListPendingDelete = list
+            } label: {
+                Label("action.delete", systemImage: "trash")
+            }
+        }
         .onHover { isHovering in
             if isHovering {
+                hoveredGitHubStarListID = list.id
                 for candidate in item.prefetchCandidates {
                     viewModel.prefetch(selection: candidate)
                 }
+            } else if hoveredGitHubStarListID == list.id {
+                hoveredGitHubStarListID = nil
             }
+        }
+    }
+
+    private func githubStarListEditButton(_ list: GitHubStarList) -> some View {
+        Button {
+            gitHubStarListEditorItem = GitHubStarListEditorItem(list: list)
+        } label: {
+            Image(systemName: "slider.horizontal.2.square")
+                .font(interfaceScale.font(.iconMedium, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .help(Text("sidebar.githubStarLists.edit"))
+    }
+
+    /// 侧边栏右键删除必须二次确认：这是远端 destructive mutation，失败时不能先改本地 selection。
+    private func deleteGitHubStarListFromSidebar(_ list: GitHubStarList) async {
+        do {
+            try await dependencies.githubStarListSyncService.deleteList(id: list.id)
+            if viewModel.selection == .githubStarList(list.id) {
+                viewModel.selection = .githubStarListUngrouped
+            }
+            await viewModel.refreshSidebar()
+            await viewModel.reloadItems(forceRefresh: true)
+        } catch {
+            AppLog.network.error("Delete GitHub star list from sidebar failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

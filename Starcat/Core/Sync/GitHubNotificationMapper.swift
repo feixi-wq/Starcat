@@ -523,8 +523,10 @@ enum GitHubNotificationMapper {
             return record.subjectType == "Discussion"
         case .release:
             return record.subjectType == "Release"
-        case .star, .unstar, .fork:
-            // 账本分段只含 `user_repo_activity`，GitHub thread 永远对不上。
+        case .open, .closed, .merged:
+            return normalizedIssueState(record.issueState) == segment.issueStateFilter
+        case .star, .unstar, .fork, .inLibrary, .outsideLibrary:
+            // 账本 / 知识库分段只含 `user_repo_activity`，GitHub thread 永远对不上。
             return false
         }
     }
@@ -533,9 +535,70 @@ enum GitHubNotificationMapper {
     static let demoThreadIDPrefix = "starcat-demo-"
     /// 通知时间线每页条数。两表 UNION 游标翻页，对齐 Manage 列表。
     static let timelinePageSize = 40
+    /// 切打开 / 关闭 / 已合并时，同一会话最多补这么多条缺失 `issue_state`。
+    /// GitHub 通知列表不带状态；补齐要打 subject GET，必须限次以免烧额度。
+    static let issueStateBackfillLimit = 20
+    /// 后台补状态并发。太大容易打满 secondary rate limit，太小又回到串行干等。
+    static let issueStateBackfillConcurrency = 4
 
     static func isDemoThread(_ id: String) -> Bool {
         id.hasPrefix(demoThreadIDPrefix)
+    }
+
+    /// 时间线 / 详情只认这三态。其它 GitHub 值（draft、locked）不当状态画。
+    static let displayableIssueStates: Set<String> = ["open", "closed", "merged"]
+
+    static func normalizedIssueState(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return displayableIssueStates.contains(value) ? value : nil
+    }
+
+    /// PR 的 REST `state` 仍是 `closed`，要用 `merged` / `merged_at` 才能和 Closed 分开。
+    static func resolvedIssueState(
+        rawState: String?,
+        merged: Bool?,
+        mergedAt: String?
+    ) -> String? {
+        let hasMergedTimestamp = mergedAt?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+        if merged == true || hasMergedTimestamp {
+            return "merged"
+        }
+        return normalizedIssueState(rawState)
+    }
+
+    static func issueStateTitle(state: String, locale: Locale) -> String {
+        switch normalizedIssueState(state) {
+        case "open":
+            return copy(locale, zh: "打开", en: "Open")
+        case "closed":
+            return copy(locale, zh: "已关闭", en: "Closed")
+        case "merged":
+            return copy(locale, zh: "已合并", en: "Merged")
+        default:
+            return state
+        }
+    }
+
+    /// 时间列只有 52pt，英文不能用 `In Library`。
+    static func libraryStateStampTitle(state: LibraryState, locale: Locale) -> String {
+        switch state {
+        case .inLibrary:
+            return copy(locale, zh: "已入库", en: "In")
+        case .outsideLibrary:
+            return copy(locale, zh: "未入库", en: "Out")
+        }
+    }
+
+    static func libraryStateFilterTitle(state: LibraryState, locale: Locale) -> String {
+        switch state {
+        case .inLibrary:
+            return copy(locale, zh: "已入库", en: "In Library")
+        case .outsideLibrary:
+            return copy(locale, zh: "未入库", en: "Not in Library")
+        }
     }
 
     /// 评论框状态按钮：对齐 GitHub 网页（Close issue / Reopen issue / Close with comment）。
@@ -643,15 +706,70 @@ enum GitHubNotificationMapper {
         return String(commentsPath.dropLast(suffix.count))
     }
 
-    static func encodeComments(_ comments: [GitHubNotificationComment]) -> String? {
-        guard !comments.isEmpty else { return nil }
-        let data = try? JSONEncoder().encode(comments)
-        return data.flatMap { String(data: $0, encoding: .utf8) }
+    /// 空数组也写成 `[]`，用来区分「确认没评论」和「还没拉过」。
+    /// 事件流开着时故意不写这一列，关掉开关才能再 GET 全量。
+    static func encodeComments(_ comments: [GitHubNotificationComment]) -> String {
+        let data = (try? JSONEncoder().encode(comments)) ?? Data("[]".utf8)
+        return String(data: data, encoding: .utf8) ?? "[]"
     }
 
     static func decodeComments(_ json: String?) -> [GitHubNotificationComment] {
         guard let json, let data = json.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([GitHubNotificationComment].self, from: data)) ?? []
+    }
+
+    /// GitHub 标签可以有多个，顺序跟网页一致。对象缺 `color` 或纯字符串都收成默认灰。
+    static func labels(from raw: Any?) -> [GitHubNotificationIssueLabel] {
+        guard let items = raw as? [Any] else { return [] }
+        var result: [GitHubNotificationIssueLabel] = []
+        result.reserveCapacity(min(items.count, 20))
+        for item in items.prefix(20) {
+            if let name = (item as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !name.isEmpty {
+                result.append(GitHubNotificationIssueLabel(name: name, colorHex: "6e7781"))
+                continue
+            }
+            guard let obj = item as? [String: Any] else { continue }
+            let name = ((obj["name"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            var color = ((obj["color"] as? String) ?? "6e7781")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if color.hasPrefix("#") {
+                color.removeFirst()
+            }
+            if color.count != 6 {
+                color = "6e7781"
+            }
+            result.append(GitHubNotificationIssueLabel(name: name, colorHex: color.lowercased()))
+        }
+        return result
+    }
+
+    static func labels(from organization: [GitHubOrganizationIssueLabel]) -> [GitHubNotificationIssueLabel] {
+        organization.prefix(20).compactMap { label in
+            let name = label.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            var color = label.colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
+            if color.hasPrefix("#") {
+                color.removeFirst()
+            }
+            if color.count != 6 {
+                color = "6e7781"
+            }
+            return GitHubNotificationIssueLabel(name: name, colorHex: color.lowercased())
+        }
+    }
+
+    /// 空数组也写成 `[]`，用来区分「确认没标签」和「还没拉过」。
+    static func encodeLabels(_ labels: [GitHubNotificationIssueLabel]) -> String {
+        let data = (try? JSONEncoder().encode(labels)) ?? Data("[]".utf8)
+        return String(data: data, encoding: .utf8) ?? "[]"
+    }
+
+    static func decodeLabels(_ json: String?) -> [GitHubNotificationIssueLabel] {
+        guard let json, let data = json.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([GitHubNotificationIssueLabel].self, from: data)) ?? []
     }
 
     static func subtitle(fullName: String, subjectType: String, number: Int?) -> String {
@@ -745,6 +863,74 @@ enum GitHubNotificationMapper {
         return subjectType == "Issue" || subjectType == "PullRequest"
     }
 
+    /// 引用回复：整段原文每行加 `>`，空行写成 `>`，对齐 GitHub 网页。
+    static func quotedMarkdown(_ markdown: String) -> String {
+        let normalized = markdown
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "" }
+        return normalized
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                line.isEmpty ? ">" : "> \(line)"
+            }
+            .joined(separator: "\n")
+    }
+
+    /// 有未发草稿时把引用插到最前面，不覆盖。
+    static func prependQuotedReply(quote: String, onto draft: String) -> String {
+        let quoted = quotedMarkdown(quote)
+        guard !quoted.isEmpty else { return draft }
+        let existing = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if existing.isEmpty {
+            return quoted + "\n\n"
+        }
+        return quoted + "\n\n" + existing
+    }
+
+    /// 评论 permalink：优先 API 给的 html_url，否则用开帖 URL + `#issuecomment-{id}`。
+    static func commentPermalink(
+        htmlURL: String?,
+        issueHTMLURL: String?,
+        commentID: Int64
+    ) -> String? {
+        if let htmlURL {
+            let trimmed = htmlURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, URL(string: trimmed) != nil {
+                return trimmed
+            }
+        }
+        guard commentID > 0 else { return nil }
+        let issue = issueHTMLURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !issue.isEmpty, URL(string: issue) != nil else { return nil }
+        if let hash = issue.firstIndex(of: "#") {
+            return String(issue[..<hash]) + "#issuecomment-\(commentID)"
+        }
+        return issue + "#issuecomment-\(commentID)"
+    }
+
+    /// `PATCH /repos/{owner}/{repo}/issues/comments/{id}`。
+    static func issueCommentResourcePath(repositoryFullName: String, commentID: Int64) -> String? {
+        guard commentID > 0 else { return nil }
+        let parts = repositoryFullName.split(separator: "/").map(String.init)
+        guard parts.count == 2,
+              !parts[0].isEmpty,
+              !parts[1].isEmpty
+        else { return nil }
+        return "/repos/\(parts[0])/\(parts[1])/issues/comments/\(commentID)"
+    }
+
+    static func isSameGitHubLogin(_ lhs: String?, _ rhs: String?) -> Bool {
+        let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        return left.compare(right, options: .caseInsensitive) == .orderedSame
+    }
+
+    static let quoteReplyThreadIdKey = "threadId"
+    static let quoteReplyMarkdownKey = "markdown"
+    static let copiedPasteboardMessageKey = "message"
+
     static func commentCardHeader(login: String, isOpeningPost: Bool, locale: Locale) -> String {
         "\(login) \(commentCardAction(isOpeningPost: isOpeningPost, locale: locale))"
     }
@@ -833,8 +1019,8 @@ enum GitHubNotificationMapper {
 
 /// 通知 inbox 类型筛选。选项变多后顶栏用下拉，不再用分段控件。
 ///
-/// `all` 两表 UNION；`unread` / 主体类型 / `mention` / `review` 只含 GitHub 通知；
-/// `star` / `unstar` / `fork` 只含账本。
+/// `all` 两表 UNION；`unread` / 主体类型 / 打开·关闭·合并 / `mention` / `review` 只含 GitHub 通知；
+/// `star` / `unstar` / `fork` / 入库只含账本。
 enum GitHubNotificationSegment: String, CaseIterable, Identifiable, Sendable {
     case all
     case unread
@@ -842,11 +1028,16 @@ enum GitHubNotificationSegment: String, CaseIterable, Identifiable, Sendable {
     case pullRequest
     case discussion
     case release
+    case open
+    case closed
+    case merged
     case mention
     case review
     case star
     case unstar
     case fork
+    case inLibrary
+    case outsideLibrary
 
     var id: String { rawValue }
 
@@ -856,13 +1047,33 @@ enum GitHubNotificationSegment: String, CaseIterable, Identifiable, Sendable {
         case .star: return .star
         case .unstar: return .unstar
         case .fork: return .fork
-        case .all, .unread, .issue, .pullRequest, .discussion, .release, .mention, .review: return nil
+        case .all, .unread, .issue, .pullRequest, .discussion, .release,
+             .open, .closed, .merged, .mention, .review, .inLibrary, .outsideLibrary:
+            return nil
         }
     }
 
-    /// 菜单分组：状态 / 主体类型 / Mention·Review / 账本。
+    /// Issue / PR 的 `issue_state`。`closed` 不含 `merged`。
+    var issueStateFilter: String? {
+        switch self {
+        case .open: return "open"
+        case .closed: return "closed"
+        case .merged: return "merged"
+        default: return nil
+        }
+    }
+
+    var libraryStateFilter: LibraryState? {
+        switch self {
+        case .inLibrary: return .inLibrary
+        case .outsideLibrary: return .outsideLibrary
+        default: return nil
+        }
+    }
+
+    /// 菜单分组：未读 / 主体类型 / 工作状态 / Mention·Review / 账本 / 知识库。
     var showsDividerBefore: Bool {
-        self == .issue || self == .mention || self == .star
+        self == .issue || self == .open || self == .mention || self == .star || self == .inLibrary
     }
 
     var systemImage: String {
@@ -873,11 +1084,16 @@ enum GitHubNotificationSegment: String, CaseIterable, Identifiable, Sendable {
         case .pullRequest: return "arrow.triangle.pull"
         case .discussion: return "text.bubble"
         case .release: return "tag.circle"
+        case .open: return "circle"
+        case .closed: return "checkmark.circle"
+        case .merged: return "arrow.triangle.merge"
         case .mention: return "at"
         case .review: return "eye"
         case .star: return "star"
         case .unstar: return "star.slash"
         case .fork: return "arrow.triangle.branch"
+        case .inLibrary: return "heart.fill"
+        case .outsideLibrary: return "heart"
         }
     }
 
@@ -906,6 +1122,16 @@ enum GitHubNotificationSegment: String, CaseIterable, Identifiable, Sendable {
             return GitHubNotificationMapper.chipTitle(for: .unstar, locale: locale)
         case .fork:
             return GitHubNotificationMapper.chipTitle(for: .fork, locale: locale)
+        case .open:
+            return GitHubNotificationMapper.issueStateTitle(state: "open", locale: locale)
+        case .closed:
+            return GitHubNotificationMapper.issueStateTitle(state: "closed", locale: locale)
+        case .merged:
+            return GitHubNotificationMapper.issueStateTitle(state: "merged", locale: locale)
+        case .inLibrary:
+            return GitHubNotificationMapper.libraryStateFilterTitle(state: .inLibrary, locale: locale)
+        case .outsideLibrary:
+            return GitHubNotificationMapper.libraryStateFilterTitle(state: .outsideLibrary, locale: locale)
         }
     }
 }

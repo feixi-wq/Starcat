@@ -15,32 +15,249 @@ import AppKit
 import Charts
 import SwiftUI
 
-/// 不同精度折线之间的显式连接段。
-///
-/// Swift Charts 会把不同 `series` 当成互不相连的折线；当后一组只有一个 snapshot
-/// 点时，它只能画出圆点。桥接段保留前一组的视觉语义，让曲线连续但不伪造数据来源。
-struct StarHistoryChartBridge: Equatable, Identifiable, Sendable {
-    let start: StarHistoryPoint
-    let end: StarHistoryPoint
-    let inheritedPrecision: StarHistoryPrecision
+enum StarHistoryChartSeriesBuilder {
+    /// 每个范围都限制 Swift Charts Mark 数量；近期范围同样可能包含数百个日级点。
+    static let threeMonthsPointLimit = 60
+    static let oneYearPointLimit = 80
+    static let allRangePointLimit = 90
 
-    var id: String {
-        "\(start.id)->\(end.id)"
+    /// 为图表准备最终渲染点：全部范围补创建日零基线，各范围都用 LTTB 保留主要视觉拐点。
+    ///
+    /// 原始日级事件仍完整保留在 ViewModel 中，统计值和缓存不会因图表抽稀而丢失；
+    /// 这里只减少 Swift Charts 的 Mark 数量；数据来源与精度仍完整保留在原始数据中。
+    static func renderedPoints(
+        _ points: [StarHistoryPoint],
+        range: StarHistoryRange,
+        repositoryCreatedAt: Date?,
+        maximumPointCount: Int? = nil
+    ) -> [StarHistoryPoint] {
+        let sorted = points.sorted { $0.date < $1.date }
+        let anchored = addingCreationBaseline(
+            to: sorted,
+            range: range,
+            repositoryCreatedAt: repositoryCreatedAt
+        )
+        let pointLimit = maximumPointCount ?? pointLimit(for: range)
+        guard anchored.count > pointLimit
+        else {
+            return anchored
+        }
+        return largestTriangleThreeBuckets(
+            anchored,
+            maximumPointCount: pointLimit
+        )
+    }
+
+    private static func pointLimit(for range: StarHistoryRange) -> Int {
+        switch range {
+        case .threeMonths: threeMonthsPointLimit
+        case .oneYear: oneYearPointLimit
+        case .all: allRangePointLimit
+        }
+    }
+
+    /// 只显示创建点和最新点，避免来源交接点形成点阵并遮住趋势线。
+    static func landmarkPoints(in points: [StarHistoryPoint]) -> [StarHistoryPoint] {
+        guard let first = points.first else { return [] }
+        guard let last = points.last, last.id != first.id else { return [first] }
+        return [first, last]
+    }
+
+    private static func addingCreationBaseline(
+        to points: [StarHistoryPoint],
+        range: StarHistoryRange,
+        repositoryCreatedAt: Date?
+    ) -> [StarHistoryPoint] {
+        guard range == .all,
+              let repositoryCreatedAt,
+              let first = points.first,
+              repositoryCreatedAt < first.date
+        else {
+            return points
+        }
+
+        // 仓库创建时 Star 必然为 0；沿用首个观测点的 source / precision，避免引入
+        // 仅为图表展示而存在的新数据语义。该点不会写回缓存或数据库。
+        let baseline = StarHistoryPoint(
+            date: repositoryCreatedAt,
+            count: 0,
+            source: first.source,
+            precision: first.precision,
+            fetchedAt: first.fetchedAt
+        )
+        return [baseline] + points
+    }
+
+    /// Largest-Triangle-Three-Buckets：按相邻桶形成的三角形面积保留最能表达形状的点。
+    /// 与简单“每 N 个取一个”相比，它能保住 Star 曲线中的突增和平台转折。
+    private static func largestTriangleThreeBuckets(
+        _ points: [StarHistoryPoint],
+        maximumPointCount: Int
+    ) -> [StarHistoryPoint] {
+        guard maximumPointCount >= 3,
+              points.count > maximumPointCount
+        else {
+            return points
+        }
+
+        // LTTB 自身一定包含首尾点；统一实线后无需额外保留来源边界。
+        let samplingCount = min(points.count, maximumPointCount)
+        let bucketWidth = Double(points.count - 2) / Double(samplingCount - 2)
+        var sampledIndices: Set<Int> = [0, points.count - 1]
+        var previousSelectedIndex = 0
+
+        for bucketIndex in 0..<(samplingCount - 2) {
+            let averageStart = min(
+                Int(floor(Double(bucketIndex + 1) * bucketWidth)) + 1,
+                points.count - 1
+            )
+            let averageEnd = min(
+                Int(floor(Double(bucketIndex + 2) * bucketWidth)) + 1,
+                points.count
+            )
+            let averageRange = averageStart..<max(averageStart + 1, averageEnd)
+            let averagePoint = averageCoordinates(
+                points,
+                indices: averageRange.clamped(to: 0..<points.count)
+            )
+
+            let candidateStart = min(
+                Int(floor(Double(bucketIndex) * bucketWidth)) + 1,
+                points.count - 2
+            )
+            let candidateEnd = min(
+                Int(floor(Double(bucketIndex + 1) * bucketWidth)) + 1,
+                points.count - 1
+            )
+            let previous = coordinates(of: points[previousSelectedIndex])
+
+            var selectedIndex = candidateStart
+            var largestArea = -Double.infinity
+            for candidateIndex in candidateStart..<max(candidateStart + 1, candidateEnd) {
+                let candidate = coordinates(of: points[candidateIndex])
+                let area = abs(
+                    (previous.x - averagePoint.x) * (candidate.y - previous.y)
+                        - (previous.x - candidate.x) * (averagePoint.y - previous.y)
+                )
+                if area > largestArea {
+                    largestArea = area
+                    selectedIndex = candidateIndex
+                }
+            }
+            sampledIndices.insert(selectedIndex)
+            previousSelectedIndex = selectedIndex
+        }
+
+        return sampledIndices.sorted().map { points[$0] }
+    }
+
+    private static func averageCoordinates(
+        _ points: [StarHistoryPoint],
+        indices: Range<Int>
+    ) -> (x: Double, y: Double) {
+        guard !indices.isEmpty else {
+            guard let last = points.last else { return (0, 0) }
+            return coordinates(of: last)
+        }
+        let totals = indices.reduce(into: (x: 0.0, y: 0.0)) { result, index in
+            let point = coordinates(of: points[index])
+            result.x += point.x
+            result.y += point.y
+        }
+        let count = Double(indices.count)
+        return (totals.x / count, totals.y / count)
+    }
+
+    private static func coordinates(of point: StarHistoryPoint) -> (x: Double, y: Double) {
+        (point.date.timeIntervalSinceReferenceDate, Double(point.count))
     }
 }
 
-enum StarHistoryChartSeriesBuilder {
-    /// 输入点必须按日期升序；只在精度切换处生成相邻两点桥接。
-    static func bridges(in points: [StarHistoryPoint]) -> [StarHistoryChartBridge] {
-        guard points.count >= 2 else { return [] }
-        return zip(points, points.dropFirst()).compactMap { start, end in
-            guard start.precision != end.precision else { return nil }
-            return StarHistoryChartBridge(
-                start: start,
-                end: end,
-                inheritedPrecision: start.precision
+/// Star 历史图表的纯布局策略。
+///
+/// 把时间轴和数值轴计算从 SwiftUI View 拆出来，是为了让“全部范围从仓库创建日开始”
+/// 以及近期范围的缩放规则可单测；创建日零基线由 SeriesBuilder 单独注入渲染序列。
+enum StarHistoryChartLayoutPolicy {
+    private static let utcCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }()
+
+    static func xDomain(
+        range: StarHistoryRange,
+        repositoryCreatedAt: Date?,
+        points: [StarHistoryPoint],
+        now: Date = Date()
+    ) -> ClosedRange<Date> {
+        let sorted = points.sorted { $0.date < $1.date }
+        let end = max(now, sorted.last?.date ?? now)
+        let firstPoint = sorted.first?.date
+
+        let start: Date
+        switch range {
+        case .threeMonths:
+            let cutoff = utcCalendar.date(byAdding: .month, value: -3, to: end) ?? end
+            start = max(cutoff, repositoryCreatedAt ?? cutoff)
+        case .oneYear:
+            let cutoff = utcCalendar.date(byAdding: .year, value: -1, to: end) ?? end
+            start = max(cutoff, repositoryCreatedAt ?? cutoff)
+        case .all:
+            switch (repositoryCreatedAt, firstPoint) {
+            case let (created?, first?): start = min(created, first)
+            case let (created?, nil): start = created
+            case let (nil, first?): start = first
+            case (nil, nil): start = utcCalendar.date(byAdding: .day, value: -1, to: end) ?? end
+            }
+        }
+
+        // 单日仓库也需要一个非零 Plot domain，否则 Charts 无法建立可选中的 X 轴。
+        let minimumEnd = utcCalendar.date(byAdding: .day, value: 1, to: start) ?? end
+        return start...max(end, minimumEnd)
+    }
+
+    static func yDomain(
+        range: StarHistoryRange,
+        points: [StarHistoryPoint]
+    ) -> ClosedRange<Double> {
+        let values = points.map { Double($0.count) }
+        guard let minimum = values.min(), let maximum = values.max() else {
+            return 0...1
+        }
+        guard range != .all else {
+            return 0...max(1, maximum * 1.12)
+        }
+
+        // 近期趋势需要看得见变化；留出至少 6% 当前量级的上下空间，且不跌破零。
+        let spread = maximum - minimum
+        let padding = max(1, maximum * 0.06, spread * 0.18)
+        let lower = max(0, minimum - padding)
+        return lower...max(lower + 1, maximum + padding)
+    }
+
+    /// 使用固定数量的等距时间刻度，避免 `.automatic` 在窄窗口里生成重复月份或截断末项。
+    static func xAxisDates(
+        domain: ClosedRange<Date>,
+        range: StarHistoryRange
+    ) -> [Date] {
+        let intervalCount = range == .all ? 5 : 4
+        let duration = domain.upperBound.timeIntervalSince(domain.lowerBound)
+        return (0...intervalCount).map { index in
+            domain.lowerBound.addingTimeInterval(
+                duration * Double(index) / Double(intervalCount)
             )
         }
+    }
+
+    /// 只有相邻刻度至少跨一年时才只显示年份，否则 2～5 年范围会出现重复年份标签。
+    static func usesYearOnlyAxisLabels(domain: ClosedRange<Date>) -> Bool {
+        let intervalDuration = domain.upperBound.timeIntervalSince(domain.lowerBound) / 5
+        return intervalDuration >= 365 * 24 * 3600
+    }
+
+    /// 新仓库的全部范围可能只有数周；此时只显示年月会得到一排重复标签。
+    static func usesDayAxisLabels(domain: ClosedRange<Date>) -> Bool {
+        domain.upperBound.timeIntervalSince(domain.lowerBound) <= 180 * 24 * 3600
     }
 }
 
@@ -68,20 +285,23 @@ enum StarHistoryRestrictionNoticePolicy {
     }
 }
 
-enum StarHistoryDisplayPolicy {
-    /// Starcat 本机快照是所有仓库的共同基线，因此即使暂时没有数据也要常驻在首位。
-    /// 其余图例只按当前实际出现的精度追加，避免暗示尚未获取到的远端历史。
-    static func legendPrecisions(points: [StarHistoryPoint]) -> [StarHistoryPrecision] {
-        var precisions: [StarHistoryPrecision] = [.snapshot]
-        if points.contains(where: { $0.precision == .reconstructed }) {
-            precisions.append(.reconstructed)
+/// 发布节奏卡片：最新 Release 附件默认露 3 条，避免把洞察页撑成下载列表。
+enum ReleaseCadenceAssetsDisplayPolicy {
+    static let collapsedLimit = 3
+
+    static func visibleAssets<Asset>(_ assets: [Asset], expanded: Bool) -> [Asset] {
+        if expanded || assets.count <= collapsedLimit {
+            return assets
         }
-        if points.contains(where: { $0.precision == .estimated }) {
-            precisions.append(.estimated)
-        }
-        return precisions
+        return Array(assets.prefix(collapsedLimit))
     }
 
+    static func remainingCount(_ total: Int) -> Int {
+        max(0, total - collapsedLimit)
+    }
+}
+
+enum StarHistoryDisplayPolicy {
     /// 图表选中日期后返回最近点，供图内 RuleMark 和浮层使用。
     static func selectedPoint(
         in points: [StarHistoryPoint],
@@ -114,7 +334,6 @@ struct RepositoryInsightsView: View {
     /// Star 历史由独立 ViewModel 刷新，完成后单独通知共享 XML Coordinator。
     let onStarHistoryChanged: @MainActor @Sendable (Repo) async -> Void
 
-    @State private var selectedStarDate: Date?
     /// Commit 柱图悬停选中的周序号（分类轴 index），与柱一一对应。
     @State private var selectedCommitWeekIndex: Int?
     /// 时间线悬停行，用于光标聚焦高亮。
@@ -123,6 +342,11 @@ struct RepositoryInsightsView: View {
     @State private var hoveredLocalSignalID: String?
     /// 贡献者卡片悬停。
     @State private var hoveredContributorID: String?
+    /// 发布节奏默认只展示最新 Release 的前 3 个附件。
+    @State private var isReleaseAssetsExpanded = false
+    /// 附件下载结果挂在洞察面板底部，避免行内 toast 看起来像屏幕中间弹出。
+    @State private var releaseAssetDownloadToast: String?
+    @State private var releaseAssetDownloadDirectory: URL?
     /// 时间线默认只展示最近几条，避免整页被事件列表撑满。
     @State private var isTimelineExpanded = false
     /// 贡献者默认截断；更多走底部「查看全部」，不在网格里再塞 +N。
@@ -130,14 +354,19 @@ struct RepositoryInsightsView: View {
     /// ScrollView 内容固有高度。Hero 折叠后视口变高时，用它锁死 contentSize，
     /// 避免 VStack 吃满纵向 proposal 在末卡后留下可滚留白。
     @State private var insightsContentHeight: CGFloat = 0
+    /// 屏幕上 Star 趋势卡的实测尺寸，屏外克隆必须按这个 frame 截，否则 Charts 会被压扁。
+    @State private var starHistoryCardSize: CGSize = .zero
 
     @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(AuthSession.self) private var authSession
 
     /// 折叠态只展示前 4 人；样本人数已在集中度行给出总量。
     private static let visibleContributorLimit = 4
+    /// 洞察页保持紧凑，只展示最近 5 条；完整历史继续交给 GitHub 公告页。
+    private static let visibleSecurityAdvisoryLimit = 5
     private static let collapsedTimelineLimit = 5
     /// 与 RepoDetailScrollReport 同口径，忽略亚像素测高抖动。
     private static let contentHeightTolerance: CGFloat = 0.5
@@ -231,9 +460,16 @@ struct RepositoryInsightsView: View {
         }
         // 与 Release 详情一致：body 吃满 Scaffold 剩余空间，滚动发生在内容区自身。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .releaseAssetDownloadToast(
+            message: $releaseAssetDownloadToast,
+            directoryURL: $releaseAssetDownloadDirectory
+        )
         .onChange(of: repo.id) { _, _ in
             // 切仓库时清掉旧高度，避免短暂锁在上一仓的 contentSize。
             insightsContentHeight = 0
+            isReleaseAssetsExpanded = false
+            releaseAssetDownloadToast = nil
+            releaseAssetDownloadDirectory = nil
         }
         .accessibilityLabel(Text("insights.repo.mode.insights"))
     }
@@ -745,15 +981,47 @@ struct RepositoryInsightsView: View {
     }
 
     private var starHistorySection: some View {
+        starHistoryCard(isShareCapture: false)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: StarHistoryCardSizeKey.self,
+                        value: geometry.size
+                    )
+                }
+            }
+            .onPreferenceChange(StarHistoryCardSizeKey.self) { size in
+                // 滚动和材质刷新可能重复上报相同尺寸；无变化时不写 @State，避免整页重算。
+                guard abs(size.width - starHistoryCardSize.width) > Self.contentHeightTolerance
+                    || abs(size.height - starHistoryCardSize.height) > Self.contentHeightTolerance
+                else { return }
+                starHistoryCardSize = size
+            }
+    }
+
+    /// 屏幕与剪贴板共用同一套卡片；导出态只藏操作 chrome，不另起布局。
+    @ViewBuilder
+    private func starHistoryCard(isShareCapture: Bool) -> some View {
         InsightsSectionContainer(
             title: "insights.repo.section.stars",
             subtitle: "insights.repo.section.stars.subtitle",
             systemImage: "star.fill",
             iconColor: .yellow,
             chrome: .emphasized,
-            headerTrailing: { starDataSourceBadge }
+            headerTrailing: {
+                HStack(spacing: 6) {
+                    starDataSourceBadge
+                    if StarHistoryShareCaptureChrome.showsActionButtons(isShareCapture) {
+                        starHistoryShareButton
+                    }
+                }
+            }
         ) {
             VStack(alignment: .leading, spacing: 12) {
+                if StarHistoryShareCaptureChrome.showsRepositoryIdentity(isShareCapture) {
+                    starHistoryExportIdentity
+                }
+
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 18) {
                         if isStarHistoryWaitingForFirstPaint {
@@ -763,7 +1031,7 @@ struct RepositoryInsightsView: View {
                             starMetrics
                         }
                         Spacer(minLength: 8)
-                        starControls
+                        starControls(isShareCapture: isShareCapture)
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         if isStarHistoryWaitingForFirstPaint {
@@ -771,7 +1039,7 @@ struct RepositoryInsightsView: View {
                         } else {
                             starMetrics
                         }
-                        starControls
+                        starControls(isShareCapture: isShareCapture)
                     }
                 }
 
@@ -789,7 +1057,7 @@ struct RepositoryInsightsView: View {
                     // 图表单独做范围过渡；只用淡入淡出，不用上下位移（会顶布局抖页面）。
                     VStack(alignment: .leading, spacing: 10) {
                         ZStack(alignment: .topLeading) {
-                            starChart
+                            starChart(isShareCapture: isShareCapture)
                                 .id(starHistoryViewModel.range)
                                 .transition(.opacity)
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -799,7 +1067,7 @@ struct RepositoryInsightsView: View {
                             value: starHistoryViewModel.range
                         )
 
-                        starFooter
+                        starFooter(isShareCapture: isShareCapture)
                     }
                 } else {
                     chartEmptyState(
@@ -809,16 +1077,47 @@ struct RepositoryInsightsView: View {
                 }
 
                 if displayedStarPoints.isEmpty,
-                   StarHistoryRestrictionNoticePolicy.shouldShow(
-                    points: displayedStarPoints,
-                    phase: starHistoryViewModel.phase,
-                    isPrivateRepository: repo.isPrivate
+                   StarHistoryShareCaptureChrome.showsRestrictionLink(
+                    isShareCapture,
+                    allowedByPolicy: StarHistoryRestrictionNoticePolicy.shouldShow(
+                        points: displayedStarPoints,
+                        phase: starHistoryViewModel.phase,
+                        isPrivateRepository: repo.isPrivate
+                    )
                    ) {
                     starHistoryRestrictionLink
                         .padding(.horizontal, 2)
                 }
             }
         }
+    }
+
+    /// 视觉仍跟其它增长分享入口对齐；写入的是卡片图，不是摘要文本。
+    private var starHistoryShareButton: some View {
+        CopyFeedbackButton(
+            performCopy: copyStarHistoryCardImage,
+            tooltip: "insights.repo.star.share.copyImage"
+        ) { didCopy in
+            Image(systemName: didCopy ? "checkmark.circle.fill" : "square.and.arrow.up")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(didCopy ? Color.green : Color.secondary)
+                .frame(width: 24, height: 24)
+        }
+        .accessibilityLabel(Text("insights.repo.star.share.copyImage"))
+    }
+
+    /// 按屏幕上的实测尺寸克隆导出态卡片。尺寸未就绪或渲染失败都不写剪贴板。
+    private func copyStarHistoryCardImage() -> Bool {
+        ViewSnapshotPasteboard.copyImage(
+            starHistoryCard(isShareCapture: true)
+                .environment(\.starHistoryShareCapture, true)
+                .environment(\.locale, locale)
+                .environment(\.colorScheme, colorScheme)
+                .environment(\.starcatInterfaceScale, interfaceScale)
+                .appLocaleEnvironment(),
+            size: starHistoryCardSize,
+            colorScheme: colorScheme
+        )
     }
 
     /// 首次拉取尚未落点时，用骨架占位；不再留空白或叠空态。
@@ -865,21 +1164,20 @@ struct RepositoryInsightsView: View {
         ).format(coverageStart..<coverageEnd)
     }
 
-    /// 第一行固定图例靠左、覆盖信息靠右；限制链接保留第二行并独立右对齐。
-    /// 每一行内容都不换行，悬停也只更新图内浮层。
-    private var starFooter: some View {
-        let showsRestriction = StarHistoryRestrictionNoticePolicy.shouldShow(
-            points: displayedStarPoints,
-            phase: starHistoryViewModel.phase,
-            isPrivateRepository: repo.isPrivate
+    /// 覆盖信息靠右；限制链接保留第二行并独立右对齐。导出图不带帮助链接。
+    private func starFooter(isShareCapture: Bool) -> some View {
+        let showsRestriction = StarHistoryShareCaptureChrome.showsRestrictionLink(
+            isShareCapture,
+            allowedByPolicy: StarHistoryRestrictionNoticePolicy.shouldShow(
+                points: displayedStarPoints,
+                phase: starHistoryViewModel.phase,
+                isPrivateRepository: repo.isPrivate
+            )
         )
         return VStack(alignment: .trailing, spacing: 4) {
-            HStack(spacing: 8) {
-                starSources
-                Spacer(minLength: 12)
-                starCoverageSummary
-                    .lineLimit(1)
-            }
+            starCoverageSummary
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             if showsRestriction {
                 starHistoryRestrictionLink
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -909,9 +1207,14 @@ struct RepositoryInsightsView: View {
         value: String,
         label: LocalizedStringKey,
         motifID: String,
-        motifSeed: Int
+        motifSeed: Int,
+        semantic: StatSemanticColor
     ) -> some View {
-        let tint = Color.yellow
+        // 不用系统 `.yellow.opacity(0.08)`：浅色主题下三张卡会糊成一片奶油底。
+        // StatSemanticColor 已按 light/dark 成对校过对比度，和详情页 Stars chip 同源。
+        let tint = semantic.resolved(colorScheme: colorScheme)
+        let fill = semantic.background(colorScheme: colorScheme, hovered: false)
+        let strokeOpacity = colorScheme == .dark ? 0.40 : 0.30
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         return VStack(alignment: .leading, spacing: 3) {
             Text(label)
@@ -929,7 +1232,7 @@ struct RepositoryInsightsView: View {
         .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
         .background {
             ZStack(alignment: .bottomTrailing) {
-                shape.fill(tint.opacity(0.08))
+                shape.fill(fill)
                 // Star 趋势三卡比我的洞察 KPI 更矮，用 compact 口袋避免压住数字。
                 InsightsMetricMotifCorner(
                     metricID: motifID,
@@ -941,11 +1244,54 @@ struct RepositoryInsightsView: View {
             .clipShape(shape)
         }
         .overlay {
-            shape.stroke(tint.opacity(0.22), lineWidth: 1)
+            shape.stroke(tint.opacity(strokeOpacity), lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
         .accessibilityValue(Text(verbatim: value))
+    }
+
+    /// 导出图里才出现：屏幕上的卡片已经在仓库详情上下文中。
+    private var starHistoryExportIdentity: some View {
+        HStack(spacing: 8) {
+            starHistoryExportAvatar
+            Text(verbatim: repo.fullName)
+                .font(interfaceScale.font(.bodyEmphasis))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: repo.fullName))
+    }
+
+    /// 屏外截图不能挂 KFImage：28pt 的 cache key 对不上 hero / 列表已缓存的尺寸。
+    @ViewBuilder
+    private var starHistoryExportAvatar: some View {
+        let size: CGFloat = 28
+        Group {
+            if let image = SnapshotAvatarImage.cachedNSImage(
+                owner: repo.owner,
+                ownerAvatar: repo.ownerAvatar,
+                displayDiameter: size
+            ) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                // 故意弱化：截图时缓存未命中的 logo 占位，非可读正文。
+                Image(systemName: "shippingbox.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.tertiary)
+                    .padding(2)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay {
+            Circle().stroke(.secondary.opacity(0.18), lineWidth: 0.5)
+        }
     }
 
     private func starVelocityMetric(
@@ -992,19 +1338,22 @@ struct RepositoryInsightsView: View {
                         ?? String.l10n("insights.repo.state.noData"),
                     label: "insights.repo.star.current",
                     motifID: "starCurrent",
-                    motifSeed: starHistoryViewModel.currentStars ?? 0
+                    motifSeed: starHistoryViewModel.currentStars ?? 0,
+                    semantic: .star
                 )
                 starMetric(
                     value: signed(starHistoryViewModel.growth30Days),
                     label: "insights.repo.star.growth30Days",
                     motifID: "starGrowth30",
-                    motifSeed: starHistoryViewModel.growth30Days ?? 0
+                    motifSeed: starHistoryViewModel.growth30Days ?? 0,
+                    semantic: .language
                 )
                 starMetric(
                     value: signed(starHistoryViewModel.growthOneYear),
                     label: "insights.repo.star.growthOneYear",
                     motifID: "starGrowthYear",
-                    motifSeed: starHistoryViewModel.growthOneYear ?? 0
+                    motifSeed: starHistoryViewModel.growthOneYear ?? 0,
+                    semantic: .watchers
                 )
             }
 
@@ -1036,7 +1385,7 @@ struct RepositoryInsightsView: View {
         return formatted
     }
 
-    private var starControls: some View {
+    private func starControls(isShareCapture: Bool) -> some View {
         HStack(spacing: 8) {
             PillSegmentedControl(
                 items: Array(StarHistoryRange.allCases),
@@ -1046,7 +1395,9 @@ struct RepositoryInsightsView: View {
             )
             .accessibilityLabel(Text("insights.repo.star.range.label"))
 
-            starRefreshButton
+            if StarHistoryShareCaptureChrome.showsActionButtons(isShareCapture) {
+                starRefreshButton
+            }
         }
     }
 
@@ -1064,96 +1415,8 @@ struct RepositoryInsightsView: View {
         }
     }
 
-    private var starSources: some View {
-        // 顺序是产品语义：本机精确快照是共同基线，项目仓库再追加 GitHub 重建历史。
-        HStack(spacing: 8) {
-            ForEach(
-                StarHistoryDisplayPolicy.legendPrecisions(points: displayedStarPoints),
-                id: \.rawValue
-            ) { precision in
-                switch precision {
-                case .snapshot:
-                    starSourceChip(
-                        title: "insights.repo.star.source.snapshot",
-                        systemImage: "internaldrive.fill",
-                        dashed: false
-                    )
-                case .reconstructed:
-                    starSourceChip(
-                        title: "insights.repo.star.source.name.githubStargazers",
-                        systemImage: "person.2.fill",
-                        dashed: true
-                    )
-                case .estimated:
-                    starSourceChip(
-                        title: "insights.repo.star.source.estimated",
-                        systemImage: "waveform.path.ecg",
-                        dashed: true
-                    )
-                }
-            }
-        }
-    }
-
-    private func starSourceChip(
-        title: LocalizedStringKey,
-        systemImage: String,
-        dashed: Bool
-    ) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: systemImage)
-            Text(title)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-            Rectangle()
-                .fill(Color.blue.opacity(dashed ? 0.65 : 1))
-                .frame(width: 18, height: dashed ? 1 : 2)
-        }
-        .font(interfaceScale.font(.captionSmall, weight: .medium))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.55), in: Capsule())
-    }
-
-    private func starSelectionAnnotation(_ point: StarHistoryPoint) -> some View {
-        HStack(spacing: 5) {
-            Text(verbatim: fullDate(point.date))
-            Text("·")
-            Text(point.count.formatted(.number.locale(locale)))
-                .monospacedDigit()
-        }
-        .font(interfaceScale.font(.captionSmall, weight: .medium))
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
-    }
-
     private var displayedStarPoints: [StarHistoryPoint] {
         starHistoryViewModel.points
-    }
-
-    private var estimatedStarPoints: [StarHistoryPoint] {
-        displayedStarPoints.filter { $0.precision == .estimated }
-    }
-
-    private var reconstructedStarPoints: [StarHistoryPoint] {
-        displayedStarPoints.filter { $0.precision == .reconstructed }
-    }
-
-    private var preciseStarPoints: [StarHistoryPoint] {
-        displayedStarPoints.filter { $0.precision == .snapshot }
-    }
-
-    private var starLineBridges: [StarHistoryChartBridge] {
-        StarHistoryChartSeriesBuilder.bridges(in: displayedStarPoints)
-    }
-
-    private var selectedStarPoint: StarHistoryPoint? {
-        StarHistoryDisplayPolicy.selectedPoint(
-            in: displayedStarPoints,
-            selectedDate: selectedStarDate
-        )
     }
 
     private func signed(_ value: Int?) -> String {
@@ -1164,8 +1427,6 @@ struct RepositoryInsightsView: View {
         return value >= 0 ? "+\(formatted)" : formatted
     }
 
-    /// 图表读数必须显式使用应用内 Locale；否则用户切换 Starcat 语言后，
-    /// 日期仍可能跟随 macOS 系统 Locale，形成同屏混排。
     private func fullDate(_ date: Date) -> String {
         date.formatted(
             Date.FormatStyle()
@@ -1187,7 +1448,6 @@ struct RepositoryInsightsView: View {
         Binding(
             get: { starHistoryViewModel.range },
             set: { newRange in
-                selectedStarDate = nil
                 Task {
                     await starHistoryViewModel.selectRange(newRange, repo: repo)
                 }
@@ -1230,210 +1490,18 @@ struct RepositoryInsightsView: View {
         case .unavailable where displayedStarPoints.isEmpty:
             return ("star.slash", "insights.repo.star.state.unavailable")
         default:
-            // 正常有点：项目重建历史优先展示专属来源，其次公共估算，最后本机快照。
-            guard !displayedStarPoints.isEmpty else { return nil }
-            if displayedStarPoints.contains(where: { $0.source == .githubStargazers }) {
-                return ("person.2.fill", "insights.repo.star.source.githubStargazers")
-            }
-            if displayedStarPoints.contains(where: { $0.precision == .estimated }) {
-                return ("icloud", "insights.repo.star.source.estimated")
-            }
-            return ("internaldrive.fill", "insights.repo.star.source.snapshot")
+            // 正常曲线不再暴露来源差异；只保留需要用户感知的状态反馈。
+            return nil
         }
     }
 
-    private var starChart: some View {
-        let yUpper = starYAxisUpperBound
-        return Chart {
-            ForEach(displayedStarPoints) { point in
-                AreaMark(
-                    x: .value("Date", point.date),
-                    y: .value("Stars", point.count)
-                )
-                .foregroundStyle(Color.blue.opacity(0.08))
-                .interpolationMethod(.catmullRom)
-            }
-
-            ForEach(estimatedStarPoints) { point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Stars", point.count),
-                    series: .value("Source", "Estimated")
-                )
-                .foregroundStyle(Color.blue.opacity(0.72))
-                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, dash: [5, 4]))
-                .interpolationMethod(.catmullRom)
-            }
-
-            ForEach(reconstructedStarPoints) { point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Stars", point.count),
-                    series: .value("Source", "GitHub Stargazers")
-                )
-                .foregroundStyle(Color.blue.opacity(0.8))
-                // 虚线提示这是按当前 Stargazers 重建的曲线，不等同完整历史事件流。
-                .lineStyle(StrokeStyle(lineWidth: 2, dash: [6, 3]))
-                .interpolationMethod(.catmullRom)
-            }
-
-            ForEach(starLineBridges) { bridge in
-                starBridgeMarks(bridge)
-            }
-
-            ForEach(preciseStarPoints) { point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Stars", point.count),
-                    series: .value("Source", "Snapshot")
-                )
-                .foregroundStyle(Color.blue)
-                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                .interpolationMethod(.catmullRom)
-                PointMark(
-                    x: .value("Date", point.date),
-                    y: .value("Stars", point.count)
-                )
-                .foregroundStyle(Color.blue)
-                .symbolSize(20)
-            }
-
-            if displayedStarPoints.count == 1, let point = displayedStarPoints.first {
-                PointMark(
-                    x: .value("Date", point.date),
-                    y: .value("Stars", point.count)
-                )
-                .foregroundStyle(Color.blue)
-                .symbolSize(34)
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { value in
-                AxisValueLabel {
-                    if let date = value.as(Date.self) {
-                        Text(verbatim: starAxisLabel(date))
-                            .font(interfaceScale.font(.captionSmall))
-                    }
-                }
-                AxisGridLine().foregroundStyle(Color.secondary.opacity(0.08))
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading) { value in
-                AxisValueLabel()
-                    .font(interfaceScale.font(.captionSmall))
-                AxisGridLine().foregroundStyle(Color.secondary.opacity(0.12))
-            }
-        }
-        // 锁 Y 域：悬停浮层不进 marks，避免图内 RuleMark/annotation 挤占绘图区把曲线「截断」。
-        .chartYScale(domain: 0...yUpper)
-        .chartXSelection(value: $selectedStarDate)
-        .chartOverlay { proxy in
-            GeometryReader { geometry in
-                if let point = selectedStarPoint,
-                   let plotAnchor = proxy.plotFrame {
-                    let plot = geometry[plotAnchor]
-                    if let xInPlot = proxy.position(forX: point.date) {
-                        let lineX = plot.origin.x + xInPlot
-                        Path { path in
-                            path.move(to: CGPoint(x: lineX, y: plot.minY))
-                            path.addLine(to: CGPoint(x: lineX, y: plot.maxY))
-                        }
-                        .stroke(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-
-                        let tooltipWidth: CGFloat = 160
-                        let clampedX = min(
-                            max(lineX, plot.minX + tooltipWidth / 2),
-                            plot.maxX - tooltipWidth / 2
-                        )
-                        starSelectionAnnotation(point)
-                            .position(x: clampedX, y: plot.minY + 16)
-                            .allowsHitTesting(false)
-                    }
-                }
-            }
-        }
-        .frame(height: Self.chartPlotHeight)
-        .padding(10)
-        .background(
-            Color(nsColor: .textBackgroundColor).opacity(0.35),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+    private func starChart(isShareCapture: Bool) -> some View {
+        StarHistoryChartView(
+            model: starHistoryViewModel.chartRenderModel,
+            interactionEnabled: StarHistoryShareCaptureChrome.showsChartSelection(isShareCapture),
+            accessibilityValue: starChartAccessibilityValue,
+            height: Self.chartPlotHeight
         )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("insights.repo.section.stars"))
-        .accessibilityValue(Text(starChartAccessibilityValue))
-    }
-
-    /// 桥接段沿用前一组折线的样式：估算 / 重建继续虚线，精确快照保持实线。
-    ///
-    /// 使用线性插值是为了只表达两个观测点之间的连接，不在长时间空档里制造
-    /// Catmull-Rom 曲线的额外波动。
-    @ChartContentBuilder
-    private func starBridgeMarks(_ bridge: StarHistoryChartBridge) -> some ChartContent {
-        let color: Color = switch bridge.inheritedPrecision {
-        case .estimated:
-            Color.blue.opacity(0.72)
-        case .reconstructed:
-            Color.blue.opacity(0.8)
-        case .snapshot:
-            Color.blue
-        }
-        let strokeStyle: StrokeStyle = switch bridge.inheritedPrecision {
-        case .estimated:
-            StrokeStyle(lineWidth: 2, lineCap: .round, dash: [5, 4])
-        case .reconstructed:
-            StrokeStyle(lineWidth: 2, lineCap: .round, dash: [6, 3])
-        case .snapshot:
-            StrokeStyle(lineWidth: 2.5, lineCap: .round)
-        }
-
-        LineMark(
-            x: .value("Date", bridge.start.date),
-            y: .value("Stars", bridge.start.count),
-            series: .value("Source", bridge.id)
-        )
-        .foregroundStyle(color)
-        .lineStyle(strokeStyle)
-        .interpolationMethod(.linear)
-
-        LineMark(
-            x: .value("Date", bridge.end.date),
-            y: .value("Stars", bridge.end.count),
-            series: .value("Source", bridge.id)
-        )
-        .foregroundStyle(color)
-        .lineStyle(strokeStyle)
-        .interpolationMethod(.linear)
-    }
-
-    /// 跨度不到两个月时带上「日」，避免横轴刷出一排相同的「2026年7月」。
-    private func starAxisLabel(_ date: Date) -> String {
-        let points = displayedStarPoints
-        guard let first = points.first, let last = points.last else {
-            return fullDate(date)
-        }
-        let span = last.date.timeIntervalSince(first.date)
-        let twoMonths: TimeInterval = 60 * 24 * 3600
-        if span < twoMonths {
-            return date.formatted(
-                Date.FormatStyle()
-                    .month(.abbreviated)
-                    .day()
-                    .locale(locale)
-            )
-        }
-        return date.formatted(
-            Date.FormatStyle()
-                .year()
-                .month(.abbreviated)
-                .locale(locale)
-        )
-    }
-
-    private var starYAxisUpperBound: Double {
-        let maxCount = displayedStarPoints.map(\.count).max() ?? 0
-        guard maxCount > 0 else { return 1 }
-        return Double(maxCount) * 1.12
     }
 
     private var starChartAccessibilityValue: String {
@@ -2187,36 +2255,17 @@ struct RepositoryInsightsView: View {
         ) {
             switch viewModel.releaseCadenceState {
             case .content(let cadence):
-                HStack(spacing: 8) {
-                    releaseCadenceMetric(
-                        title: "insights.repo.releaseCadence.lastYear",
-                        value: cadence.releasesLastYear.formatted(.number.locale(locale)),
-                        systemImage: "calendar"
-                    )
-                    releaseCadenceMetric(
-                        title: "insights.repo.releaseCadence.averageInterval",
-                        value: cadence.averageIntervalDays.map {
-                            String(
-                                format: String.l10n("insights.repo.releaseCadence.daysFormat"),
-                                locale: locale,
-                                $0
-                            )
-                        } ?? String.l10n("insights.repo.state.noData"),
-                        systemImage: "arrow.left.and.right"
-                    )
-                    releaseCadenceMetric(
-                        title: "insights.repo.releaseCadence.latest",
-                        value: shortDate(cadence.latestPublishedAt),
-                        systemImage: "clock"
-                    )
+                VStack(alignment: .leading, spacing: 10) {
+                    releaseCadenceMetrics(cadence)
+                    if let assetsRelease = latestReleaseWithAssets {
+                        releaseCadenceAssetsBlock(assetsRelease)
+                    }
                 }
+            case .empty:
+                // 无 Release 也保持三枚指标卡，避免整块收成一行空态。
+                releaseCadenceMetrics(nil)
             case .loading, .idle:
                 InsightsSectionSkeleton(kind: .derivedPills(count: 3))
-            case .empty:
-                compactEmptyState(
-                    "insights.repo.releaseCadence.empty",
-                    systemImage: "tag.slash"
-                )
             case .unavailable:
                 compactEmptyState(
                     "insights.repo.releaseCadence.authenticationRequired",
@@ -2228,6 +2277,119 @@ struct RepositoryInsightsView: View {
                     systemImage: "exclamationmark.triangle"
                 )
             }
+        }
+    }
+
+    /// 附件跟最新 Release 走，不跟节奏缓存绑在一起；没有上传附件时整段不占位。
+    private var latestReleaseWithAssets: RepositoryReleaseInsight? {
+        guard case .content(let release) = viewModel.releaseState, !release.assets.isEmpty else {
+            return nil
+        }
+        return release
+    }
+
+    private func releaseCadenceAssetsBlock(_ release: RepositoryReleaseInsight) -> some View {
+        let visibleAssets = ReleaseCadenceAssetsDisplayPolicy.visibleAssets(
+            release.assets,
+            expanded: isReleaseAssetsExpanded
+        )
+        let remaining = ReleaseCadenceAssetsDisplayPolicy.remainingCount(release.assets.count)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(
+                verbatim: String(
+                    format: String.l10n(
+                        "insights.repo.releaseCadence.assets.titleFormat",
+                        defaultValue: "%@ 附件"
+                    ),
+                    locale: locale,
+                    release.tagName
+                )
+            )
+            .font(interfaceScale.font(.caption, weight: .semibold))
+            .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(visibleAssets.enumerated()), id: \.element.id) { index, asset in
+                    ReleaseAssetRowView(
+                        asset: asset,
+                        layout: .compact,
+                        rowIndex: index,
+                        onDownloadFinished: { finish in
+                            ReleaseAssetDownloadToastSupport.apply(
+                                finish,
+                                message: &releaseAssetDownloadToast,
+                                directoryURL: &releaseAssetDownloadDirectory
+                            )
+                        }
+                    )
+                }
+            }
+
+            if remaining > 0 {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                            isReleaseAssetsExpanded.toggle()
+                        }
+                    } label: {
+                        Group {
+                            if isReleaseAssetsExpanded {
+                                Text(
+                                    verbatim: String.l10n(
+                                        "insights.repo.releaseCadence.assets.collapse",
+                                        defaultValue: "收起"
+                                    )
+                                )
+                            } else {
+                                Text(
+                                    verbatim: String(
+                                        format: String.l10n(
+                                            "insights.repo.releaseCadence.assets.moreFormat",
+                                            defaultValue: "更多（还有 %lld 个）"
+                                        ),
+                                        locale: locale,
+                                        remaining
+                                    )
+                                )
+                            }
+                        }
+                        .font(interfaceScale.font(.caption, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func releaseCadenceMetrics(_ cadence: RepositoryReleaseCadenceInsight?) -> some View {
+        HStack(spacing: 8) {
+            releaseCadenceMetric(
+                title: "insights.repo.releaseCadence.lastYear",
+                value: (cadence?.releasesLastYear ?? 0).formatted(.number.locale(locale)),
+                systemImage: "calendar"
+            )
+            releaseCadenceMetric(
+                title: "insights.repo.releaseCadence.averageInterval",
+                value: cadence?.averageIntervalDays.map {
+                    String(
+                        format: String.l10n("insights.repo.releaseCadence.daysFormat"),
+                        locale: locale,
+                        $0
+                    )
+                } ?? String.l10n("insights.repo.state.noData"),
+                systemImage: "arrow.left.and.right"
+            )
+            releaseCadenceMetric(
+                title: "insights.repo.releaseCadence.latest",
+                value: cadence.map { shortDate($0.latestPublishedAt) }
+                    ?? String.l10n("insights.repo.state.noData"),
+                systemImage: "clock"
+            )
         }
     }
 
@@ -2545,6 +2707,21 @@ struct RepositoryInsightsView: View {
                         destinationURL: insight.advisories.first?.htmlURL
                     )
                 }
+                ForEach(Array(insight.advisories.prefix(Self.visibleSecurityAdvisoryLimit))) { advisory in
+                    Divider().padding(.leading, 28)
+                    securityAdvisoryRow(advisory)
+                }
+                if !insight.advisories.isEmpty {
+                    Divider().padding(.leading, 28)
+                    localSignalRow(
+                        id: "security.advisories.viewAll",
+                        title: "insights.drilldown.viewAll",
+                        statusText: insight.advisories.count.formatted(.number.locale(locale)),
+                        statusColor: .secondary,
+                        systemImage: "list.bullet",
+                        destinationURL: repositorySecurityAdvisoriesURL
+                    )
+                }
             }
         } else {
             switch viewModel.securityAdvisoriesState {
@@ -2570,6 +2747,110 @@ struct RepositoryInsightsView: View {
             case .content, .stale:
                 EmptyView()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func securityAdvisoryRow(_ advisory: RepositorySecurityAdvisory) -> some View {
+        let severityColor = securityAdvisorySeverityColor(advisory.severity)
+        let isTappable = advisory.htmlURL != nil
+        let isHovered = hoveredLocalSignalID == advisory.id
+        let content = HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.shield")
+                .frame(width: 18)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: advisory.summary)
+                    .font(interfaceScale.font(.caption, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(verbatim: securityAdvisoryMetadata(advisory))
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(verbatim: securityAdvisorySeverityTitle(advisory.severity))
+                .font(interfaceScale.font(.captionSmall, weight: .medium))
+                .foregroundStyle(severityColor)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(severityColor.opacity(0.12))
+                )
+            if isTappable {
+                Image(systemName: "arrow.up.right.square")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(isHovered && isTappable ? 0.08 : 0))
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            guard isTappable else { return }
+            if hovering {
+                hoveredLocalSignalID = advisory.id
+            } else if hoveredLocalSignalID == advisory.id {
+                hoveredLocalSignalID = nil
+            }
+        }
+
+        if let destinationURL = advisory.htmlURL {
+            Button {
+                NSWorkspace.shared.open(destinationURL)
+            } label: {
+                content
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .help(Text(verbatim: destinationURL.absoluteString))
+            .accessibilityAddTraits(.isLink)
+        } else {
+            content
+        }
+    }
+
+    private func securityAdvisoryMetadata(_ advisory: RepositorySecurityAdvisory) -> String {
+        var parts = [advisory.id]
+        if let cveID = advisory.cveID, !cveID.isEmpty {
+            parts.append(cveID)
+        }
+        parts.append(shortDate(advisory.publishedAt))
+        if let publisher = advisory.publisherLogin, !publisher.isEmpty {
+            parts.append("@\(publisher)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func securityAdvisorySeverityTitle(_ severity: String) -> String {
+        switch severity.lowercased() {
+        case "critical":
+            return String.l10n("insights.repo.securityAdvisory.severity.critical")
+        case "high":
+            return String.l10n("insights.repo.securityAdvisory.severity.high")
+        case "medium", "moderate":
+            return String.l10n("insights.repo.securityAdvisory.severity.medium")
+        case "low":
+            return String.l10n("insights.repo.securityAdvisory.severity.low")
+        default:
+            return severity.capitalized
+        }
+    }
+
+    private func securityAdvisorySeverityColor(_ severity: String) -> Color {
+        switch severity.lowercased() {
+        case "critical": return .red
+        case "high": return .orange
+        case "medium", "moderate": return .orange
+        default: return .secondary
         }
     }
 
@@ -3018,5 +3299,17 @@ private struct InsightsContentHeightKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Star 趋势卡实测尺寸。屏外克隆必须跟屏幕上同一 frame，不能让 Charts 自己猜。
+private struct StarHistoryCardSizeKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.width >= value.width, next.height >= value.height {
+            value = next
+        }
     }
 }

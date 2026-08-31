@@ -7,7 +7,7 @@
 //  设计目标：
 //  - Manage / Activity 的 repo-backed 详情共享同一套顶部信息结构与交互反馈。
 //  - 顶部面板本身不滚动；README WebView 滚动时由外层折叠容器隐藏。
-//  - 点击头像、Stats、Watchers、AI 等 hero 内交互统一使用 `.buttonStyle(.plain)`、
+//  - 点击头像、仓库名、Stats、Watchers、AI 等 hero 内交互统一使用 `.buttonStyle(.plain)`、
 //    `.focusEffectDisabled()` 和 `.pressableHover()`，避免不同页面出现不同 hover / focus 体验。
 //
 
@@ -124,12 +124,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    Text(repo.fullName)
-                        .font(interfaceScale.font(.workspaceTitle))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .textSelection(.enabled)
-                        .help(repo.fullName)
+                    RepoFullNameCopyButton(fullName: repo.fullName)
 
                     OpenSSFInlineBadge(repo: repo) {
                         showOpenSSFScoreSheet = true
@@ -229,6 +224,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             StarStatChipButton(
                 isStarred: repo.isStarred,
                 count: repo.starsCount,
+                ghRepoId: repo.id,
                 helpKey: starHelpKey,
                 action: onStarTapped
             )
@@ -413,6 +409,46 @@ private struct RepoDetailHeaderSourceBadgeView: View {
                 .background(Circle().fill(Color(nsColor: .controlBackgroundColor)))
                 .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
         }
+    }
+}
+
+/// 详情 hero 的 `owner/repo` 标题：点击把全名写入剪贴板。
+///
+/// 为什么做成按钮而不是 `.textSelection(.enabled)`：整段点击复制和划选互斥，
+/// dong4j 2026-08-26 确认拿掉划选。绿勾始终占 14pt、未复制时透明，避免 1.5s
+/// 反馈把同行 OpenSSF / Health 徽章挤开。hover 复用 logo 同款 `.pressableHover()`。
+private struct RepoFullNameCopyButton: View {
+    let fullName: String
+
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+
+    var body: some View {
+        CopyFeedbackButton(
+            providesContent: { fullName },
+            tooltip: "repo.hero.copyName"
+        ) { didCopy in
+            HStack(spacing: 6) {
+                Text(verbatim: fullName)
+                    .font(interfaceScale.font(.workspaceTitle))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.primary)
+                    // Button 默认按 intrinsic width 布局，长仓库名会把同行徽章挤出
+                    // hero；minWidth 0 才允许在 HStack 里按尾部截断。
+                    .frame(minWidth: 0, alignment: .leading)
+
+                Image(systemName: "checkmark.circle.fill")
+                    .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .opacity(didCopy ? 1 : 0)
+                    .frame(width: 14, height: 14)
+                    .accessibilityHidden(!didCopy)
+            }
+        }
+        .pressableHover()
+        .frame(minWidth: 0, alignment: .leading)
+        .accessibilityLabel(Text("repo.hero.copyName"))
+        .accessibilityValue(Text(verbatim: fullName))
     }
 }
 
@@ -992,7 +1028,7 @@ private struct RepoDateStatItem: View {
                 Image(systemName: systemImage)
                     .foregroundStyle(.secondary)
                     .font(interfaceScale.font(.bodyEmphasis))
-                Text(formattedDate)
+                Text(repoDateStatLabel(from: value))
                     .monospacedDigit()
                     .lineLimit(1)
                     .font(interfaceScale.font(.bodyEmphasis, weight: .medium))
@@ -1003,12 +1039,15 @@ private struct RepoDateStatItem: View {
         }
     }
 
-    private var formattedDate: String {
-        guard let value, let date = ISO8601DateFormatter().date(from: value) else {
-            return "-"
-        }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+}
+
+/// 把 GitHub ISO 8601 时间转换成详情页统计行使用的短日期。
+///
+/// Awesome 会先把服务端时间解析成 `Date`，再通过带毫秒的 formatter 写回 DTO；
+/// 因此这里必须同时兼容 `...56Z` 与 `...56.000Z`，不能使用只接受前一种格式的默认解析器。
+func repoDateStatLabel(from value: String?) -> String {
+    guard let date = ISO8601DateFormatter.githubDate(from: value) else {
+        return "-"
     }
+    return date.formatted(.iso8601.year().month().day())
 }

@@ -37,7 +37,7 @@ import SwiftUI
 extension Notification.Name {
     /// 跨 Settings Tab 跳转。`object: String` 取值：`"general"` / `"storage"` /
     /// `"pro"` / `"ai"` / `"ai.chat"` / `"ai.embedding"` / `"ai.repoContext"` / `"services"` / `"integrations"` /
-    /// `"integrations.localAPIKey"` / `"integrations.externalSearch"` /
+    /// `"integrations.agentRuntime"` / `"integrations.localAPIKey"` / `"integrations.externalSearch"` /
     /// `"integrations.codebaseMemory"` / `"diagnostics"`。
     static let starcatJumpToSettingsTab: Notification.Name = .init("starcat.settings.jumpToTab")
     /// SettingsView 切到 AI Tab 并完成一轮布局后，再通知 AISettingsView 展开并定位。
@@ -72,11 +72,12 @@ struct SettingsView: View {
     /// 快捷键录制失败时只在 General 页就地提示，不修改已保存配置。
     @State private var shortcutValidationError: KeyboardShortcutConfiguration.ValidationError?
 
-    /// 五个可配置应用命令的设置页标识。
+    /// 六个可配置应用命令的设置页标识。
     /// 这里只负责冲突矩阵和“恢复默认”级联，不参与菜单动作路由。
     private enum ConfigurableShortcutAction: CaseIterable, Hashable {
         case globalSearch
         case regularSearch
+        case readmeFind
         case refreshCurrentContent
         case knowledgeRAG
         case selectedRepoAI
@@ -87,6 +88,8 @@ struct SettingsView: View {
                 return .globalSearchDefault
             case .regularSearch:
                 return .regularSearchDefault
+            case .readmeFind:
+                return StarcatShortcutCatalog.readmeFindDefault
             case .refreshCurrentContent:
                 return StarcatShortcutCatalog.refreshCurrentContentDefault
             case .knowledgeRAG:
@@ -200,7 +203,7 @@ struct SettingsView: View {
                 }
             case "mcp":          selectedTab = .mcp
             case "services":     selectedTab = .services
-            case "integrations", "integrations.localAPIKey", "integrations.browserPlugin",
+            case "integrations", "integrations.agentRuntime", "integrations.localAPIKey", "integrations.browserPlugin",
                  "integrations.externalSearch", "integrations.codebaseMemory":
                 selectedTab = .integrations
             case "storage":      selectedTab = .storage
@@ -210,6 +213,11 @@ struct SettingsView: View {
         }
         .onAppear {
             dependencies.telemetryManager.track(.settingsOpened)
+        }
+        .task(id: dependencies.databaseScopeRevision) {
+            await dependencies.dataContributionSettings.reload(
+                accountID: dependencies.database.currentUserId
+            )
         }
     }
 
@@ -290,9 +298,10 @@ struct SettingsView: View {
             //    + `.id(...)` 配合下整棵 view 树立刻重建，不需要重启 App。
             // 2. 默认 `system`：跟随系统设置，`Locale.autoupdatingCurrent` 让
             //    macOS Language & Region 改变时 Starcat 自动同步。
-            // 3. 18 种语言均显示“国旗 + 母语名称”，故意不跟随当前 UI locale
-            //    翻译，与 macOS Language & Region 列出语言时的惯例一致——哪怕
-            //    用户误切到看不懂的语言，也能从国旗和母语写法找回入口。
+            // 3. 跟随系统用 🌐、其余 18 种语言用“国旗 + 母语名称”。具体语言故意
+            //    不跟随当前 UI locale 翻译，与 macOS Language & Region 列出语言时
+            //    的惯例一致——哪怕用户误切到看不懂的语言，也能从国旗和母语写法
+            //    找回入口。
             // 4. 已知局限（与 DEBUG 菜单 picker 一致，写在 `LocaleStore.swift`
             //    顶部注释里）：`.environment(\.locale, _)` 只覆盖 SwiftUI 视图层
             //    `Text("key")` 等查表行为；macOS 顶部菜单栏 NSMenu 与部分
@@ -303,7 +312,7 @@ struct SettingsView: View {
             Section {
                 Picker(selection: $localeStore.selection) {
                     ForEach(AppLocale.allCases) { option in
-                        Text(option.displayName).tag(option)
+                        option.menuTitle.tag(option)
                     }
                 } label: {
                     Text("settings.general.language.label")
@@ -318,6 +327,38 @@ struct SettingsView: View {
                 SettingsSectionHeader(
                     "settings.general.language",
                     systemImage: "globe",
+                    style: .prominent
+                )
+            }
+
+            // 数据贡献严格默认关闭且按 GitHub 账号隔离。这里只展示一个授权开关；
+            // 上传数量、时间、失败和重试均属于后台旁路状态，不进入用户界面。
+            Section {
+                Toggle(isOn: Binding(
+                    get: { dependencies.dataContributionSettings.isEnabled },
+                    set: { newValue in
+                        guard let accountID = dependencies.database.currentUserId else { return }
+                        Task {
+                            await dependencies.dataContributionSettings.setEnabled(
+                                newValue,
+                                accountID: accountID
+                            )
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.dataContribution.title")
+                        Text("settings.general.dataContribution.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(dependencies.database.currentUserId == nil)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.general.dataContribution.section",
+                    systemImage: "hand.raised.fill",
                     style: .prominent
                 )
             }
@@ -357,6 +398,16 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("settings.general.openFirstDetailOnCategoryChange.title")
                         Text("settings.general.openFirstDetailOnCategoryChange.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Toggle(isOn: $settings.openRepositoryMarkdownInApp) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.openRepositoryMarkdownInApp.title")
+                        Text("settings.general.openRepositoryMarkdownInApp.help")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -423,6 +474,19 @@ struct SettingsView: View {
                     helpKey: "settings.general.shortcuts.regularSearch.help",
                     onShortcutChanged: { shortcutValidationError = nil },
                     onRestoreDefault: { restoreShortcutDefault(.regularSearch) }
+                )
+                .disabled(!settings.keyboardShortcutsEnabled)
+
+                ConfigurableShortcutSettingRow(
+                    titleKey: "settings.general.shortcuts.readmeFind.title",
+                    shortcut: $settings.readmeFindShortcut,
+                    defaultShortcut: ConfigurableShortcutAction.readmeFind.defaultShortcut,
+                    isEnabled: $settings.readmeFindShortcutEnabled,
+                    onValidationError: { shortcutValidationError = $0 },
+                    conflictingShortcuts: conflictingShortcuts(excluding: .readmeFind),
+                    helpKey: "settings.general.shortcuts.readmeFind.help",
+                    onShortcutChanged: { shortcutValidationError = nil },
+                    onRestoreDefault: { restoreShortcutDefault(.readmeFind) }
                 )
                 .disabled(!settings.keyboardShortcutsEnabled)
 
@@ -516,6 +580,24 @@ struct SettingsView: View {
                 )
             }
 
+            Section {
+                Toggle(isOn: $settings.githubIssueEventTimelineEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.activity.issueEvents.title")
+                        Text("settings.activity.issueEvents.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } header: {
+                SettingsSectionHeader(
+                    "settings.activity.section",
+                    systemImage: "list.bullet.rectangle",
+                    style: .prominent
+                )
+            }
+
             // 2026-06-15 dong4j 需求：无障碍 / 动画偏好。
             //
             // 单独起一个 Section 而不是夹在「外观」里——「关闭应用内动画」
@@ -550,6 +632,16 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("settings.general.hideDockIcon.title")
                         Text("settings.general.hideDockIcon.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Toggle(isOn: $settings.spotlightSearchEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.spotlightSearch.title")
+                        Text("settings.general.spotlightSearch.help")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -666,7 +758,7 @@ struct SettingsView: View {
         }
     }
 
-    /// 返回除当前动作外的四个已保存键位。
+    /// 返回除当前动作外的五个已保存键位。
     /// 关闭状态仍参与冲突检查，确保重新开启时不会与其它命令竞争同一组合。
     private func conflictingShortcuts(
         excluding action: ConfigurableShortcutAction
@@ -679,7 +771,7 @@ struct SettingsView: View {
     /// 恢复默认值时递归释放被其它动作占用的默认组合。
     ///
     /// 例如 A 使用 B 的默认键、B 又使用 A 的默认键时，先把整条占用链恢复到各自默认，
-    /// 再落当前动作；`visited` 用于打断这种交换环，最终仍保持五项唯一。
+    /// 再落当前动作；`visited` 用于打断这种交换环，最终仍保持六项唯一。
     private func restoreShortcutDefault(_ action: ConfigurableShortcutAction) {
         var visited: Set<ConfigurableShortcutAction> = []
 
@@ -706,6 +798,8 @@ struct SettingsView: View {
             return settings.globalSearchShortcut
         case .regularSearch:
             return settings.regularSearchShortcut
+        case .readmeFind:
+            return settings.readmeFindShortcut
         case .refreshCurrentContent:
             return settings.refreshCurrentContentShortcut
         case .knowledgeRAG:
@@ -724,6 +818,8 @@ struct SettingsView: View {
             settings.globalSearchShortcut = shortcut
         case .regularSearch:
             settings.regularSearchShortcut = shortcut
+        case .readmeFind:
+            settings.readmeFindShortcut = shortcut
         case .refreshCurrentContent:
             settings.refreshCurrentContentShortcut = shortcut
         case .knowledgeRAG:
@@ -1206,6 +1302,7 @@ private struct StorageSettingsTab: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AuthSession.self) private var authSession
+    @Environment(\.locale) private var locale
 
     let readmeRepository: ReadmeRepository
 
@@ -1245,6 +1342,10 @@ private struct StorageSettingsTab: View {
     /// 结果按 owner/repo 落盘。注入 AI Chat system prompt 的 `{starcatResources}` 段。
     @State private var wikiCache = DiskWikiCache.shared
 
+    /// Issue / PR 事件流磁盘缓存：按 owner/repo/number 落盘。
+    @State private var issueTimelineCache = DiskIssueTimelineCache.shared
+    @State private var issueCommentDraftCache = DiskNotificationCommentDraftCache.shared
+
     /// 推荐结果磁盘缓存（2026-06-29，与 wiki 同款形态）：按 repoID 落盘，
     /// TTL 7d（有 items）/ 1h（空）。详情页 `RecommendationContextService` 读取 + 写盘。
     @State private var recommendationCache = DiskRecommendationCache.shared
@@ -1257,7 +1358,7 @@ private struct StorageSettingsTab: View {
     /// 单项缓存使用系统 alert 二次确认，保持 macOS 标准标题 / 正文层级；
     /// "删除全部缓存"已经升级为危险区 sheet，但保留 `.all` 作为执行分支，避免复制清理代码。
     private enum PendingAction: Identifiable {
-        case readme, image, archive, translation, anySearch, wiki, recommendation, chatHistory
+        case readme, image, archive, translation, anySearch, wiki, issueTimeline, issueCommentDraft, recommendation, chatHistory
         case ragIndex, ragHistory, aiContext, codeFlow, codebaseMemory, all
         var id: String {
             switch self {
@@ -1267,6 +1368,8 @@ private struct StorageSettingsTab: View {
             case .translation:  return "translation"
             case .anySearch:    return "anySearch"
             case .wiki:         return "wiki"
+            case .issueTimeline: return "issueTimeline"
+            case .issueCommentDraft: return "issueCommentDraft"
             case .recommendation: return "recommendation"
             case .chatHistory:  return "chatHistory"
             case .ragIndex:     return "ragIndex"
@@ -1277,7 +1380,7 @@ private struct StorageSettingsTab: View {
             case .all:          return "all"
             }
         }
-        var confirmTitle: String {
+        func confirmTitle(locale: Locale) -> String {
             switch self {
             case .readme:       return String.l10n("settings.storage.clearReadme.confirm")
             case .image:        return String.l10n("settings.storage.clearImage.confirm")
@@ -1285,6 +1388,8 @@ private struct StorageSettingsTab: View {
             case .translation:  return String.l10n("settings.storage.clearTranslation.confirm")
             case .anySearch:    return String.l10n("settings.storage.clearAnySearch.confirm")
             case .wiki:         return String.l10n("settings.storage.clearWiki.confirm")
+            case .issueTimeline: return String.l10n("settings.storage.clearIssueTimeline.confirm")
+            case .issueCommentDraft: return String.l10n("settings.storage.clearIssueCommentDraft.confirm")
             case .recommendation: return String.l10n("settings.storage.clearRecommendation.confirm")
             case .chatHistory:  return String.l10n("settings.storage.clearChatHistory.confirm")
             case .ragIndex:     return String.l10n("settings.storage.clearRAGIndex.confirm")
@@ -1295,22 +1400,24 @@ private struct StorageSettingsTab: View {
             case .all:          return String.l10n("settings.storage.clearAll.confirm")
             }
         }
-        var confirmMessageKey: LocalizedStringKey {
+        func confirmMessage(locale: Locale) -> String {
             switch self {
-            case .readme:       return "settings.storage.clearReadme.message"
-            case .image:        return "settings.storage.clearImage.message"
-            case .archive:      return "settings.storage.clearArchive.message"
-            case .translation:  return "settings.storage.clearTranslation.message"
-            case .anySearch:    return "settings.storage.clearAnySearch.message"
-            case .wiki:         return "settings.storage.clearWiki.message"
-            case .recommendation: return "settings.storage.clearRecommendation.message"
-            case .chatHistory:  return "settings.storage.clearChatHistory.message"
-            case .ragIndex:     return "settings.storage.clearRAGIndex.message"
-            case .ragHistory:   return "settings.storage.clearRAGHistory.message"
-            case .aiContext:    return "settings.storage.clearAiContext.message"
-            case .codeFlow:     return "settings.storage.clearCodeFlow.message"
-            case .codebaseMemory: return "settings.storage.clearCodebaseMemory.message"
-            case .all:          return "settings.storage.clearAll.message"
+            case .readme:       return String.l10n("settings.storage.clearReadme.message")
+            case .image:        return String.l10n("settings.storage.clearImage.message")
+            case .archive:      return String.l10n("settings.storage.clearArchive.message")
+            case .translation:  return String.l10n("settings.storage.clearTranslation.message")
+            case .anySearch:    return String.l10n("settings.storage.clearAnySearch.message")
+            case .wiki:         return String.l10n("settings.storage.clearWiki.message")
+            case .issueTimeline: return String.l10n("settings.storage.clearIssueTimeline.message")
+            case .issueCommentDraft: return String.l10n("settings.storage.clearIssueCommentDraft.message")
+            case .recommendation: return String.l10n("settings.storage.clearRecommendation.message")
+            case .chatHistory:  return String.l10n("settings.storage.clearChatHistory.message")
+            case .ragIndex:     return String.l10n("settings.storage.clearRAGIndex.message")
+            case .ragHistory:   return String.l10n("settings.storage.clearRAGHistory.message")
+            case .aiContext:    return String.l10n("settings.storage.clearAiContext.message")
+            case .codeFlow:     return String.l10n("settings.storage.clearCodeFlow.message")
+            case .codebaseMemory: return String.l10n("settings.storage.clearCodebaseMemory.message")
+            case .all:          return String.l10n("settings.storage.clearAll.message")
             }
         }
     }
@@ -1322,6 +1429,8 @@ private struct StorageSettingsTab: View {
             && translationCache.itemCount == 0
             && externalSearchCache.itemCount == 0
             && wikiCache.itemCount == 0
+            && issueTimelineCache.itemCount == 0
+            && issueCommentDraftCache.itemCount == 0
             && recommendationCache.itemCount == 0
             && chatHistoryStore.sessionCount == 0
             && ragIndexBytes == 0
@@ -1471,6 +1580,22 @@ private struct StorageSettingsTab: View {
                     revealItem: .wiki
                 )
                 usageRow(
+                    titleKey: "settings.storage.issueTimeline",
+                    usageText: issueTimelineUsageText,
+                    isEmpty: issueTimelineCache.itemCount == 0,
+                    action: .issueTimeline,
+                    helpKey: "settings.storage.issueTimeline.help",
+                    revealItem: .issueTimeline
+                )
+                usageRow(
+                    titleKey: "settings.storage.issueCommentDraft",
+                    usageText: issueCommentDraftUsageText,
+                    isEmpty: issueCommentDraftCache.itemCount == 0,
+                    action: .issueCommentDraft,
+                    helpKey: "settings.storage.issueCommentDraft.help",
+                    revealItem: .issueCommentDraft
+                )
+                usageRow(
                     titleKey: "settings.storage.recommendation",
                     usageText: recommendationUsageText,
                     isEmpty: recommendationCache.itemCount == 0,
@@ -1612,11 +1737,13 @@ private struct StorageSettingsTab: View {
             codebaseMemoryStorage.reload()
             translationCache.reload()
             externalSearchCache.reload()
+            issueTimelineCache.reload()
+            issueCommentDraftCache.reload()
             chatHistoryStore.reload()
             await refreshRAGStorageStatistics()
         }
         .alert(
-            pendingAction?.confirmTitle ?? "",
+            pendingAction?.confirmTitle(locale: locale) ?? "",
             isPresented: Binding(
                 get: { pendingAction != nil },
                 set: { if !$0 { pendingAction = nil } }
@@ -1628,7 +1755,7 @@ private struct StorageSettingsTab: View {
             }
             Button("general.cancel", role: .cancel) { pendingAction = nil }
         } message: { action in
-            Text(action.confirmMessageKey)
+            Text(verbatim: action.confirmMessage(locale: locale))
         }
         .alert(
             "settings.storage.actionFailed",
@@ -1802,8 +1929,14 @@ private struct StorageSettingsTab: View {
         case .wiki:
             do { try wikiCache.deleteEverything() }
             catch { storageActionError = error.localizedDescription }
+        case .issueTimeline:
+            do { try issueTimelineCache.deleteEverything() }
+            catch { storageActionError = error.localizedDescription }
+        case .issueCommentDraft:
+            do { try issueCommentDraftCache.deleteEverything() }
+            catch { storageActionError = error.localizedDescription }
         case .recommendation:
-            do { try recommendationCache.deleteEverything() }
+            do { try await recommendationCache.deleteEverything() }
             catch { storageActionError = error.localizedDescription }
         case .chatHistory:
             do { try chatHistoryStore.deleteEverything() }
@@ -1838,7 +1971,15 @@ private struct StorageSettingsTab: View {
             catch {
                 if storageActionError == nil { storageActionError = error.localizedDescription }
             }
-            do { try recommendationCache.deleteEverything() }
+            do { try issueTimelineCache.deleteEverything() }
+            catch {
+                if storageActionError == nil { storageActionError = error.localizedDescription }
+            }
+            do { try issueCommentDraftCache.deleteEverything() }
+            catch {
+                if storageActionError == nil { storageActionError = error.localizedDescription }
+            }
+            do { try await recommendationCache.deleteEverything() }
             catch {
                 if storageActionError == nil { storageActionError = error.localizedDescription }
             }
@@ -1903,7 +2044,9 @@ private struct StorageSettingsTab: View {
             translationCache.reload()
             externalSearchCache.reload()
             wikiCache.reload()
-            recommendationCache.reload()
+            issueTimelineCache.reload()
+            issueCommentDraftCache.reload()
+            await recommendationCache.reload()
             chatHistoryStore.reload()
             aiContextStorage.reload()
             codeFlowStorage.reload()
@@ -2014,6 +2157,29 @@ private struct StorageSettingsTab: View {
             format: String.l10n("settings.storage.anySearchUsageFormat"),
             externalSearchCache.itemCount,
             externalSearchCache.totalBytes.formattedByteSize
+        )
+    }
+
+    /// Issue 事件流磁盘缓存用量。空态 / 计数格式复用翻译缓存那套通用文案。
+    private var issueTimelineUsageText: String {
+        if issueTimelineCache.itemCount == 0 {
+            return String.l10n("settings.storage.translation.empty")
+        }
+        return String(
+            format: String.l10n("settings.storage.translationUsageFormat"),
+            issueTimelineCache.itemCount,
+            issueTimelineCache.totalBytes.formattedByteSize
+        )
+    }
+
+    private var issueCommentDraftUsageText: String {
+        if issueCommentDraftCache.itemCount == 0 {
+            return String.l10n("settings.storage.translation.empty")
+        }
+        return String(
+            format: String.l10n("settings.storage.translationUsageFormat"),
+            issueCommentDraftCache.itemCount,
+            issueCommentDraftCache.totalBytes.formattedByteSize
         )
     }
 

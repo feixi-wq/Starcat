@@ -86,7 +86,8 @@ final class RepoListAISummaryAvailability {
 /// 只观察导航计数的局部 modifier。
 ///
 /// 数量文案走系统 `navigationSubtitle`，和面包屑共用标题栏左缘，不能改成内容区内边距。
-/// 系统 subtitle 只能接 String；探索的 info 按钮用探针贴到这行文字右侧，星标 / 活动附件槽仍空。
+/// 系统 subtitle 只能接 String；探索的 info 按钮、星标真实 List 的可见性图标
+/// 都用探针贴到这行文字右侧。活动附件槽仍空。
 ///
 /// 关键约束：调用方传入 Manage 的静态数量文案，但不读取 `metrics`；Trending / Activity
 /// 回写数量时，SwiftUI 只会重算这个 modifier，不会重新求值 `RepoListView.body`。
@@ -100,11 +101,14 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     let selectedWeeklyLanguage: String?
     let selectedActivityCategory: ActivityCategory
     let manageSubtitle: String
+    /// 仅真实 GitHub List 有值；未分组和其它星标入口保持 nil。
+    let listVisibilityBadge: GitHubStarListVisibilityBadge?
     let metrics: RepoListNavigationMetrics
     let exploreCatalogStore: ExploreCatalogStore
     let trendingLanguageStore: TrendingLanguageStore
     let weeklyLanguageStore: WeeklyLanguageStore
     let weeklySelectionService: WeeklySelectionService
+    let awesomeStore: AwesomeStore
     let activityCategoryCountService: ActivityCategoryCountService
 
     @Environment(\.locale) private var locale
@@ -117,6 +121,14 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
                     TitlebarSubtitleAccessoryAttacher(subtitle: countText) {
                         ExploreModeInfoButton(mode: selectedExploreMode)
                             .id(selectedExploreMode)
+                    }
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+                } else if let listVisibilityBadge, !countText.isEmpty {
+                    TitlebarSubtitleAccessoryAttacher(subtitle: countText) {
+                        GitHubStarListVisibilityBadgeView(badge: listVisibilityBadge)
+                            .id(listVisibilityBadge)
                     }
                     .frame(width: 0, height: 0)
                     .accessibilityHidden(true)
@@ -170,6 +182,9 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
             discoveryTopic: selectedDiscoveryTopic,
             discoveryPlatform: selectedDiscoveryPlatform,
             weeklyLanguage: selectedWeeklyLanguage,
+            awesomeSourceName: awesomeStore.enabledSources.first {
+                $0.id == awesomeStore.selectedSourceID
+            }?.displayName,
             topics: exploreCatalogStore.displayTopics,
             platforms: exploreCatalogStore.displayPlatforms
         )
@@ -228,6 +243,11 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
                 aggregates.first { $0.key == selectedLanguage }?.count
             } ?? total ?? 0
             return (current, total)
+        case .awesome:
+            return (
+                metrics.trendingRepoCount,
+                awesomeStore.selectedSourceID == nil ? nil : awesomeStore.currentRepositoryCount
+            )
         }
     }
 }
@@ -454,11 +474,15 @@ struct RepoListView: View {
     /// HOM-52：Untagged 视图顶部 banner 的"启动整理 / 查看进度"回调。
     /// 这两个动作产生 sheet 由 HomeView 统一承载（避免 RepoListView 多持一个 @State）。
     var onStartBatchAI: (() -> Void)?
+    /// Manage 多选底栏的 AI 整理入口；参数是用户点击时的完整仓库值快照。
+    var onStartSelectedBatchAI: (([Repo]) -> Void)?
+    /// Manage 多选底栏的 AI 仓库分组入口；参数同样冻结为点击时的仓库值快照。
+    var onStartSelectedGitHubStarListAIGrouping: (([Repo]) -> Void)?
     var onShowBatchAIPanel: (() -> Void)?
+    /// 未分组中栏横幅的启动回调。Sheet 仍由 Sidebar / HomeView 共用一份状态承载。
+    var onStartGitHubStarListAIGrouping: (() -> Void)?
     /// 全局搜索中心由 HomeView 承载；列表 toolbar 只负责触发，不持有浮层状态。
     var onOpenSearchCenter: (() -> Void)?
-    /// 覆盖式 Agent Workspace 由 HomeView 承载；列表 toolbar 只暴露入口。
-    var onOpenAgentWorkspace: (() -> Void)?
     /// 覆盖式知识库 RAG 工作台由 HomeView 承载；列表 toolbar 只暴露入口。
     var onOpenKnowledgeRAGWorkspace: (() -> Void)?
     /// Browser Plugin 的 Open in Starcat 由 HomeView 负责切换根页面和选中详情。
@@ -488,7 +512,7 @@ struct RepoListView: View {
     @State private var paywallContext: ProPaywallContext?
     @State private var ruleEditorSheetItem: SmartCollectionRuleEditorItem?
     /// GitHub 组织可限制第三方 OAuth App 访问仓库节点；这类错误需要结构化解释原因。
-    @State private var showGitHubStarListOAuthRestrictionSheet = false
+    @State private var gitHubStarListOAuthRestrictedRepo: Repo?
     /// 列表顶栏「同步于」文案；会话内跟 `SyncManager.state`，冷启动读 DB `last_sync_at`。
     @State private var lastSyncedAt: Date?
     /// 列表计数由独立观察对象承载，避免计数发布让整个 RepoListView 根层重算。
@@ -546,8 +570,8 @@ struct RepoListView: View {
         .toast(message: $toastMessage, icon: "doc.on.clipboard")
         .toast(message: $repoPinToastMessage, icon: "pin.fill")
         .toast(message: $shareCompletionMessage, icon: "link.circle")
-        .sheet(isPresented: $showGitHubStarListOAuthRestrictionSheet) {
-            GitHubStarListOAuthRestrictionSheet()
+        .sheet(item: $gitHubStarListOAuthRestrictedRepo) { repo in
+            GitHubStarListOAuthRestrictionSheet(repo: repo)
                 .appLocaleEnvironment()
         }
         .sheet(item: $sharePresentation) { presentation in
@@ -705,21 +729,23 @@ struct RepoListView: View {
         .hidden()
     }
 
-    /// 常规搜索（列表 toolbar SmartSearchField）快捷键。默认 Command+F，仅 Manage 页生效。
+    /// 常规搜索（列表 toolbar SmartSearchField）。默认 Shift+Command+F，仅 Manage 页启用。
+    private var isListRegularSearchEnabled: Bool {
+        selectedPage == .manage
+            && settings.keyboardShortcutsEnabled
+            && settings.regularSearchShortcutEnabled
+    }
+
     private var smartSearchShortcutButton: some View {
-        Button {
-            viewModel.smartSearchMode = .keyword
-            smartSearchExpandToken += 1
-        } label: {
-            EmptyView()
-        }
-        .keyboardShortcut(
-            settings.keyboardShortcutsEnabled && settings.regularSearchShortcutEnabled
-                ? settings.regularSearchShortcut.swiftUIShortcut
-                : nil
-        )
-        .disabled(selectedPage != .manage)
-        .hidden()
+        Color.clear
+            .frame(width: 0, height: 0)
+            .starcatListSearchCommand(
+                identity: "list-search-\(selectedPage.rawValue)-\(isListRegularSearchEnabled)",
+                isEnabled: isListRegularSearchEnabled
+            ) {
+                viewModel.smartSearchMode = .keyword
+                smartSearchExpandToken += 1
+            }
     }
 
     /// 中栏前景层：navigation / inset / toolbar / 列表内容（叠在 `DetailHeroTintBackground` 上）。
@@ -727,7 +753,14 @@ struct RepoListView: View {
     private var listColumnChrome: some View {
         // 非 Manage 页面不能求值 `manageNavigationSubtitle`，否则会把 HomeViewModel 的
         // items / collection 计数重新带入 Explore 与 Activity 的观察图。
+        // 可见性徽标同样只在 Manage 读取 `githubStarLists`，避免探索页被 List 同步刷新拖着重绘。
         let manageSubtitle = selectedPage == .manage ? manageNavigationSubtitle : ""
+        let listVisibilityBadge = selectedPage == .manage
+            ? GitHubStarListVisibilityBadge.make(
+                selection: viewModel.selection,
+                lists: viewModel.githubStarLists
+            )
+            : nil
         contentBody
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(.clear)
@@ -741,11 +774,13 @@ struct RepoListView: View {
                 selectedWeeklyLanguage: selectedWeeklyLanguage,
                 selectedActivityCategory: selectedActivityCategory,
                 manageSubtitle: manageSubtitle,
+                listVisibilityBadge: listVisibilityBadge,
                 metrics: navigationMetrics,
                 exploreCatalogStore: dependencies.exploreCatalogStore,
                 trendingLanguageStore: dependencies.trendingLanguageStore,
                 weeklyLanguageStore: dependencies.weeklyLanguageStore,
                 weeklySelectionService: dependencies.weeklySelectionService,
+                awesomeStore: dependencies.awesomeStore,
                 activityCategoryCountService: dependencies.activityCategoryCountService
             ))
             .navigationTitle(navigationTitle)
@@ -773,17 +808,6 @@ struct RepoListView: View {
                         lastSyncedAt: lastSyncedAt,
                         onShowBatchAIPanel: onShowBatchAIPanel
                     )
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        onOpenAgentWorkspace?()
-                    } label: {
-                        // systemRed 在明暗主题下都够亮，暗色 toolbar 上也能一眼认出 Agent 入口。
-                        workspaceToolbarIcon("a.circle", tint: Color(nsColor: .systemRed))
-                            .accessibilityLabel(Text("toolbar.agentWorkspace.label"))
-                    }
-                    .help("toolbar.agentWorkspace.help")
-                    .gettingStartedAnchor(.agentWorkspace)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -904,18 +928,33 @@ struct RepoListView: View {
         case .manage:
             let store = dependencies.manageMultiSelectionStore
             if store.isActive {
-                BatchActionBar(context: .manage, store: store)
+                BatchActionBar(
+                    context: .manage,
+                    store: store,
+                    onStartSelectedBatchAI: onStartSelectedBatchAI,
+                    onStartSelectedGitHubStarListAIGrouping: onStartSelectedGitHubStarListAIGrouping
+                )
             }
         case .trending:
             let store = exploreMultiSelectionStore
             if store.isActive {
-                BatchActionBar(context: .explore, store: store)
+                BatchActionBar(
+                    context: .explore,
+                    store: store,
+                    onStartSelectedBatchAI: nil,
+                    onStartSelectedGitHubStarListAIGrouping: nil
+                )
             }
         case .activity:
             if selectedActivityCategory == .undoStar {
                 let store = dependencies.undoStarMultiSelectionStore
                 if store.isActive {
-                    BatchActionBar(context: .explore, store: store)
+                    BatchActionBar(
+                        context: .explore,
+                        store: store,
+                        onStartSelectedBatchAI: nil,
+                        onStartSelectedGitHubStarListAIGrouping: nil
+                    )
                 }
             } else {
                 EmptyView()
@@ -1670,7 +1709,14 @@ struct RepoListView: View {
                 } else if let error = viewModel.loadError, viewModel.items.isEmpty {
                     emptyState(systemImage: "exclamationmark.triangle", title: "error.loadFailed", subtitleText: error)
                 } else if viewModel.items.isEmpty {
-                    emptyState(systemImage: emptyImage, title: emptyTitle, subtitle: emptySubtitle)
+                    if selectedPage == .manage, viewModel.selection == .githubStarListUngrouped {
+                        // 未分组数量为 0 时仍要露出横幅（按钮灰掉），不能只在有列表时才插入。
+                        listWithOptionalBanner {
+                            emptyState(systemImage: emptyImage, title: emptyTitle, subtitle: emptySubtitle)
+                        }
+                    } else {
+                        emptyState(systemImage: emptyImage, title: emptyTitle, subtitle: emptySubtitle)
+                    }
                 } else {
                     listWithOptionalBanner { unifiedListContent($bindableVM.selectedRepoID) }
                 }
@@ -1826,7 +1872,7 @@ struct RepoListView: View {
         RelativeTimeText.pastEvent(date, locale: locale)
     }
 
-    /// HOM-52：仅在 Untagged 视图非空时，在列表顶部插入"批量 AI 整理"入口横幅。
+    /// 在 Untagged / 未分组视图顶部插入整理入口横幅。
     ///
     /// 之所以包成 ViewBuilder + closure 而不是把 banner 塞进每个 list view：
     /// unifiedListContent 是带泛型 selection 的 List，加 banner 会破坏 List 滚动语义；
@@ -1842,6 +1888,15 @@ struct RepoListView: View {
                     service: dependencies.batchAIQueueService,
                     onStart: { onStartBatchAI?() },
                     onShowPanel: { onShowBatchAIPanel?() }
+                )
+                content()
+            }
+        } else if selectedPage == .manage, viewModel.selection == .githubStarListUngrouped {
+            VStack(spacing: 0) {
+                GitHubStarListUngroupedBanner(
+                    ungroupedCount: viewModel.githubStarListUngroupedCount,
+                    isLoggedIn: authSession.state.user != nil,
+                    onStart: { onStartGitHubStarListAIGrouping?() }
                 )
                 content()
             }
@@ -2077,14 +2132,17 @@ struct RepoListView: View {
                     .contextMenu {
                         repoContextMenu(for: repo)
                     }
-                    // R-07：滚到倒数第 3 行 → 追加下一页（Weekly 同款范式）。
-                    // 用 `viewModel.items.count` 实时读，配合 hasMore 守卫天然幂等：
-                    // loadMoreIfNeeded 内部 guard hasMore 防止已加载完后继续追加。
-                    // 用 item.index 比 indexOf(repo) 快（O(1)）。
-                    .onAppear {
-                        if viewModel.hasMore && item.index >= viewModel.items.count - 3 {
-                            viewModel.loadMoreIfNeeded()
-                        }
+                    // 快速滚动时，尾部 row 可能在刷新或上一页 append 期间一次性出现。
+                    // 统一触发器会在 busy 结束后按最新 items.count 重新评估，不丢掉这次需求。
+                    .automaticListPagination(
+                        appearingIndex: item.index,
+                        visibleItemCount: viewModel.items.count,
+                        loadedItemCount: viewModel.items.count,
+                        hasMore: viewModel.hasMore,
+                        isLoading: viewModel.isAutomaticPaginationLoading,
+                        identity: "manage-\(viewModel.itemsRevision)"
+                    ) {
+                        viewModel.loadMoreIfNeeded()
                     }
                 }
             }
@@ -2243,14 +2301,10 @@ struct RepoListView: View {
 
     // MARK: - Repo 右键菜单
 
-    /// Manage repo 列表右键菜单：Pin + 分组移入 / 移出 / 移动。
+    /// Manage repo 列表右键菜单：Pin + 分组 membership Toggle。
     ///
-    /// **2026-07-05 优化（扁平化）**：
-    /// 之前用 `Menu` 嵌套做「添加到... / 移动到...」子菜单，macOS 上层级展开箭头需要精确
-    /// 鼠标横向移动，分组一多就容易滑错关闭。改为扁平 Button 列表：
-    /// - 颜色圆点匹配侧边栏，一眼识别分组
-    /// - 数量尾标辅助判断目标分组大小
-    /// - 当前分组不可点（"移动到"模式），避免无意义操作
+    /// GitHub Lists 是多对多：点某一组只 add/remove 这一条 membership，其它分组保持不变。
+    /// 用 `Toggle` 映射到 NSMenuItem.state，系统 checkmark 表示已加入；颜色圆点走 `image` 列。
     @ViewBuilder
     private func repoContextMenu(for repo: Repo) -> some View {
         if selectedPage == .manage {
@@ -2270,57 +2324,39 @@ struct RepoListView: View {
 
             Divider()
 
-            if case .githubStarList(let currentListID) = viewModel.selection {
-                // ──── 在某个分组内：移出 + 移到其他分组 ────
-                if let currentList = viewModel.githubStarLists.first(where: { $0.id == currentListID }) {
-                    Button {
-                        mutateGitHubStarListMembership {
-                            try await dependencies.githubStarListSyncService.removeRepo(repo, fromList: currentListID)
-                        }
-                    } label: {
-                        Text(String(
-                            format: String.l10n("githubStarLists.context.removeFromGroupFormat"),
-                            currentList.name
-                        ))
-                    }
-                }
-
-                let targets = viewModel.githubStarLists.filter { $0.id != currentListID }
-                if !targets.isEmpty {
-                    Divider()
-                    // section header：移到其他分组
-                    Text("githubStarLists.context.moveToOtherGroupSection")
-                    ForEach(targets) { list in
-                        Button {
-                            mutateGitHubStarListMembership {
-                                try await dependencies.githubStarListSyncService.moveRepo(
-                                    repo, from: currentListID, to: list.id
-                                )
-                            }
-                        } label: {
-                            gitHubStarListMenuItemLabel(list)
-                        }
-                    }
-                }
+            if viewModel.githubStarLists.isEmpty {
+                Text("githubStarLists.context.noGroups")
             } else {
-                // ──── 不在分组内（全部星标 / Tags / Languages）：添加到分组 ────
-                if viewModel.githubStarLists.isEmpty {
-                    Text("githubStarLists.context.noGroups")
-                } else {
-                    // section header：添加到分组
-                    Text("githubStarLists.context.addToGroupSection")
-                    ForEach(viewModel.githubStarLists) { list in
-                        Button {
-                            mutateGitHubStarListMembership {
-                                try await dependencies.githubStarListSyncService.addRepo(repo, toList: list.id)
-                            }
-                        } label: {
-                            gitHubStarListMenuItemLabel(list)
-                        }
+                Text("githubStarLists.context.addToGroupSection")
+                ForEach(viewModel.githubStarLists) { list in
+                    let isMember = viewModel.isRepo(repo.id, inGitHubStarList: list.id)
+                    Toggle(isOn: gitHubStarListMembershipBinding(repo: repo, listID: list.id, isMember: isMember)) {
+                        gitHubStarListMenuItemLabel(list)
                     }
                 }
             }
         }
+    }
+
+    /// Toggle 的 set 只启动远端 mutation；真正勾选态仍以 refresh 后的 membership 映射为准。
+    private func gitHubStarListMembershipBinding(
+        repo: Repo,
+        listID: String,
+        isMember: Bool
+    ) -> Binding<Bool> {
+        Binding(
+            get: { isMember },
+            set: { shouldBelong in
+                guard shouldBelong != isMember else { return }
+                mutateGitHubStarListMembership(for: repo) {
+                    if shouldBelong {
+                        try await dependencies.githubStarListSyncService.addRepo(repo, toList: listID)
+                    } else {
+                        try await dependencies.githubStarListSyncService.removeRepo(repo, fromList: listID)
+                    }
+                }
+            }
+        )
     }
 
     /// Pin 写库成功后再发布列表顺序，避免数据库失败时 UI 与持久化状态分叉。
@@ -2338,51 +2374,17 @@ struct RepoListView: View {
         }
     }
 
-    /// 分组菜单项标签：颜色圆点（匹配侧边栏）+ 名称 + 数量。
-    ///
-    /// 颜色圆点使用非 template NSImage，确保在 NSMenuItem 中保留原色而非被系统 tint 覆盖。
     private func gitHubStarListMenuItemLabel(_ list: GitHubStarList) -> some View {
-        let count = viewModel.githubStarListCounts[list.id] ?? 0
-        return Label(
-            title: { Text(verbatim: "\(list.name)  (\(count))") },
-            icon: {
-                if let dot = Self.colorDotImage(hex: list.colorHex) {
-                    Image(nsImage: dot)
-                }
-            }
+        GitHubStarListMenuLabel(
+            list: list,
+            repositoryCount: viewModel.githubStarListCounts[list.id] ?? 0
         )
     }
 
-    /// 生成分组颜色圆点 NSImage（非 template，保留原色）。
-    ///
-    /// 必须设置 `isTemplate = false`，否则 AppKit 会按系统主题 tint 覆盖颜色，
-    /// 导致所有圆点变成同色，失去分组辨识意义。
-    private static func colorDotImage(hex: String) -> NSImage? {
-        let nsColor = Self.nsColorFromHex(hex) ?? .controlAccentColor
-        let size: CGFloat = 10
-        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            nsColor.setFill()
-            NSBezierPath(ovalIn: rect).fill()
-            return true
-        }
-        image.isTemplate = false
-        return image
-    }
-
-    /// 从 `#RRGGBB` 字符串创建 NSColor。
-    private static func nsColorFromHex(_ hex: String) -> NSColor? {
-        var s = hex.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6, let rgb = UInt32(s, radix: 16) else { return nil }
-        return NSColor(
-            srgbRed: Double((rgb >> 16) & 0xFF) / 255.0,
-            green: Double((rgb >> 8) & 0xFF) / 255.0,
-            blue: Double(rgb & 0xFF) / 255.0,
-            alpha: 1.0
-        )
-    }
-
-    private func mutateGitHubStarListMembership(_ operation: @escaping () async throws -> Void) {
+    private func mutateGitHubStarListMembership(
+        for repo: Repo,
+        _ operation: @escaping () async throws -> Void
+    ) {
         Task {
             do {
                 try await operation()
@@ -2392,7 +2394,7 @@ struct RepoListView: View {
             } catch {
                 AppLog.network.error("GitHub star list mutation failed: \(error.localizedDescription, privacy: .public)")
                 if isGitHubOrganizationOAuthRestriction(error) {
-                    showGitHubStarListOAuthRestrictionSheet = true
+                    gitHubStarListOAuthRestrictedRepo = repo
                 } else {
                     toastMessage = "githubStarLists.toast.failed"
                 }
@@ -2509,6 +2511,9 @@ struct RepoListView: View {
             discoveryTopic: selectedDiscoveryTopic,
             discoveryPlatform: selectedDiscoveryPlatform,
             weeklyLanguage: selectedWeeklyLanguage,
+            awesomeSourceName: dependencies.awesomeStore.enabledSources.first {
+                $0.id == dependencies.awesomeStore.selectedSourceID
+            }?.displayName,
             topics: dependencies.exploreCatalogStore.displayTopics,
             platforms: dependencies.exploreCatalogStore.displayPlatforms
         )
@@ -3050,7 +3055,7 @@ private struct ManageRepoRowContent: View {
                 isInLibrary: viewModel.libraryState(for: repo.id) == .inLibrary,
                 openSSFScore: dependencies.openSSFScoreStore.badge(for: repo.id),
                 healthBadge: dependencies.repoHealthStore.badge(for: repo.id)
-            ),
+            ).overlayingSessionStars(dependencies.starredRegistry),
             isSelected: isSelected,
             isPinned: viewModel.isRepoPinned(repo.id),
             semanticHit: viewModel.semanticHit(for: repo.id),
@@ -3185,7 +3190,10 @@ private enum FilterMenuLanguageIconCache {
 /// GitHub 组织限制 OAuth App 访问时的结构化说明。
 ///
 /// 不使用系统 Alert：该错误不是一句失败文案能解释清楚，用户需要知道原因、影响范围和可执行处理方式。
+/// 底部提供仓库 GitHub 页跳转：组织策略拦的是 OAuth App，网页端登录后仍可改 Lists。
 private struct GitHubStarListOAuthRestrictionSheet: View {
+
+    let repo: Repo
 
     @Environment(\.dismiss) private var dismiss
 
@@ -3238,14 +3246,34 @@ private struct GitHubStarListOAuthRestrictionSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
                 Button("common.close") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                Button {
+                    openRepositoryOnGitHub()
+                } label: {
+                    Label("githubStarLists.error.orgOAuthRestricted.openGitHub", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(repositoryGitHubURL == nil)
             }
         }
+    }
+
+    /// 优先用仓库缓存的 `html_url`；缺省时按 owner/name 拼官方仓库页。
+    private var repositoryGitHubURL: URL? {
+        if let url = URL(string: repo.htmlUrl), url.scheme == "https" {
+            return url
+        }
+        return URL(string: "https://github.com/\(repo.owner)/\(repo.name)")
+    }
+
+    private func openRepositoryOnGitHub() {
+        guard let url = repositoryGitHubURL else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func restrictionRow(_ systemImage: String, _ key: LocalizedStringKey) -> some View {

@@ -15,12 +15,20 @@ import SwiftUI
 struct DiscoveryDetailView: View {
 
     let item: DiscoveryRepoDTO?
+    let supplementalHeader: AnyView?
+
+    init(item: DiscoveryRepoDTO?, supplementalHeader: AnyView? = nil) {
+        self.item = item
+        self.supplementalHeader = supplementalHeader
+    }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if let item {
-                DiscoveryScaffoldShell(item: item)
-                    .id(item.repoID)
+                DiscoveryScaffoldShell(item: item, supplementalHeader: supplementalHeader)
+                    // 同一仓库刷新后 repoID 不变，但 description 和 GitHub 时间可能补齐；
+                    // 完整快照作为 identity 可重建内部 @State，避免继续显示旧的空元数据。
+                    .id(item)
                     .detailContentTransition()
             } else {
                 RepoDetailNoSelectionPlaceholder(messageKey: "explore.detail.empty")
@@ -34,6 +42,7 @@ struct DiscoveryDetailView: View {
 private struct DiscoveryScaffoldShell: View {
 
     let item: DiscoveryRepoDTO
+    let supplementalHeader: AnyView?
 
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AuthSession.self) private var authSession
@@ -51,7 +60,9 @@ private struct DiscoveryScaffoldShell: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: item.repoID) {
+        // 同一仓库的 Awesome 缓存刷新只会改变 description / createdAt / updatedAt 等元数据，
+        // repoID 不变；任务必须跟随完整快照，否则 @State 会继续展示刷新前的空字段。
+        .task(id: item) {
             await resolveRepo()
             loadReadmeIfNeeded()
         }
@@ -71,8 +82,14 @@ private struct DiscoveryScaffoldShell: View {
                 try await handleStarTapped(repo: repo)
             },
             body: { onScrollReport in
-                DiscoveryReadmeContent(repo: repo, onScrollReport: onScrollReport)
-                    .environment(readmeVM)
+                VStack(spacing: 0) {
+                    if let supplementalHeader {
+                        supplementalHeader
+                        Divider()
+                    }
+                    DiscoveryReadmeContent(repo: repo, onScrollReport: onScrollReport)
+                        .environment(readmeVM)
+                }
             }
         )
     }
@@ -85,20 +102,12 @@ private struct DiscoveryScaffoldShell: View {
     }
 
     private func resolveRepo() async {
-        do {
-            if let local = try await dependencies.repoRepository.findByOwnerName(
-                owner: item.owner,
-                name: item.name
-            ) {
-                displayRepo = local
-                return
-            }
-        } catch {
-            AppLog.sync.error("discovery: local repo lookup failed: \(error.localizedDescription, privacy: .public)")
-        }
-
-        let isStarred = dependencies.starredRegistry.contains(ghRepoId: item.repoID)
-        displayRepo = item.toEphemeralRepo(isStarred: isStarred)
+        // Discovery 详情必须以服务端最新公共元数据为准。若先返回本地 starred 缓存，
+        // 老记录中缺失的 subscribers / created_at / updated_at 会永久遮蔽 API 真值。
+        // star/unstar 后的数字走 Registry 会话 overlay，不能只用接口快照。
+        displayRepo = dependencies.starredRegistry.applyingDisplayState(
+            to: item.toEphemeralRepo(isStarred: false)
+        )
     }
 
     private func handleStarTapped(repo: Repo) async throws {
@@ -108,9 +117,7 @@ private struct DiscoveryScaffoldShell: View {
         }
         try await dependencies.starActionService.toggle(repo: repo)
 
-        var updated = repo
-        updated.isStarred = dependencies.starredRegistry.contains(ghRepoId: repo.id)
-        displayRepo = updated
+        displayRepo = dependencies.starredRegistry.applyingDisplayState(to: repo)
 
         await homeViewModel.refreshAfterExternalStarChange()
         await resolveRepo()

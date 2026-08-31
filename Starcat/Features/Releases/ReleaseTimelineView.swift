@@ -34,6 +34,9 @@ struct ReleaseTimelineView: View {
 
     @State private var viewModel: ReleaseTimelineViewModel?
     @State private var copyToast: String?
+    /// 下载完成走系统 `.toast`（底部），与复制 toast 共用窗口底边，避免行内居中。
+    @State private var downloadToast: String?
+    @State private var downloadToastDirectory: URL?
     /// 折叠/展开前锚定当前 release 行，避免 ScrollView 因高度突变乱跳。
     @State private var scrollAnchorReleaseID: Int64?
 
@@ -58,6 +61,9 @@ struct ReleaseTimelineView: View {
         //     英文 "Mark all read" / "Check" 也不再 truncation；高度不变
         .frame(minWidth: 540, minHeight: 520)
         .frame(idealWidth: 620, idealHeight: 640)
+        // 窗口宽度由 sheet 决定，不能从会被大图撑开的 Markdown 自己量。
+        // 行左右各 16pt padding，灌进图片 Layout 时要扣掉。
+        .reportingMarkdownContainerWidth(horizontalInset: 16)
         .task {
             if viewModel == nil {
                 viewModel = ReleaseTimelineViewModel(
@@ -83,6 +89,10 @@ struct ReleaseTimelineView: View {
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
             }
         }
+        .releaseAssetDownloadToast(
+            message: $downloadToast,
+            directoryURL: $downloadToastDirectory
+        )
     }
 
     // MARK: - Header
@@ -169,7 +179,7 @@ struct ReleaseTimelineView: View {
                 // 用户只能看到「资产 N 个」标题，看不到文件名与下载按钮（dong4j 2026-06-17 反馈）。
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(vm.entries) { entry in
+                        ForEach(Array(vm.entries.enumerated()), id: \.element.id) { index, entry in
                             ReleaseTimelineRow(
                                 entry: entry,
                                 assetFilter: assetFilter,
@@ -179,11 +189,25 @@ struct ReleaseTimelineView: View {
                                 },
                                 onCopyAsset: { url in
                                     copyToPasteboard(url)
+                                },
+                                onDownloadFinished: { finish in
+                                    ReleaseAssetDownloadToastSupport.apply(
+                                        finish,
+                                        message: &downloadToast,
+                                        directoryURL: &downloadToastDirectory
+                                    )
                                 }
                             )
                             .id(entry.id)
-                            .onAppear {
-                                Task { await vm.loadMoreIfNeeded(currentEntry: entry) }
+                            .automaticListPagination(
+                                appearingIndex: index,
+                                visibleItemCount: vm.entries.count,
+                                loadedItemCount: vm.entries.count,
+                                hasMore: vm.hasMore,
+                                isLoading: vm.isLoading || vm.isLoadingMore,
+                                identity: "release-timeline"
+                            ) {
+                                await vm.loadMoreIfNeeded(currentEntry: entry)
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
@@ -294,7 +318,12 @@ final class ReleaseTimelineViewModel {
 
     func loadMoreIfNeeded(currentEntry entry: ReleaseTimelineEntry) async {
         guard hasMore, !isLoading, !isLoadingMore else { return }
-        guard entries.suffix(5).contains(where: { $0.id == entry.id }) else { return }
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }),
+              ListPaginationPolicy.shouldPrefetch(
+                  appearingIndex: index,
+                  itemCount: entries.count,
+                  hasMore: hasMore
+              ) else { return }
 
         isLoadingMore = true
         defer { isLoadingMore = false }
@@ -360,6 +389,7 @@ private struct ReleaseTimelineRow: View {
     let onPinScrollAnchor: () -> Void
     let onToggleRead: (Bool) -> Void
     let onCopyAsset: (String) -> Void
+    let onDownloadFinished: (ReleaseAssetDownloadToastSupport.Finish) -> Void
 
     /// Release notes 全文展开（点击摘要区切换）。
     @State private var isBodyExpanded = false
@@ -477,12 +507,14 @@ private struct ReleaseTimelineRow: View {
             )
             .help(isBodyExpanded ? Text("releases.row.collapseNotes") : Text("releases.row.expandNotes"))
             if isBodyExpanded {
-                Markdown(body)
+                // 列表项下一行的截图要先抬成块，再按窗口宽度等比缩小。
+                Markdown(GitHubMarkdownPreparing.prepare(body))
                     .font(interfaceScale.font(.caption))
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fittedGitHubMarkdownImages()
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }
 
     private func pinAndToggleBody() {
@@ -512,7 +544,12 @@ private struct ReleaseTimelineRow: View {
 
                 if assets.count <= 3 || isAssetsExpanded {
                     ForEach(assets) { asset in
-                        ReleaseAssetRowView(asset: asset, layout: .compact, onCopyLink: onCopyAsset)
+                        ReleaseAssetRowView(
+                            asset: asset,
+                            layout: .compact,
+                            onCopyLink: onCopyAsset,
+                            onDownloadFinished: onDownloadFinished
+                        )
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 2)
                             .background(.bar.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))

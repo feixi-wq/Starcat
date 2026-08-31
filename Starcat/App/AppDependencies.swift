@@ -13,6 +13,7 @@
 //  - 注：要"立刻试 Device Flow"时把 useMockOAuth 改为 false 即可
 //
 
+import AppIntents
 import Foundation
 
 @MainActor
@@ -52,10 +53,16 @@ final class AppDependencies {
     /// Week 3 引入：HomeView 在初始化时需要复用这个 repository 构建 ViewModel。
     /// D-01：注入类型从 struct 改为协议，便于测试替换为 Mock。
     let repoRepository: any RepoRepositoryProtocol
+    /// 公开 Star 数据贡献旁路；失败不得改变同步和 UI 状态。
+    let dataContributionCoordinator: DataContributionCoordinator
+    /// Settings 只读取开关真值，不暴露 Outbox 或网络状态。
+    let dataContributionSettings: DataContributionSettingsModel
     /// Agent run 历史记录仓储。Runtime 写入,Agent 工作台左侧历史读取。
     let agentRunRepository: any AgentRunRepositoryProtocol
     /// Week 3 引入：用户偏好（列表密度等）。
     let settings: AppSettings
+    /// 用户明确授权后，维护 starred repositories 与 macOS Spotlight 的本机索引。
+    let repositorySpotlightService: RepositorySpotlightService
     /// 匿名遥测协调器。业务层只依赖本对象，不直接接触 Aptabase / MetricKit。
     let telemetryManager: TelemetryManager
     /// StoreKit 2 订阅协调器。它是 Pro 权益的单一真相源。
@@ -193,6 +200,10 @@ final class AppDependencies {
     /// BatchAIQueuePanel / BatchAIUntaggedBanner，无需多余的 @State 传参。
     let batchAIQueueService: BatchAIQueueService
 
+    /// GitHub Lists AI 分组独立会话。关闭审核 Sheet 后仍保留进度与选择，不再占用
+    /// 标签/摘要批处理队列，也不会把分组状态显示成“AI 标签整理”。
+    let githubStarListAIGroupingSession: GitHubStarListAIGroupingSession
+
     /// HOM-126：自动后台 AI 整理调度器（会话级单例）。
     ///
     /// 依赖装配顺序：必须晚于 settings / repoRepository / batchAIQueueService / syncManager。
@@ -235,6 +246,14 @@ final class AppDependencies {
     /// 当前“趋势”仍使用 `trendingRepository`，不从 discovery 新趋势候选切换数据源。
     let discoveryRepository: any DiscoveryRepositoryProtocol
 
+    /// Awesome 精选目录、账户订阅、自定义来源和来源证据的本地优先仓储。
+    /// 与普通 Discovery bulk 分开，避免用户按需订阅的长清单进入全量探索缓存。
+    let awesomeRepository: any AwesomeRepositoryProtocol
+    /// 自定义来源只使用当前账户 GitHub token 在本机核验与解析，结果不上传 Discovery。
+    let awesomeCustomSourceService: AwesomeCustomSourceService
+    /// Awesome 三栏与来源管理 Sheet 的共享会话状态。
+    let awesomeStore: AwesomeStore
+
     /// 第三方后端服务健康检查 actor（2026-06-08）。
     /// 设置页"测试连接"按钮 → `await serviceHealthChecker.check(service:baseURL:)`。
     /// 独立 actor + 短超时（5s），不复用业务 API session。
@@ -242,6 +261,8 @@ final class AppDependencies {
     /// 状态栏五个自建 API 的 `/healthz` 可用性巡检。
     /// 与 `serviceHealthChecker` 分开：前者只判断后端进程是否在线，后者校验 URL + API Key。
     let serviceAvailabilityMonitor: ServiceAvailabilityMonitor
+    /// GitHub 官方 Statuspage 状态；只把 API Requests 降级纳入主 toolbar 故障聚合。
+    let githubStatusMonitor: GitHubStatusMonitor
 
     // MARK: - MUL-176 Weekly（阮一峰周刊）
 
@@ -297,7 +318,8 @@ final class AppDependencies {
     /// 探索发现与榜单查询客户端。
     /// 构造期不发网络请求；Explore 入口按用户筛选懒加载发现 / 热门 / 新发布数据。
     let discoveryAPI: DiscoveryAPI
-    /// 公共仓库星标历史客户端；与 Discovery 共用服务地址和 API Key，但保持独立 HTTP 契约。
+    /// 公共仓库星标历史客户端；业务路由已迁到独立 History 服务。
+    /// 本期仍复用 Discovery 设置中的聚合地址与公共 API Key，不扩大设置模型。
     let starHistoryAPI: StarHistoryAPI
 
     /// Wiki 探测结果磁盘 JSON 缓存（2026-06-15）。
@@ -845,7 +867,8 @@ final class AppDependencies {
             throw error
         }
         self.database = db
-        self.widgetRefreshCoordinator = WidgetRefreshCoordinator(database: db)
+        let widgetCoordinator = WidgetRefreshCoordinator(database: db)
+        self.widgetRefreshCoordinator = widgetCoordinator
         let repositoryInsightsContextScopeState = RepositoryInsightsContextScopeState(
             scope: RepositoryInsightsContextScope(userID: db.currentUserId)
         )
@@ -907,11 +930,23 @@ final class AppDependencies {
         // D-01：构造时用具体类型 GRDBRepoRepository，字段类型是协议 any RepoRepositoryProtocol
         let repo = GRDBRepoRepository(database: db)
         self.repoRepository = repo
+        let dataContributionCoordinator = DataContributionCoordinator(
+            repository: DataContributionRepository(database: db),
+            repoRepository: repo,
+            uploader: CollectionAPIClient()
+        )
+        self.dataContributionCoordinator = dataContributionCoordinator
+        self.dataContributionSettings = DataContributionSettingsModel(
+            coordinator: dataContributionCoordinator
+        )
         let userRepoActivity = GRDBUserRepoActivityRepository(database: db)
         self.userRepoActivityRepository = userRepoActivity
         self.agentRunRepository = GRDBAgentRunRepository(database: db)
         let settings = AppSettings.shared
         self.settings = settings
+        let repositorySpotlightService = RepositorySpotlightService(database: db, settings: settings)
+        self.repositorySpotlightService = repositorySpotlightService
+        repositorySpotlightService.registerAppIntentDependency()
         let telemetry = TelemetryManager(settings: settings)
         if !TestEnvironment.isRunning, let appKey = TelemetryConfiguration.aptabaseAppKey {
             telemetry.configure(
@@ -990,7 +1025,10 @@ final class AppDependencies {
                 session?.state.user?.id
             }
         )
-        self.mainWindowNavigationDispatcher = MainWindowNavigationDispatcher()
+        let mainWindowNavigationDispatcher = MainWindowNavigationDispatcher()
+        self.mainWindowNavigationDispatcher = mainWindowNavigationDispatcher
+        // OpenIntent 在主 App 被系统唤醒后，通过同一个 dispatcher 推进三栏导航状态。
+        AppDependencyManager.shared.add(dependency: mainWindowNavigationDispatcher)
         self.companionActionDispatcher = CompanionActionDispatcher()
 
         // Week 4 新增：README 子系统
@@ -1121,6 +1159,13 @@ final class AppDependencies {
         )
         self.batchAIQueueService = batchSvc
 
+        self.githubStarListAIGroupingSession = GitHubStarListAIGroupingSession(
+            repoRepository: repo,
+            listService: self.githubStarListSyncService,
+            insightService: aiInsight,
+            entitlementGate: self.entitlementGate
+        )
+
         // HOM-126：自动后台 AI 整理调度器。
         // 装配顺序：必须晚于 settings / repoRepository / batchService / syncManager。
         // 注：start() 由 HomeView 在 .task 里调，让"启动延迟"以 SwiftUI scene 进入为起点。
@@ -1128,6 +1173,7 @@ final class AppDependencies {
             settings: self.settings,
             repoRepository: repo,
             batchService: batchSvc,
+            githubStarListGroupingSession: self.githubStarListAIGroupingSession,
             syncManager: self.syncManager,
             entitlementGate: self.entitlementGate
         )
@@ -1295,8 +1341,8 @@ final class AppDependencies {
         )
         self.discoveryAPI = discoveryAPIInstance
         let starHistoryAPIInstance = StarHistoryAPI(
-            baseURL: AppEndpoints.Discovery.baseURL,
-            apiKey: StarcatAPIKeyResolver.resolve(for: .discovery)
+            baseURL: AppEndpoints.History.baseURL,
+            apiKey: StarcatAPIKeyResolver.resolve(for: .history)
         )
         self.starHistoryAPI = starHistoryAPIInstance
         let repoStarHistoryRepository = GRDBRepoStarHistoryRepository(
@@ -1310,6 +1356,17 @@ final class AppDependencies {
         let discoveryRepo = DiscoveryRepository(api: discoveryAPIInstance, database: db)
         self.discoveryRepository = discoveryRepo
         self.exploreCatalogStore = ExploreCatalogStore(repository: discoveryRepo)
+        let awesomeRepository = AwesomeRepository(api: discoveryAPIInstance, database: db)
+        self.awesomeRepository = awesomeRepository
+        let awesomeCustomSourceService = AwesomeCustomSourceService(
+            github: api,
+            repository: awesomeRepository
+        )
+        self.awesomeCustomSourceService = awesomeCustomSourceService
+        self.awesomeStore = AwesomeStore(
+            repository: awesomeRepository,
+            customSourceService: awesomeCustomSourceService
+        )
 
         // MUL-176：Weekly 多来源 API 客户端。端点走 `AppEndpoints.Weekly.baseURL`。
         // 用户在设置页改地址 → AppDependencies.setServiceURL 推送到本 actor 的
@@ -1363,11 +1420,13 @@ final class AppDependencies {
         )
         self.wikiAPI = wikiAPIInstance
 
-        // Recommend 首期只做详情页单查，不在启动期请求。服务 URL / API Key 与其它
-        // 自建后端同样通过设置页热更新。
+        // Recommend 只在详情页按需单查，不在启动期请求。Direct 使用新增的 v2
+        // ServingBundle 路由完成本次自研推荐链路；App Store 继续使用 v1 SimRepo，
+        // 因此本功能分支不会改变已发布渠道的线上行为。
         self.recommendAPI = RecommendAPI(
             baseURL: AppEndpoints.Recommend.baseURL,
-            apiKey: StarcatAPIKeyResolver.resolve(for: .recommend)
+            apiKey: StarcatAPIKeyResolver.resolve(for: .recommend),
+            contract: distributionChannel.isDirect ? .trainedV2 : .simRepoV1
         )
 
         // 2026-06-15 v4.y：Wiki 磁盘缓存 + SWR 编排。装配顺序：
@@ -1403,6 +1462,9 @@ final class AppDependencies {
         // 2026-06-21：状态栏 API 可用性巡检。构造期不阻塞网络；启动后由后台任务立刻检查一次，
         // 后续每 10 分钟刷新，失败会通过 @Observable 状态更新 toolbar。
         self.serviceAvailabilityMonitor = ServiceAvailabilityMonitor()
+        // GitHub 官方状态与自建服务主动探活语义不同，保持独立 monitor，避免状态源请求失败
+        // 被误判成 GitHub 服务故障。
+        self.githubStatusMonitor = GitHubStatusMonitor()
 
         // HOM-47：Release 订阅追踪。
         // 装配顺序：Repository → Monitor（依赖 API + Repository + RepoRepository）
@@ -1536,6 +1598,11 @@ final class AppDependencies {
         // 未挂在协议上以保持 Mock 简单（详见 ContributionService.swift 注释）。
         let contributionSvc = ContributionService(apiClient: api)
         self.contributionService = contributionSvc
+        widgetCoordinator.attachContributionService(contributionSvc)
+        contributionSvc.onPayloadDidChange = { [weak widgetCoordinator] in
+            // 贡献缓存更新后只重建匿名聚合快照；Widget Extension 不持有 GitHub Token。
+            widgetCoordinator?.scheduleReadyRefresh()
+        }
         // 2026-06-15 修复(切换账号草坪不刷新):把 service 挂到 AuthSession,让 signOut /
         // invalidateSession / restore 401 三处的"登出联动清理"都能 reset 草坪缓存,
         // 否则 B 登录后 sidebar `.task` 触发的 `load(login: B)` 会因 lastFetchedAt 还在
@@ -1623,13 +1690,23 @@ final class AppDependencies {
 
         // SyncManager 全量 / 增量同步成功完成 → bootstrapper.reload() 同步 registry 到 DB
         // 注：weak 不需要，bootstrapper 与 syncManager 都由 self 强持（生命周期一致）
-        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator] in
+        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, repositorySpotlightService] in
             await bootstrapper.reload()
             if let login = session.state.user?.login {
                 await starListSyncService.sync(login: login)
             }
             await ragIndexBuilder.refreshMetadataForKnowledgeRepos()
             await widgetRefreshCoordinator.publishReady()
+            repositorySpotlightService.scheduleRebuild()
+        }
+        self.syncManager.onFullSyncCompleted = { [dataContributionCoordinator] userID, capturedAt in
+            // 不 await：快照和上传是严格旁路，SyncManager 的完成态不等待 Collection 服务。
+            Task {
+                await dataContributionCoordinator.handleSuccessfulFullSync(
+                    accountID: userID,
+                    capturedAt: capturedAt
+                )
+            }
         }
 
         // AuthSession 登出 / 失效 → bootstrapper.clearOnSignOut() 清空 registry
@@ -1648,11 +1725,20 @@ final class AppDependencies {
         // 还能看到自己的数据，不会进入"无 DB 可用"的死状态。
         session.onUserSessionChanged = { [weak self] userId in
             guard let self else { return }
+            // 自定义索引跨账号共用同一名称；切库前先清空，避免旧账号 private repo
+            // 或笔记在新账号会话窗口中短暂残留。
+            await self.repositorySpotlightService.removeAll()
             // 先清空共享快照再切数据库，避免 Widget 在切换窗口继续展示旧账号内容。
             self.widgetRefreshCoordinator.publishEmpty(
                 state: userId == nil ? .signedOut : .preparing
             )
             self.ragComposerDraftStore.removeAll()
+            do { try DiskNotificationCommentDraftCache.shared.deleteEverything() }
+            catch {
+                AppLog.general.warning(
+                    "Sign-out: issue comment draft cleanup failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
             // 摘要 session 是进程内、按当前用户数据库构建的状态。先取消并清空，
             // 避免旧用户尚未完成的生成在切库后继续写入或显示给新用户。
             await self.repoAIInsightSessionStore.removeAll()
@@ -1660,6 +1746,7 @@ final class AppDependencies {
             await self.wikiKnowledgeBackfillCoordinator.suspendForUserDatabaseChange()
             await self.knowledgeRAGIndexBuilder.suspendForUserDatabaseChange()
             await self.knowledgeBaseMetadataSnapshotCache.removeAll()
+            await self.dataContributionCoordinator.suspendForAccountChange()
             var didSwitchDatabase = false
             do {
                 try await self.switchUserDatabase(to: userId)
@@ -1681,6 +1768,9 @@ final class AppDependencies {
             }
             self.knowledgeRAGIndexBuilder.resumeAfterUserDatabaseChange()
             self.wikiKnowledgeBackfillCoordinator.resumeAfterUserDatabaseChange()
+            // 即使 reopen 失败也绑定 database 的真实 currentUserId，不能假设目标账号已生效。
+            await self.dataContributionCoordinator.activate(accountID: self.database.currentUserId)
+            await self.dataContributionSettings.reload(accountID: self.database.currentUserId)
 
             // HOM-199 B1：DB 切到新用户后立即 reload StarredRegistry。
             //
@@ -1697,12 +1787,14 @@ final class AppDependencies {
             // 失败容忍：reload 内部已 try/catch + 日志，不会向外抛错破坏 closure 语义。
             await self.starredRegistryBootstrapper.reload()
             if didSwitchDatabase, userId != nil {
+                self.repositorySpotlightService.scheduleRebuild()
                 await self.widgetRefreshCoordinator.publishReady()
             }
         }
 
         // 启动期 reload：异步 Task，不阻塞 init。测试 host 跳过避免触发 DB 启动期成本。
         if !TestEnvironment.isRunning {
+            repositorySpotlightService.startObserving()
             self.widgetRefreshCoordinator.startObserving()
             Task { [bootstrapper] in
                 await bootstrapper.reload()
@@ -1722,7 +1814,12 @@ final class AppDependencies {
             }
             self.mcpService.refreshForCurrentSettings()
             self.serviceAvailabilityMonitor.startPeriodicChecks()
+            self.githubStatusMonitor.startPeriodicChecks()
             self.wikiKnowledgeBackfillCoordinator.start()
+            Task { [dataContributionCoordinator] in
+                await dataContributionCoordinator.start()
+                await dataContributionCoordinator.activate(accountID: db.currentUserId)
+            }
         }
     }
 
@@ -1813,7 +1910,10 @@ final class AppDependencies {
         do { try DiskWikiCache.shared.deleteEverything() }
         catch { AppLog.general.warning("Factory reset: Wiki cache cleanup failed: \(error.localizedDescription, privacy: .public)") }
 
-        do { try DiskRecommendationCache.shared.deleteEverything() }
+        do { try DiskNotificationCommentDraftCache.shared.deleteEverything() }
+        catch { AppLog.general.warning("Factory reset: issue comment draft cleanup failed: \(error.localizedDescription, privacy: .public)") }
+
+        do { try await DiskRecommendationCache.shared.deleteEverything() }
         catch { AppLog.general.warning("Factory reset: Recommendation cache cleanup failed: \(error.localizedDescription, privacy: .public)") }
 
         do { try DiskChatHistoryStore.shared.deleteEverything() }
@@ -1877,9 +1977,8 @@ final class AppDependencies {
         case .sharing:  await shareAPI.updateBaseURL(target)
         case .wiki:     await wikiAPI.updateBaseURL(target)
         case .recommend: await recommendAPI.updateBaseURL(target)
-        case .discovery:
-            await discoveryAPI.updateBaseURL(target)
-            await starHistoryAPI.updateBaseURL(target)
+        case .discovery: await discoveryAPI.updateBaseURL(target)
+        case .history: await starHistoryAPI.updateBaseURL(target)
         }
 
         // 3) trending sidebar 语言列表跟随 baseURL 重拉（指向新地址的实际数据）。
@@ -1929,9 +2028,8 @@ final class AppDependencies {
         case .sharing:  await shareAPI.updateAPIKey(resolved)
         case .wiki:     await wikiAPI.updateAPIKey(resolved)
         case .recommend: await recommendAPI.updateAPIKey(resolved)
-        case .discovery:
-            await discoveryAPI.updateAPIKey(resolved)
-            await starHistoryAPI.updateAPIKey(resolved)
+        case .discovery: await discoveryAPI.updateAPIKey(resolved)
+        case .history: await starHistoryAPI.updateAPIKey(resolved)
         }
 
         // 4) trending API Key 改了 → 立刻用新 key 重拉一次语言列表。

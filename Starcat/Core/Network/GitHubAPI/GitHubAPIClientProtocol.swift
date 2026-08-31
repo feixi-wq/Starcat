@@ -97,6 +97,18 @@ protocol GitHubAPIClientProtocol: Sendable {
         requestTimeout: TimeInterval?
     ) async throws -> BytesResponse
 
+    /// 拉取仓库内指定文件的 GitHub 渲染 HTML（Contents API）。
+    ///
+    /// 与 `/readme` 不同：这里按 path 取任意 Markdown，用来打开语言版 / CONTRIBUTING 等。
+    func repositoryFileHTML(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String,
+        ifNoneMatch: String?,
+        requestTimeout: TimeInterval?
+    ) async throws -> BytesResponse
+
     // MARK: - Subscription (Watch)
 
     func getSubscription(owner: String, repo: String) async throws -> GitHubSubscriptionDTO
@@ -139,8 +151,17 @@ protocol GitHubAPIClientProtocol: Sendable {
     /// `GET .../issues/{n}/comments`。失败由调用方忽略，正文仍可用。
     func listNotificationIssueComments(path: String) async throws -> [GitHubNotificationComment]
 
+    /// `GET .../issues/{n}/timeline`。事件流打开时用；未知 event 由解析层丢掉。
+    func listNotificationIssueTimeline(path: String) async throws -> [GitHubNotificationIssueTimelineItem]
+
     /// `POST .../issues/{n}/comments`。公开仓库用现有 `public_repo`；私有仓可能 404。
     func createNotificationIssueComment(path: String, body: String) async throws -> GitHubNotificationComment
+
+    /// `PATCH .../issues/comments/{id}`。公开仓 `public_repo`；私仓 / 非作者可能 403/404。
+    func updateNotificationIssueComment(path: String, body: String) async throws
+
+    /// `PATCH .../issues/{n}` 只改 `body`。开帖人才能成功。
+    func updateNotificationIssueBody(path: String, body: String) async throws
 
     /// `PATCH /notifications/threads/{id}` 标已读。成功含 205。
     func markNotificationThreadRead(id: String) async throws
@@ -150,6 +171,15 @@ protocol GitHubAPIClientProtocol: Sendable {
 
     /// `PATCH .../issues/{n}` 改 `state`。公开仓 `public_repo` 即可；私仓可能 404。
     func updateNotificationIssueState(path: String, state: String) async throws
+
+    /// 把图片传到 `uploads.github.com/user-attachments/assets`，返回可写进评论 Markdown 的 URL。
+    /// 未文档化；公开仓 `public_repo` 即可，私仓可能 404。
+    func uploadUserAttachment(
+        fileName: String,
+        contentType: String,
+        repositoryID: Int64,
+        data: Data
+    ) async throws -> URL
 
     // MARK: - Organization Issues（2026-08-21）
 
@@ -198,6 +228,37 @@ extension GitHubAPIClientProtocol {
             requestTimeout: nil
         )
     }
+
+    func repositoryFileHTML(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String,
+        ifNoneMatch: String?,
+        requestTimeout: TimeInterval?
+    ) async throws -> BytesResponse {
+        throw NetworkError.clientError(
+            statusCode: 501,
+            message: "Repository file HTML is not implemented by this client"
+        )
+    }
+
+    func repositoryFileHTML(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String,
+        ifNoneMatch: String?
+    ) async throws -> BytesResponse {
+        try await repositoryFileHTML(
+            owner: owner,
+            repo: repo,
+            path: path,
+            ref: ref,
+            ifNoneMatch: ifNoneMatch,
+            requestTimeout: nil
+        )
+    }
 }
 
 // MARK: - Conformance
@@ -234,8 +295,20 @@ extension GitHubAPIClientProtocol {
         throw NetworkError.clientError(statusCode: 501, message: "Notification comments are not implemented by this client")
     }
 
+    func listNotificationIssueTimeline(path: String) async throws -> [GitHubNotificationIssueTimelineItem] {
+        throw NetworkError.clientError(statusCode: 501, message: "Notification issue timeline is not implemented by this client")
+    }
+
     func createNotificationIssueComment(path: String, body: String) async throws -> GitHubNotificationComment {
         throw NetworkError.clientError(statusCode: 501, message: "Create notification comment is not implemented by this client")
+    }
+
+    func updateNotificationIssueComment(path: String, body: String) async throws {
+        throw NetworkError.clientError(statusCode: 501, message: "Update notification comment is not implemented by this client")
+    }
+
+    func updateNotificationIssueBody(path: String, body: String) async throws {
+        throw NetworkError.clientError(statusCode: 501, message: "Update notification issue body is not implemented by this client")
     }
 
     func markNotificationThreadRead(id: String) async throws {
@@ -248,6 +321,15 @@ extension GitHubAPIClientProtocol {
 
     func updateNotificationIssueState(path: String, state: String) async throws {
         throw NetworkError.clientError(statusCode: 501, message: "Update notification issue state is not implemented by this client")
+    }
+
+    func uploadUserAttachment(
+        fileName: String,
+        contentType: String,
+        repositoryID: Int64,
+        data: Data
+    ) async throws -> URL {
+        throw NetworkError.clientError(statusCode: 501, message: "User attachment upload is not implemented by this client")
     }
 
     func organizationIssues(

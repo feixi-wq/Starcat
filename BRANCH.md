@@ -6,7 +6,7 @@
 >
 > 操作规范：[`docs/5-规范/Git-分支与Worktree规范.md`](docs/5-规范/Git-分支与Worktree规范.md)
 >
-> 最后核对：2026-08-21
+> 最后核对：2026-08-31
 
 ## 登记说明
 
@@ -32,14 +32,24 @@
 
 | 分支 | 位置 | 用途 | 当前状态 | 下一步 |
 |---|---|---|---|---|
-| `dev` | 本地 + `origin/dev`；当前无独立 worktree | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；1.4.0 发版准备与 App Store 正式版 Xcode 打包门禁已进入 `main`。 | 后续功能继续在 `dev` 开发；新的发版阻断问题仍回到 `dev` 修复并重新执行门禁。 |
-| `main` | 本地 + `origin/main`；仓库根目录 worktree | 远端默认稳定主线和发布基线。 | `长期保留`；2026-08-21 已完成 1.4.0 发布：App Store Connect 构建有效，Direct 完成公证、官网、Sparkle、GitHub Release 和 Homebrew 发布。 | 保持稳定主线；后续功能与发版阻断修复仍先进入 `dev`。 |
-| `codex/external-agent-runtime-poc` | 本地；`../Starcat-external-agent-runtime-poc` worktree | 基于 `dev@f6d34d1c` 验证可切换 External Agent Runtime 底座，保留 `LoopAgentRuntime`，并接入 Codex App Server 与 DeepSeek Harness adapter。 | `已合并`；2026-08-21 已通过 merge commit 合入本地 `dev`，专项 worktree 暂留用于对照。 | 由 dong4j 在 `dev` 本地验证；验收完成并授权后再清理专项 worktree 与分支。 |
+| `dev` | 本地 + `origin/dev` | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；1.5.0 已发布，正式 Changelog 与双渠道打包门禁修正已于 2026-08-31 从 `main` 同步。 | 后续功能继续在 `dev` 开发；下一版本发版问题仍先在 `dev` 修复并重新执行门禁。 |
+| `main` | 本地 + `origin/main`；仓库根目录 worktree | 远端默认稳定主线和发布基线。 | `长期保留`；1.5.0 已于 2026-08-31 发布，同日完成正式 Changelog 收口及 App Store / Direct 修正版重打，既有 `v1.5.0` tag 未改写。 | 保持稳定主线；后续正式发布继续从已验收的 `dev` 进入。 |
+
+## 推荐数据链路跨仓分支
+
+2026-08-29 已按 dong4j 授权清理：Starcat `../Starcat-collection-pipeline` worktree 与各仓需求分支均已删除。独立仓库仍各自保留 `dev` / `main`，不由主仓库管理其 Git 历史。
 
 ## 近期已清理分支
 
 | 分支 | 处理结论 | 清理依据 |
 |---|---|---|
+| `codex/collection-pipeline` | 已删除 | 2026-08-29 dong4j 确认删除。已是 local `dev` 的 ancestor，独有提交为 0，diff 为空；`../Starcat-collection-pipeline` worktree 干净后 `git worktree remove`，再 `git branch -d`。从未存在远端分支。配套 `starcat-collection-api` 同名本地分支一并删除。 |
+| `codex/awesome-discovery` | 已删除 | 2026-08-29 dong4j 确认删除。Starcat / `starcat-discovery-api` / `starcat-site` 三仓本地分支均已是各自 `dev` 的 ancestor，独有提交为 0，diff 为空；无 worktree。从未存在远端分支。 |
+| `codex/collection-api-source` | 已删除 | 2026-08-29 从 `starcat-recsys-trainer` 删除本地分支；已合入该仓 `dev`，从未存在远端分支。 |
+| `codex/trained-recommendations` | 已删除 | 2026-08-29 从 `starcat-recommend-api` 删除本地分支；已合入该仓 `dev`，从未存在远端分支。 |
+| `feature/export-server-package` | 已删除 | 2026-08-29 从 discovery / recommend / sharing / trending / weekly / wiki 六个 API 删除本地分支，并 `git push origin --delete` 清掉远端同名分支。删除前均为各自 `dev` 的 ancestor，独有提交为 0，diff 为空。 |
+| `codex/agent-runtime-trace` | 已删除 | 2026-08-22 已通过 fast-forward 合入本地 `dev`；dong4j 授权清理时 worktree 干净，`git cherry` 为空，分支独有提交为 0，diff 为空。对应 `../Starcat-agent-runtime-trace` worktree 与本地分支已清理；从未存在远端分支。 |
+| `codex/external-agent-runtime-poc` | 已删除 | 2026-08-21 已通过 merge commit 合入本地 `dev`；dong4j 授权清理时 worktree 干净，`git cherry` 为空，分支独有提交为 0，diff 为空。对应 `../Starcat-external-agent-runtime-poc` worktree 与本地分支已清理；从未存在远端分支。 |
 | `codex/curated-publisher` | 已删除 | dong4j 确认已全部合并进 `dev`；`git merge-base --is-ancestor` 成立，独有提交为 0，diff 为空。对应 `../Starcat-curated-publisher` worktree 与本地分支已清理；从未存在远端分支。 |
 | `codex/agent-iteration` | 已删除 | dong4j 已确认 Agent 迭代内容合并到 `dev`；对应 `../Starcat-agent-iteration` worktree 与本地分支已清理。 |
 | `codex/macos-widget` | 已删除 | 已合并到 `dev`，对应 worktree 已清理。 |

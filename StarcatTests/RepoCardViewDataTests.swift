@@ -255,6 +255,92 @@ struct RepoCardViewDataTests {
         #expect(discoveryCard.isInLibrary)
     }
 
+    @Test("RepoDetailHero 从 Repo 透传订阅数与 GitHub 时间")
+    func repoDetailHeroKeepsSubscribersAndDates() {
+        let repo = Repo(
+            id: 2001,
+            owner: "alice",
+            name: "metadata",
+            fullName: "alice/metadata",
+            description: "Metadata fixture",
+            language: "Swift",
+            starsCount: 120,
+            forksCount: 12,
+            watchersCount: 18,
+            topics: nil,
+            license: "MIT",
+            homepage: nil,
+            htmlUrl: "https://github.com/alice/metadata",
+            cloneUrl: nil,
+            sshUrl: nil,
+            isPrivate: false,
+            isFork: false,
+            isArchived: false,
+            isStarred: false,
+            pushedAt: "2026-08-24T10:30:00Z",
+            createdAt: "2024-02-03T04:05:06Z",
+            updatedAt: "2026-08-23T12:34:56Z",
+            starredAt: nil,
+            cachedAt: nil,
+            subscribersCount: 9
+        )
+
+        let hero = RepoDetailHero(repo: repo)
+
+        #expect(hero.watchersCount == 18)
+        #expect(hero.subscribersCount == 9)
+        #expect(hero.createdAt == ISO8601DateFormatter().date(from: "2024-02-03T04:05:06Z"))
+        #expect(hero.updatedAt == ISO8601DateFormatter().date(from: "2026-08-23T12:34:56Z"))
+    }
+
+    @Test("详情页日期同时兼容 GitHub 原始格式与 Awesome 毫秒格式")
+    func repoDateStatAcceptsBothISO8601Formats() {
+        #expect(repoDateStatLabel(from: "2025-06-15T17:28:56Z") == "2025-06-15")
+        #expect(repoDateStatLabel(from: "2025-06-15T17:28:56.000Z") == "2025-06-15")
+        #expect(repoDateStatLabel(from: nil) == "-")
+        #expect(repoDateStatLabel(from: "invalid") == "-")
+    }
+
+    @Test("Awesome 同仓库元数据刷新会改变详情任务 identity")
+    func awesomeMetadataRefreshChangesDiscoveryDetailIdentity() {
+        let cached = AwesomeRepositoryItem(
+            id: 3001,
+            owner: "james-proxy",
+            name: "james",
+            fullName: "james-proxy/james",
+            description: nil,
+            ownerAvatarURL: nil,
+            language: nil,
+            stars: 1_438,
+            isArchived: false,
+            updatedAt: nil,
+            evidence: []
+        ).discoveryDTO
+        let refreshed = AwesomeRepositoryItem(
+            id: 3001,
+            owner: "james-proxy",
+            name: "james",
+            fullName: "james-proxy/james",
+            description: "Web Debugging Proxy Application",
+            ownerAvatarURL: nil,
+            language: nil,
+            stars: 1_438,
+            isArchived: false,
+            updatedAt: Date(timeIntervalSince1970: 1_723_462_774),
+            createdAt: Date(timeIntervalSince1970: 1_435_217_234),
+            evidence: []
+        ).discoveryDTO
+
+        // 详情页保留稳定 repoID，但视图和任务 identity 必须能观察完整元数据快照变化。
+        #expect(cached.repoID == refreshed.repoID)
+        #expect(cached != refreshed)
+
+        let repo = refreshed.toEphemeralRepo(isStarred: false)
+        #expect(repo.description == "Web Debugging Proxy Application")
+        #expect(repo.createdAt != nil)
+        #expect(repo.updatedAt != nil)
+    }
+
     // MARK: - Helpers
 
     private func sampleRepo(id: Int64, isStarred: Bool) -> Repo {

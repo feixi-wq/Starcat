@@ -62,12 +62,17 @@ struct AgentDefinition: Identifiable, Hashable, Sendable {
     let promptRules: [AgentPromptRule]
     /// 最终 Artifact 在 Inspector 中显示的标题；nil 时使用 Agent 标题。
     let artifactTitle: String?
-    /// Runtime 路由契约。默认锁定进程内 Loop，外部 POC Agent 必须显式声明可用后端。
+    /// Runtime 路由契约。默认锁定进程内 Loop，外部 Agent 必须显式声明可用后端。
     let runtimePolicy: AgentRuntimePolicy
     /// 仅覆盖进程内 Loop 的工具调用预算；外部 Runtime 使用各自的会话预算与协议限制。
     let loopMaxToolCalls: Int?
     /// 模型在当前 Agent 中可见的工具 allowlist；数组顺序不代表执行顺序。
     let toolIDs: [String]
+    /// 通过外部 Runtime 自带 MCP client 暴露的 Starcat 工具 allowlist。
+    ///
+    /// 它与 `toolIDs` 分开：前者由 Starcat Host 双向协议执行，后者由 Runtime
+    /// 连接每轮临时 MCP Server 执行，不能用同一名称空间假装两种协议等价。
+    let externalMCPToolIDs: [String]
     let artifactTypes: [AgentArtifactType]
 
     init(
@@ -84,6 +89,7 @@ struct AgentDefinition: Identifiable, Hashable, Sendable {
         runtimePolicy: AgentRuntimePolicy = .builtinOnly,
         loopMaxToolCalls: Int? = nil,
         toolIDs: [String] = [],
+        externalMCPToolIDs: [String] = [],
         artifactTypes: [AgentArtifactType] = []
     ) {
         self.id = id
@@ -99,7 +105,62 @@ struct AgentDefinition: Identifiable, Hashable, Sendable {
         self.runtimePolicy = runtimePolicy
         self.loopMaxToolCalls = loopMaxToolCalls
         self.toolIDs = toolIDs
+        self.externalMCPToolIDs = externalMCPToolIDs
         self.artifactTypes = artifactTypes
+    }
+}
+
+/// 左栏信息架构的稳定定义。分类只引用 Agent ID，定义本身仍由各 Runtime/业务模块提供，
+/// 避免 UI 通过 policy 或数组位置猜测分类并再次出现重复条目。
+struct AgentRailSectionDefinition: Identifiable, Equatable, Sendable {
+    let id: String
+    let titleKey: String
+    let agentIDs: [String]
+}
+
+enum AgentWorkspaceTaxonomy {
+    static let sections: [AgentRailSectionDefinition] = [
+        AgentRailSectionDefinition(
+            id: "general",
+            titleKey: "agent.workspace.section.general",
+            agentIDs: ["external-general-poc"]
+        ),
+        AgentRailSectionDefinition(
+            id: "discovery",
+            titleKey: "agent.workspace.section.discovery",
+            agentIDs: ["github-weekly-report", "repo-alternatives"]
+        ),
+        AgentRailSectionDefinition(
+            id: "analysis",
+            titleKey: "agent.workspace.section.analysis",
+            agentIDs: ["repo-insight", "external-research-poc"]
+        ),
+        AgentRailSectionDefinition(
+            id: "organize",
+            titleKey: "agent.workspace.section.organize",
+            agentIDs: ["untagged-tidy", "overlap-scan"]
+        ),
+        AgentRailSectionDefinition(
+            id: "monitor",
+            titleKey: "agent.workspace.section.monitor",
+            agentIDs: ["release-watcher"]
+        ),
+    ]
+
+    static func agents(
+        in section: AgentRailSectionDefinition,
+        from definitions: [AgentDefinition]
+    ) -> [AgentDefinition] {
+        let definitionsByID = Dictionary(uniqueKeysWithValues: definitions.map { ($0.id, $0) })
+        return section.agentIDs.compactMap { definitionsByID[$0] }
+    }
+}
+
+enum AgentHistoryPresentation {
+    static let collapsedLimit = 5
+
+    static func visibleRuns(_ runs: [AgentRunRecord], isExpanded: Bool) -> [AgentRunRecord] {
+        isExpanded ? runs : Array(runs.prefix(collapsedLimit))
     }
 }
 
@@ -216,6 +277,11 @@ struct AgentRunContext: Codable, Hashable, Sendable {
     var explicitRepos: [AIComposerRepoReference]?
     var explicitRepoMode: AIComposerExplicitRepoMode?
     var selectedModelID: String?
+    /// Runtime 字段保持 optional，确保新增前已经落库的 context JSON 可继续解码。
+    var runtimeBackend: AgentRuntimeBackend?
+    var runtimeProviderName: String?
+    var runtimeModelName: String?
+    var runtimeReasoningEffort: String?
     var githubLinks: [AIComposerGitHubLink]?
     var webSearchEnabled: Bool?
     /// 业务上下文中已经进入知识库的仓库 ID。nil 仅代表旧快照，需兼容旧运行记录。
@@ -230,6 +296,10 @@ struct AgentRunContext: Codable, Hashable, Sendable {
         explicitRepos: [AIComposerRepoReference]? = nil,
         explicitRepoMode: AIComposerExplicitRepoMode? = nil,
         selectedModelID: String? = nil,
+        runtimeBackend: AgentRuntimeBackend? = nil,
+        runtimeProviderName: String? = nil,
+        runtimeModelName: String? = nil,
+        runtimeReasoningEffort: String? = nil,
         githubLinks: [AIComposerGitHubLink]? = nil,
         webSearchEnabled: Bool? = nil,
         knowledgeEligibleRepoIDs: [Int64]? = nil
@@ -242,6 +312,10 @@ struct AgentRunContext: Codable, Hashable, Sendable {
         self.explicitRepos = explicitRepos
         self.explicitRepoMode = explicitRepoMode
         self.selectedModelID = selectedModelID
+        self.runtimeBackend = runtimeBackend
+        self.runtimeProviderName = runtimeProviderName
+        self.runtimeModelName = runtimeModelName
+        self.runtimeReasoningEffort = runtimeReasoningEffort
         self.githubLinks = githubLinks
         self.webSearchEnabled = webSearchEnabled
         self.knowledgeEligibleRepoIDs = knowledgeEligibleRepoIDs
@@ -278,6 +352,10 @@ struct AgentRunInput: Hashable, Sendable {
     var githubLinks: [AIComposerGitHubLink]
     var webSearchEnabled: Bool
     var source: String
+    var runtimeBackend: AgentRuntimeBackend? = nil
+    var runtimeProviderName: String? = nil
+    var runtimeModelName: String? = nil
+    var runtimeReasoningEffort: String? = nil
 }
 
 /// 用户显式附加到一次 run 的 UTF-8 文本快照。
@@ -412,6 +490,7 @@ struct AgentTraceSpan: Identifiable, Hashable, Sendable {
 /// 替换成模型 tool-calling runtime 或 AgentRunKit runtime 时，Workspace 不需要重写。
 enum AgentRunEvent: Sendable {
     case runStarted(title: String)
+    case traceUpdated(AgentTraceEvent)
     case approvalUpdated(AgentApprovalRequest)
     case messageAppended(AgentMessage)
     case usageUpdated(AgentUsage)

@@ -62,6 +62,7 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
     var readmeHTMLHandler: ((_ owner: String, _ repo: String, _ ifNoneMatch: String?, _ ifModifiedSince: String?) async throws -> BytesResponse)?
     /// 2026-06-12 向量索引改进：README 原始 Markdown 端点 handler。
     var readmeMarkdownHandler: ((_ owner: String, _ repo: String, _ ifNoneMatch: String?, _ ifModifiedSince: String?) async throws -> BytesResponse)?
+    var repositoryFileHTMLHandler: ((_ owner: String, _ repo: String, _ path: String, _ ref: String, _ ifNoneMatch: String?) async throws -> BytesResponse)?
     /// HOM-47：Releases API mock handler。
     var releasesHandler: ((_ owner: String, _ repo: String, _ perPage: Int) async throws -> APIResponse<[GitHubReleaseDTO]>)?
     /// 2026-06-08：单仓库元数据 API mock handler（Weekly 详情页本地缓存未命中时调）。
@@ -75,10 +76,14 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
     var listNotificationsHandler: ((_ all: Bool, _ since: String?, _ page: Int, _ perPage: Int, _ ifModifiedSince: String?) async throws -> GitHubNotificationsListResponse)?
     var hydrateNotificationSubjectHandler: ((_ path: String) async throws -> GitHubNotificationSubjectHydration)?
     var listNotificationIssueCommentsHandler: ((_ path: String) async throws -> [GitHubNotificationComment])?
+    var listNotificationIssueTimelineHandler: ((_ path: String) async throws -> [GitHubNotificationIssueTimelineItem])?
     var createNotificationIssueCommentHandler: ((_ path: String, _ body: String) async throws -> GitHubNotificationComment)?
+    var updateNotificationIssueCommentHandler: ((_ path: String, _ body: String) async throws -> Void)?
+    var updateNotificationIssueBodyHandler: ((_ path: String, _ body: String) async throws -> Void)?
     var markNotificationThreadReadHandler: ((_ id: String) async throws -> Void)?
     var markNotificationThreadDoneHandler: ((_ id: String) async throws -> Void)?
     var updateNotificationIssueStateHandler: ((_ path: String, _ state: String) async throws -> Void)?
+    var uploadUserAttachmentHandler: ((_ fileName: String, _ contentType: String, _ repositoryID: Int64, _ data: Data) async throws -> URL)?
 
     // MARK: - 调用记录（供断言用）
     //
@@ -102,6 +107,9 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
     private let _markNotificationThreadReadCalls = OSAllocatedUnfairLock<[String]>(initialState: [])
     private let _markNotificationThreadDoneCalls = OSAllocatedUnfairLock<[String]>(initialState: [])
     private let _createNotificationIssueCommentCalls = OSAllocatedUnfairLock<[(path: String, body: String)]>(initialState: [])
+    private let _updateNotificationIssueCommentCalls = OSAllocatedUnfairLock<[(path: String, body: String)]>(initialState: [])
+    private let _updateNotificationIssueBodyCalls = OSAllocatedUnfairLock<[(path: String, body: String)]>(initialState: [])
+    private let _listNotificationIssueTimelineCalls = OSAllocatedUnfairLock<[String]>(initialState: [])
 
     /// 快照 getter：测试断言用 `mock.readmeHTMLCalls.count` 继续生效。
     var readmeHTMLCalls: [(owner: String, repo: String, ifNoneMatch: String?, ifModifiedSince: String?)] {
@@ -136,6 +144,15 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
     }
     var createNotificationIssueCommentCalls: [(path: String, body: String)] {
         _createNotificationIssueCommentCalls.withLock { $0 }
+    }
+    var updateNotificationIssueCommentCalls: [(path: String, body: String)] {
+        _updateNotificationIssueCommentCalls.withLock { $0 }
+    }
+    var updateNotificationIssueBodyCalls: [(path: String, body: String)] {
+        _updateNotificationIssueBodyCalls.withLock { $0 }
+    }
+    var listNotificationIssueTimelineCalls: [String] {
+        _listNotificationIssueTimelineCalls.withLock { $0 }
     }
 
     // MARK: - Protocol conformance
@@ -196,6 +213,20 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
             fatalError("MockGitHubAPIClient.readmeMarkdownHandler 未设置")
         }
         return try await handler(owner, repo, ifNoneMatch, ifModifiedSince)
+    }
+
+    func repositoryFileHTML(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String,
+        ifNoneMatch: String?,
+        requestTimeout: TimeInterval?
+    ) async throws -> BytesResponse {
+        guard let handler = repositoryFileHTMLHandler else {
+            fatalError("MockGitHubAPIClient.repositoryFileHTMLHandler 未设置")
+        }
+        return try await handler(owner, repo, path, ref, ifNoneMatch)
     }
 
     // MARK: - Subscription (Watch)
@@ -285,12 +316,36 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
         return []
     }
 
+    func listNotificationIssueTimeline(path: String) async throws -> [GitHubNotificationIssueTimelineItem] {
+        _listNotificationIssueTimelineCalls.withLock { $0.append(path) }
+        if let handler = listNotificationIssueTimelineHandler {
+            return try await handler(path)
+        }
+        return []
+    }
+
     func createNotificationIssueComment(path: String, body: String) async throws -> GitHubNotificationComment {
         _createNotificationIssueCommentCalls.withLock { $0.append((path, body)) }
         guard let handler = createNotificationIssueCommentHandler else {
             fatalError("MockGitHubAPIClient.createNotificationIssueCommentHandler 未设置")
         }
         return try await handler(path, body)
+    }
+
+    func updateNotificationIssueComment(path: String, body: String) async throws {
+        _updateNotificationIssueCommentCalls.withLock { $0.append((path, body)) }
+        guard let handler = updateNotificationIssueCommentHandler else {
+            fatalError("MockGitHubAPIClient.updateNotificationIssueCommentHandler 未设置")
+        }
+        try await handler(path, body)
+    }
+
+    func updateNotificationIssueBody(path: String, body: String) async throws {
+        _updateNotificationIssueBodyCalls.withLock { $0.append((path, body)) }
+        guard let handler = updateNotificationIssueBodyHandler else {
+            fatalError("MockGitHubAPIClient.updateNotificationIssueBodyHandler 未设置")
+        }
+        try await handler(path, body)
     }
 
     func markNotificationThreadRead(id: String) async throws {
@@ -314,6 +369,18 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
             fatalError("MockGitHubAPIClient.updateNotificationIssueStateHandler 未设置")
         }
         try await handler(path, state)
+    }
+
+    func uploadUserAttachment(
+        fileName: String,
+        contentType: String,
+        repositoryID: Int64,
+        data: Data
+    ) async throws -> URL {
+        guard let handler = uploadUserAttachmentHandler else {
+            fatalError("MockGitHubAPIClient.uploadUserAttachmentHandler 未设置")
+        }
+        return try await handler(fileName, contentType, repositoryID, data)
     }
 }
 

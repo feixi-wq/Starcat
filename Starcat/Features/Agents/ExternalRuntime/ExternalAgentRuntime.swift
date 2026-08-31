@@ -4,31 +4,51 @@
 //
 //  把统一外部进程 Host 投影成现有 AgentRuntime 事件协议。
 //
-//  POC 不新增数据库字段，也不把外部 Session 当作 Starcat 历史事实源；每次 run 只在
-//  内存中生成消息和 Artifact。Codex 仅能调用 definition allowlist 内的 Starcat 只读工具。
+//  外部 Runtime 与内置 Loop 共用 AgentRunRepository：消息、Artifact 和经过清洗的
+//  Runtime Trace 都可恢复；原始 JSON-RPC 帧与隐藏思维链不落库。Codex 仅能调用
+//  definition allowlist 内的 Starcat 只读工具。
 //
 
 import Foundation
+
+typealias ExternalAgentMCPBridgeFactory = @MainActor @Sendable (
+    _ toolSet: ExternalAgentMCPToolSet
+) async throws -> ExternalAgentMCPLease
 
 struct ExternalAgentRuntime: AgentRuntime {
     let adapter: any ExternalAgentProtocolAdapter
     let host: ExternalAgentRuntimeHost
     let distributionGate: DistributionGate
     let selectedModelName: String?
+    let reasoningEffort: String?
+    let localeIdentifier: String
+    let preferredLanguage: String
     let toolRegistry: AgentToolRegistry?
+    let runRepository: (any AgentRunRepositoryProtocol)?
+    let mcpBridgeFactory: ExternalAgentMCPBridgeFactory?
 
     init(
         adapter: any ExternalAgentProtocolAdapter,
         host: ExternalAgentRuntimeHost = ExternalAgentRuntimeHost(),
         distributionGate: DistributionGate = DistributionGate(),
         selectedModelName: String? = nil,
-        toolRegistry: AgentToolRegistry? = nil
+        reasoningEffort: String? = nil,
+        localeIdentifier: String = Locale.current.identifier,
+        preferredLanguage: String = "English",
+        toolRegistry: AgentToolRegistry? = nil,
+        runRepository: (any AgentRunRepositoryProtocol)? = nil,
+        mcpBridgeFactory: ExternalAgentMCPBridgeFactory? = nil
     ) {
         self.adapter = adapter
         self.host = host
         self.distributionGate = distributionGate
         self.selectedModelName = selectedModelName
+        self.reasoningEffort = reasoningEffort
+        self.localeIdentifier = localeIdentifier
+        self.preferredLanguage = preferredLanguage
         self.toolRegistry = toolRegistry
+        self.runRepository = runRepository
+        self.mcpBridgeFactory = mcpBridgeFactory
     }
 
     func run(
@@ -41,6 +61,8 @@ struct ExternalAgentRuntime: AgentRuntime {
             let projector = ExternalAgentEventProjector(
                 runID: runID,
                 definition: definition,
+                backend: adapter.backend,
+                runRepository: runRepository,
                 continuation: continuation
             )
             let task = Task {
@@ -50,18 +72,24 @@ struct ExternalAgentRuntime: AgentRuntime {
                     try distributionGate.requireAvailable(.externalAgentRuntime)
                     try Self.validateRequiredContext(definition: definition, context: context)
                     let tools = try visibleTools(for: definition)
+                    await projector.configureCompletionTools(Set(
+                        tools.filter(\.definition.completesRun).map { $0.definition.name }
+                    ))
+                    let executor: ExternalAgentToolExecutor?
                     let toolCallHandler: ExternalAgentRuntimeHost.ToolCallHandler?
                     if tools.isEmpty {
+                        executor = nil
                         toolCallHandler = nil
                     } else {
-                        let executor = ExternalAgentToolExecutor(
+                        let configuredExecutor = ExternalAgentToolExecutor(
                             registry: try requiredToolRegistry(),
                             allowedToolNames: Set(tools.map { $0.definition.name }),
                             prompt: prompt,
                             context: context
                         )
+                        executor = configuredExecutor
                         toolCallHandler = { request in
-                            await executor.execute(request)
+                            await configuredExecutor.execute(request)
                         }
                     }
                     try FileManager.default.createDirectory(
@@ -70,27 +98,46 @@ struct ExternalAgentRuntime: AgentRuntime {
                     )
                     defer { try? FileManager.default.removeItem(at: workingDirectory) }
 
-                    await projector.start(userPrompt: prompt)
+                    let mcpLease = try await makeMCPLeaseIfNeeded(
+                        definition: definition,
+                        tools: tools.map(\.definition),
+                        executor: executor,
+                        projector: projector
+                    )
+
+                    await projector.start(userPrompt: prompt, context: context)
                     let externalPrompt = ExternalAgentPromptBuilder.build(
                         definition: definition,
                         prompt: prompt,
-                        context: context
+                        context: context,
+                        localeIdentifier: localeIdentifier,
+                        preferredLanguage: preferredLanguage
                     )
                     let request = ExternalAgentRunRequest(
                         runID: runID,
                         prompt: externalPrompt,
                         modelName: selectedModelName,
+                        reasoningEffort: reasoningEffort,
                         workingDirectory: workingDirectory,
-                        tools: tools.map(\.definition)
+                        tools: tools.map(\.definition),
+                        mcpConnection: mcpLease?.connection
                     )
-                    let driver = try adapter.makeDriver(request: request)
-                    try await host.execute(
-                        runID: runID,
-                        driver: driver,
-                        toolCallHandler: toolCallHandler
-                    ) { event in
-                        await projector.consume(event)
+                    do {
+                        try await host.execute(
+                            runID: runID,
+                            driverFactory: { try adapter.makeDriver(request: request) },
+                            // Bridge 已在 Host 外完成 readiness 探测；只重试 Cordis MCP
+                            // plugin tree 的瞬时冷启动失败，不重试模型 turn 或工具副作用。
+                            mcpStartupRetryLimit: mcpLease == nil ? 0 : 2,
+                            toolCallHandler: toolCallHandler
+                        ) { event in
+                            await projector.consume(event)
+                        }
+                    } catch {
+                        if let mcpLease { await mcpLease.shutdown() }
+                        throw error
                     }
+                    if let mcpLease { await mcpLease.shutdown() }
                     await projector.finishIfNeeded()
                 } catch is CancellationError {
                     await host.cancel(runID: runID)
@@ -110,11 +157,36 @@ struct ExternalAgentRuntime: AgentRuntime {
         }
     }
 
+    /// 外部 Harness 不持久化可恢复的 Provider session。失败重试必须创建全新 Run，
+    /// 但仍复用已持久化的原始 Prompt 与冻结 Context；这样既不会伪装为 session resume，
+    /// 也不会重新读取已经变化的 Workspace 状态。External Runtime 只允许只读工具，
+    /// 仍显式拒绝含审批事实的历史 Run，避免未来扩展写工具后重复执行副作用。
+    func retryFailedRun(
+        snapshot: AgentRunSnapshotRecord,
+        definition: AgentDefinition
+    ) -> AsyncStream<AgentRunEvent> {
+        guard snapshot.run.agentId == definition.id,
+              snapshot.approvals.isEmpty
+        else {
+            return failedStream(String.l10n("agent.loop.error.retryUnavailable"))
+        }
+        do {
+            _ = try AgentRunRetryPolicy.validatedRunID(for: snapshot)
+        } catch {
+            return failedStream(error.localizedDescription)
+        }
+        return run(
+            definition: definition,
+            prompt: snapshot.run.userPrompt,
+            context: snapshot.context
+        )
+    }
+
     func send(_ command: AgentRunCommand) async {
         if case .cancel(let runID) = command {
             await host.cancel(runID: runID)
         }
-        // 外部 POC 首期只读，没有 Starcat approval decision 可转发。
+        // 外部 Runtime 当前保持只读，没有 Starcat approval decision 可转发。
     }
 
     private func visibleTools(for definition: AgentDefinition) throws -> [any AgentTool] {
@@ -137,6 +209,42 @@ struct ExternalAgentRuntime: AgentRuntime {
         return toolRegistry
     }
 
+    private func makeMCPLeaseIfNeeded(
+        definition: AgentDefinition,
+        tools: [AgentToolDefinition],
+        executor: ExternalAgentToolExecutor?,
+        projector: ExternalAgentEventProjector
+    ) async throws -> ExternalAgentMCPLease? {
+        guard adapter.backend == .deepSeekHarness else { return nil }
+        let toolSet: ExternalAgentMCPToolSet
+        if !tools.isEmpty {
+            guard let executor else {
+                throw ExternalAgentRuntimeError.protocolError(
+                    "Starcat Agent tool executor is unavailable for this DeepSeek Agent."
+                )
+            }
+            toolSet = .agent(tools: tools) { request in
+                let result = await executor.execute(request)
+                await projector.recordHostedToolExecution(
+                    name: request.name,
+                    callID: request.callID,
+                    result: result
+                )
+                return result
+            }
+        } else if !definition.externalMCPToolIDs.isEmpty {
+            toolSet = .starcatReadOnly(Set(definition.externalMCPToolIDs))
+        } else {
+            return nil
+        }
+        guard let mcpBridgeFactory else {
+            throw ExternalAgentRuntimeError.protocolError(
+                "Starcat MCP bridge is unavailable for this DeepSeek Agent."
+            )
+        }
+        return try await mcpBridgeFactory(toolSet)
+    }
+
     private static func validateRequiredContext(
         definition: AgentDefinition,
         context: AgentRunContext
@@ -146,6 +254,13 @@ struct ExternalAgentRuntime: AgentRuntime {
         }
         if !definition.workflow.allowsEmptyRepositoryContext, context.repos.isEmpty {
             throw LoopAgentRuntimeError.repositoryContextEmpty
+        }
+    }
+
+    private func failedStream(_ message: String) -> AsyncStream<AgentRunEvent> {
+        AsyncStream { continuation in
+            continuation.yield(.runFailed(message))
+            continuation.finish()
         }
     }
 }
@@ -339,47 +454,109 @@ private actor ExternalAgentToolExecutor {
 private actor ExternalAgentEventProjector {
     private let runID: UUID
     private let definition: AgentDefinition
+    private let backend: AgentRuntimeBackend
+    private let runRepository: (any AgentRunRepositoryProtocol)?
     private let continuation: AsyncStream<AgentRunEvent>.Continuation
     private var sequence = 0
+    private var traceSequence = 0
+    private var traceSequences: [String: Int] = [:]
+    private var traceStartedAt: [String: Date] = [:]
+    private var traceSummaries: [String: String] = [:]
+    private var traceDetails: [String: [AgentTraceDetail]] = [:]
+    private var traceUsages: [String: AgentUsage] = [:]
     private var assistantText = ""
     private var finalAssistantText: String?
-    private var reasoningText = ""
+    private var runtimeModelName: String?
     private var latestUsage: AgentUsage?
     private var artifactCount = 0
+    private var requiredCompletionToolNames: Set<String> = []
+    private var completionToolSucceeded = false
+    private var completionToolFailure: String?
     private var isTerminal = false
+    private var hasTerminalErrorTrace = false
 
     init(
         runID: UUID,
         definition: AgentDefinition,
+        backend: AgentRuntimeBackend,
+        runRepository: (any AgentRunRepositoryProtocol)?,
         continuation: AsyncStream<AgentRunEvent>.Continuation
     ) {
         self.runID = runID
         self.definition = definition
+        self.backend = backend
+        self.runRepository = runRepository
         self.continuation = continuation
     }
 
-    func start(userPrompt: String) {
-        continuation.yield(.runStarted(title: definition.title))
-        appendMessage(role: .user, parts: [.text(userPrompt)])
+    /// `completesRun` 是 Starcat 的产品契约，不是 Provider 的普通 tool-call 提示。
+    /// Projector 必须知道哪些工具承担终态提交，才能阻止外部 Runtime 在提交失败后
+    /// 用一段普通 assistant Markdown 把失败运行伪装成“已完成”。
+    func configureCompletionTools(_ names: Set<String>) {
+        requiredCompletionToolNames = names
     }
 
-    func consume(_ event: ExternalAgentProtocolEvent) {
+    func start(userPrompt: String, context: AgentRunContext) async {
+        // External Runtime 的模型由各自工作台选择器提供；持久化时必须冻结这份运行上下文，
+        // 不能回退到 Starcat 内置 Loop 的模型，也不能在终态把已经记录的模型清空。
+        runtimeModelName = context.runtimeModelName
+        if let runRepository {
+            do {
+                _ = try await runRepository.createRun(
+                    id: runID,
+                    definition: definition,
+                    prompt: userPrompt,
+                    context: context,
+                    createdAt: Date()
+                )
+                try await runRepository.updateRunStatus(
+                    runID: runID,
+                    status: .running,
+                    model: runtimeModelName,
+                    usage: nil,
+                    errorMessage: nil,
+                    finishedAt: nil
+                )
+            } catch {
+                AppLog.ai.error("[ExternalAgentRuntime] persist start failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        continuation.yield(.runStarted(title: definition.title))
+        _ = await appendMessage(role: .user, parts: [.text(userPrompt)])
+    }
+
+    func consume(_ event: ExternalAgentProtocolEvent) async {
         guard !isTerminal else { return }
         switch event {
+        case .trace(let providerEvent):
+            await projectTrace(providerEvent)
         case .assistantDelta(let delta):
             assistantText += delta
             continuation.yield(.assistantDelta(delta))
         case .reasoningDelta(let delta):
-            reasoningText += delta
+            // raw reasoning 只服务当前 Run 的瞬时反馈；历史恢复依赖 Adapter 明确投影的
+            // reasoning summary trace，不能把隐藏思维链混入 assistant message 落库。
             continuation.yield(.assistantReasoningDelta(delta))
         case .assistantMessage(let text, let usage):
             if !text.isEmpty { finalAssistantText = text }
             if let usage {
-                latestUsage = usage
-                continuation.yield(.usageUpdated(usage))
+                replaceUsage(usage)
             }
         case .toolCall(let id, let name, let input, let rawInput):
-            appendMessage(
+            await projectTrace(ExternalAgentTraceEvent(
+                id: "tool:\(id)",
+                kind: .tool,
+                status: .running,
+                title: name,
+                summary: String.l10n("agent.workspace.trace.tool.running"),
+                details: [AgentTraceDetail(
+                    label: String.l10n("agent.workspace.trace.input"),
+                    value: rawInput ?? (try? input.jsonString()) ?? "{}",
+                    format: .json
+                )],
+                startedAt: Date()
+            ))
+            _ = await appendMessage(
                 role: .assistant,
                 parts: [.toolCall(AgentToolCall(
                     id: id,
@@ -390,7 +567,37 @@ private actor ExternalAgentEventProjector {
                 ))]
             )
         case .toolResult(let id, let name, let output, let isError):
-            appendMessage(
+            let resultSummary = Self.nonBlank(output.objectValue?["summary"]?.stringValue)
+            if requiredCompletionToolNames.contains(name) {
+                if isError {
+                    if !completionToolSucceeded {
+                        completionToolFailure = resultSummary
+                    }
+                } else {
+                    completionToolSucceeded = true
+                    completionToolFailure = nil
+                }
+            }
+            await projectTrace(ExternalAgentTraceEvent(
+                id: "tool:\(id)",
+                kind: .tool,
+                status: isError ? .failed : .completed,
+                title: name,
+                summary: resultSummary ?? String.l10n(
+                    isError
+                        ? "agent.workspace.trace.tool.failed"
+                        : "agent.workspace.trace.tool.completed"
+                ),
+                details: [AgentTraceDetail(
+                    label: isError
+                        ? String.l10n("error.loadFailed")
+                        : String.l10n("agent.workspace.trace.output"),
+                    value: (try? output.jsonString()) ?? "{}",
+                    format: isError ? .error : .json
+                )],
+                completedAt: Date()
+            ))
+            _ = await appendMessage(
                 role: .tool,
                 parts: [.toolResult(AgentToolResultMessage(
                     toolCallID: id,
@@ -411,56 +618,107 @@ private actor ExternalAgentEventProjector {
             )
             sequence += 1
             artifactCount += 1
+            if let runRepository {
+                try? await runRepository.appendArtifact(artifact, runID: runID)
+            }
             continuation.yield(.artifactCreated(artifact))
         case .usage(let usage):
-            latestUsage = usage
-            continuation.yield(.usageUpdated(usage))
+            replaceUsage(usage)
+        case .firstOutputLatency(let milliseconds):
+            var metrics = latestUsage ?? .zero
+            metrics.firstOutputLatencyMilliseconds = metrics.firstOutputLatencyMilliseconds
+                ?? milliseconds
+            latestUsage = metrics
+            continuation.yield(.usageUpdated(metrics))
         case .completed:
-            complete()
+            await complete()
         case .cancelled:
             isTerminal = true
+            await persistTerminal(status: .cancelled, errorMessage: nil)
             continuation.yield(.runCancelled)
         case .failed(let message):
+            if !hasTerminalErrorTrace {
+                await projectFailureTrace(message)
+            }
             isTerminal = true
+            await persistTerminal(status: .failed, errorMessage: message)
             continuation.yield(.runFailed(message))
         }
     }
 
-    func finishIfNeeded() {
-        if !isTerminal { complete() }
+    func finishIfNeeded() async {
+        if !isTerminal { await complete() }
     }
 
-    func cancelIfNeeded() {
+    func cancelIfNeeded() async {
         guard !isTerminal else { return }
         isTerminal = true
+        await persistTerminal(status: .cancelled, errorMessage: nil)
         continuation.yield(.runCancelled)
     }
 
-    func failIfNeeded(_ message: String) {
+    func failIfNeeded(_ message: String) async {
         guard !isTerminal else { return }
+        await projectFailureTrace(message)
         isTerminal = true
+        await persistTerminal(status: .failed, errorMessage: message)
         continuation.yield(.runFailed(message))
     }
 
-    private func complete() {
+    /// DeepSeek 的业务工具由 MCP Server 执行，Harness 事件只能看到协议包装后的结果。
+    /// 在宿主执行点记录完成工具与 artifact，既避免依赖 `mcp__server__tool` 的展示名，
+    /// 也保证最终报告仍走与 Codex dynamic tools 相同的完整性检查。
+    func recordHostedToolExecution(
+        name: String,
+        callID: String,
+        result: ExternalAgentToolExecutionResult
+    ) async {
+        if requiredCompletionToolNames.contains(name) {
+            if result.isError {
+                if !completionToolSucceeded {
+                    completionToolFailure = Self.nonBlank(result.output.objectValue?["summary"]?.stringValue)
+                }
+            } else {
+                completionToolSucceeded = true
+                completionToolFailure = nil
+            }
+        }
+        if let markdown = result.artifactMarkdown, !result.isError {
+            await consume(.artifactMarkdown(markdown, toolCallID: callID))
+        }
+    }
+
+    private func complete() async {
         guard !isTerminal else { return }
+        if !requiredCompletionToolNames.isEmpty,
+           (!completionToolSucceeded || artifactCount == 0) {
+            let message = completionToolFailure
+                ?? LoopAgentRuntimeError.requiredArtifactMissing.localizedDescription
+            await projectFailureTrace(message)
+            isTerminal = true
+            await persistTerminal(status: .failed, errorMessage: message)
+            continuation.yield(.runFailed(message))
+            return
+        }
         let text = finalAssistantText ?? assistantText
         if !text.isEmpty {
-            var parts: [AgentMessagePart] = []
-            if !reasoningText.isEmpty { parts.append(.reasoning(reasoningText)) }
-            parts.append(.text(text))
-            let messageID = appendMessage(role: .assistant, parts: parts, usage: latestUsage)
+            let messageID = await appendMessage(role: .assistant, parts: [.text(text)], usage: latestUsage)
             if definition.artifactTypes.contains(.markdown), artifactCount == 0 {
-                continuation.yield(.artifactCreated(AgentArtifact(
+                let artifact = AgentArtifact(
                     type: .markdown,
                     title: definition.artifactTitle ?? definition.title,
                     content: text,
                     messageID: messageID,
                     sequence: sequence
-                )))
+                )
+                if let runRepository {
+                    try? await runRepository.appendArtifact(artifact, runID: runID)
+                }
+                continuation.yield(.artifactCreated(artifact))
             }
         }
         isTerminal = true
+        await persistTerminal(status: .completed, errorMessage: nil)
         continuation.yield(.runCompleted)
     }
 
@@ -469,7 +727,7 @@ private actor ExternalAgentEventProjector {
         role: AgentMessageRole,
         parts: [AgentMessagePart],
         usage: AgentUsage? = nil
-    ) -> UUID {
+    ) async -> UUID {
         let message = AgentMessage(
             runID: runID,
             role: role,
@@ -479,22 +737,155 @@ private actor ExternalAgentEventProjector {
             usage: usage
         )
         sequence += 1
+        if let runRepository {
+            do {
+                try await runRepository.appendMessage(message, runStatus: .running)
+            } catch {
+                AppLog.ai.error("[ExternalAgentRuntime] persist message failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         continuation.yield(.messageAppended(message))
         return message.id
     }
+
+    private func projectTrace(_ providerEvent: ExternalAgentTraceEvent) async {
+        let stableID = "\(runID.uuidString):\(providerEvent.id)"
+        let assignedSequence: Int
+        if let existing = traceSequences[providerEvent.id] {
+            assignedSequence = existing
+        } else {
+            assignedSequence = traceSequence
+            traceSequence += 1
+            traceSequences[providerEvent.id] = assignedSequence
+        }
+        let startedAt = traceStartedAt[providerEvent.id] ?? providerEvent.startedAt ?? Date()
+        traceStartedAt[providerEvent.id] = startedAt
+        let summary = Self.nonBlank(providerEvent.summary) ?? traceSummaries[providerEvent.id]
+        if let summary { traceSummaries[providerEvent.id] = summary }
+        let details = Self.mergingTraceDetails(
+            traceDetails[providerEvent.id] ?? [],
+            with: providerEvent.details
+        )
+        traceDetails[providerEvent.id] = details
+        let usage = providerEvent.usage ?? traceUsages[providerEvent.id]
+        if let usage { traceUsages[providerEvent.id] = usage }
+        let event = AgentTraceEvent(
+            id: stableID,
+            runID: runID,
+            backend: backend,
+            providerEventID: providerEvent.id,
+            parentID: providerEvent.parentID.map { "\(runID.uuidString):\($0)" },
+            sequence: assignedSequence,
+            kind: providerEvent.kind,
+            status: providerEvent.status,
+            title: providerEvent.title,
+            summary: summary,
+            details: details,
+            attempt: providerEvent.attempt,
+            durationMilliseconds: providerEvent.durationMilliseconds,
+            usage: usage,
+            startedAt: startedAt,
+            completedAt: providerEvent.completedAt
+        )
+        if event.kind == .error, event.status == .failed {
+            hasTerminalErrorTrace = true
+        }
+        if let runRepository {
+            do {
+                try await runRepository.saveTraceEvent(event)
+            } catch {
+                AppLog.ai.error("[ExternalAgentRuntime] persist trace failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        continuation.yield(.traceUpdated(event))
+    }
+
+    private func replaceUsage(_ providerUsage: AgentUsage) {
+        var next = providerUsage
+        next.inheritRuntimeMetrics(from: latestUsage)
+        latestUsage = next
+        continuation.yield(.usageUpdated(next))
+    }
+
+    /// Provider 的增量帧可能携带空字符串；空值不能覆盖前一帧已经保存的摘要。
+    private static func nonBlank(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// started/delta/completed 会反复 upsert 同一个 Provider event。后续帧经常只携带
+    /// 新增字段，例如 tool completed 只有 Output；按 label 合并才能保留 started 时的 Input，
+    /// 同时让 reasoning summary delta 替换同一块内容而不是无限追加重复详情。
+    private static func mergingTraceDetails(
+        _ existing: [AgentTraceDetail],
+        with incoming: [AgentTraceDetail]
+    ) -> [AgentTraceDetail] {
+        var merged = existing
+        for detail in incoming {
+            if let index = merged.firstIndex(where: { $0.label == detail.label }) {
+                merged[index] = detail
+            } else {
+                merged.append(detail)
+            }
+        }
+        return merged
+    }
+
+    /// 进程退出、协议损坏与 watchdog 超时发生在 Adapter 事件之外，也必须进入同一条
+    /// Runtime Trace。这样主错误横幅负责结论，过程行负责给出可展开的诊断上下文。
+    private func projectFailureTrace(_ message: String) async {
+        await projectTrace(ExternalAgentTraceEvent(
+            id: "runtime-error:\(UUID().uuidString)",
+            kind: .error,
+            status: .failed,
+            title: String.l10n("error.loadFailed"),
+            summary: message,
+            details: [.init(
+                label: String.l10n("error.loadFailed"),
+                value: message,
+                format: .error
+            )],
+            completedAt: Date()
+        ))
+    }
+
+    private func persistTerminal(status: AgentRunStatus, errorMessage: String?) async {
+        guard let runRepository else { return }
+        do {
+            try await runRepository.updateRunStatus(
+                runID: runID,
+                status: status,
+                model: runtimeModelName,
+                usage: latestUsage,
+                errorMessage: errorMessage,
+                finishedAt: Date()
+            )
+        } catch {
+            AppLog.ai.error("[ExternalAgentRuntime] persist terminal failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
 }
 
-private enum ExternalAgentPromptBuilder {
+enum ExternalAgentPromptBuilder {
     static func build(
         definition: AgentDefinition,
         prompt: String,
-        context: AgentRunContext
+        context: AgentRunContext,
+        localeIdentifier: String,
+        preferredLanguage: String
     ) -> String {
         var sections = [
-            "# Starcat External Agent Runtime POC",
+            "# Starcat External Agent Runtime",
             "You are running inside Starcat's read-only external runtime boundary.",
             "Do not modify files, run shell commands, spawn subagents, or request additional permissions.",
             "Respond in Markdown and use only the user request, Frozen Starcat Context, and available Starcat dynamic tools.",
+            "## Language and progress updates\n"
+                + "App locale: \(localeIdentifier)\n"
+                + "Preferred output language: \(preferredLanguage)\n"
+                + "Write all user-visible reasoning summaries, progress updates, and the final answer in the preferred output language. "
+                + "Before each tool call in a multi-step task, emit one concise user-visible progress update that states what you will do next and why. "
+                + "Do not expose hidden chain-of-thought; provide only a brief, useful summary.",
         ]
         if !definition.promptRules.isEmpty {
             sections.append("## Agent rules\n" + definition.promptRules.map { "- \($0.content)" }.joined(separator: "\n"))

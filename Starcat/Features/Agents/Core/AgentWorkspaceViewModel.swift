@@ -28,6 +28,11 @@ final class AgentWorkspaceViewModel {
     private var mentionTask: Task<Void, Never>?
     private var activeRunID: UUID?
     private var currentRunSnapshot: AgentRunSnapshotRecord?
+    private var externalUsageStartedAt: Double?
+    private var hasRecordedExternalUsage = false
+    /// Composer 在发送后会立即清空附件与临时选择；Inspector 必须持有本次 Run 的冻结上下文，
+    /// 否则实时运行期间只能看到空的“下一次输入”，历史记录与实时记录也会表现不一致。
+    private(set) var currentRunContext: AgentRunContext?
     private var hasInitializedHistory = false
     private var draftsByAgentID: [String: String] = [:]
     private var hasLoadedRepositoryCatalog = false
@@ -61,11 +66,15 @@ final class AgentWorkspaceViewModel {
     var status: AgentRunStatus = .idle
     var approvals: [AgentApprovalRequest] = []
     var messages: [AgentMessage] = []
+    /// Runtime 原生过程按稳定 id 原位更新，避免 Codex 的 delta/completed 把一项拆成多行。
+    var traceEvents: [AgentTraceEvent] = []
     var usage: AgentUsage = .zero
     var artifacts: [AgentArtifact] = []
     var historyRuns: [AgentRunRecord] = []
+    var inspectorTab: AgentInspectorTab = .run
     var selectedArtifactID: UUID?
     var selectedToolCallID: String?
+    var selectedTraceEventID: String?
     var selectedHistoryRunID: String?
     var attachments: [AgentPromptAttachment] = []
     var selectedRepoContexts: [AIComposerRepoReference] = [] {
@@ -74,6 +83,11 @@ final class AgentWorkspaceViewModel {
     var explicitRepoMode: AIComposerExplicitRepoMode = .only
     var availableModels: [AIModelDescriptor] = []
     var selectedModelID: String?
+    private(set) var runtimeBackend = AgentRuntimeBackend.builtinLoop
+    private(set) var runtimeProviderName: String?
+    private(set) var runtimeModelName: String?
+    private(set) var runtimeReasoningEffort: String?
+    private(set) var runtimeSelectionAvailable = true
     var webSearchEnabled = false
     var githubLinks: [AIComposerGitHubLink] = []
     var isContextPickerPresented = false
@@ -128,6 +142,15 @@ final class AgentWorkspaceViewModel {
     var selectedArtifact: AgentArtifact? {
         guard let selectedArtifactID else { return artifacts.first }
         return artifacts.first { $0.id == selectedArtifactID } ?? artifacts.first
+    }
+
+    var selectedTraceEvent: AgentTraceEvent? {
+        guard let selectedTraceEventID else { return nil }
+        return traceEvents.first { $0.id == selectedTraceEventID }
+    }
+
+    var currentRunRecord: AgentRunRecord? {
+        currentRunSnapshot?.run
     }
 
     var selectedKnowledgeAudit: AgentKnowledgeRetrievalAudit? {
@@ -204,10 +227,21 @@ final class AgentWorkspaceViewModel {
         guard !isRunning,
               let selectedAgent,
               selectedAgent.isEnabled,
-              let selectedModelID,
-              availableModels.contains(where: { $0.id == selectedModelID }),
+              runtimeSelectionAvailable,
               !effectivePrompt(for: selectedAgent).isEmpty
         else { return false }
+        // 外部 Runtime 拥有独立 Provider/Model 目录，不能被内置 Loop 的 selectedModelID
+        // 阻断。DeepSeek 必须已经解析出已验证 Provider；Codex 目录失败时仍允许使用
+        // App Server 默认模型，以保留其官方回退语义。
+        if runtimeBackend == .builtinLoop {
+            guard let selectedModelID,
+                  availableModels.contains(where: { $0.id == selectedModelID })
+            else { return false }
+        } else if runtimeBackend == .deepSeekHarness {
+            guard runtimeProviderName?.isEmpty == false,
+                  runtimeModelName?.isEmpty == false
+            else { return false }
+        }
 
         switch selectedAgent.workflow.repositoryContext {
         case .none, .weeklyHotspots:
@@ -225,10 +259,11 @@ final class AgentWorkspaceViewModel {
     }
 
     func selectAgent(_ agent: AgentDefinition) {
-        guard !isRunning else { return }
+        guard !isRunning, agent.id != selectedAgentID else { return }
         draftsByAgentID[selectedAgentID] = prompt
         selectedAgentID = agent.id
         prompt = draftsByAgentID[agent.id] ?? ""
+        clearRunPresentationForAgentChange()
         if agent.workflow.maximumSelectedRepositories == 0 {
             selectedRepoContexts = []
         } else if selectedRepoContexts.count > agent.workflow.maximumSelectedRepositories {
@@ -240,6 +275,31 @@ final class AgentWorkspaceViewModel {
             explicitRepoMode = .only
         }
         handlePromptChanged()
+    }
+
+    /// 切换业务分类后，中栏必须表达“新 Agent 尚未运行”，不能继续展示上一个 Agent
+    /// 的消息、步骤、用量或错误。Composer 草稿与仓库选择单独管理，不在这里误删。
+    private func clearRunPresentationForAgentChange() {
+        runTask?.cancel()
+        runTask = nil
+        activeRunID = nil
+        currentRunSnapshot = nil
+        currentRunContext = nil
+        currentRunUserPrompt = ""
+        runTitle = String.l10n("agent.workspace.status.ready")
+        status = .idle
+        approvals = []
+        messages = []
+        traceEvents = []
+        usage = .zero
+        artifacts = []
+        inspectorTab = .run
+        selectedArtifactID = nil
+        selectedToolCallID = nil
+        selectedTraceEventID = nil
+        selectedHistoryRunID = nil
+        resetStreamingPresentation(resetUpdateCount: true)
+        errorMessage = nil
     }
 
     /// `.xcstrings` 运行时切换后重建定义中的已解析 String，同时保留当前 Agent 身份。
@@ -259,6 +319,23 @@ final class AgentWorkspaceViewModel {
     func configureRuntime(_ runtime: any AgentRuntime) {
         guard !isRunning else { return }
         self.runtime = runtime
+    }
+
+    /// 冻结下一次运行实际使用的后端和 Provider 模型。正在运行时拒绝替换，避免 UI
+    /// 中途切换后让历史上下文记录成与当前进程不同的参数。
+    func configureRuntimeSelection(
+        backend: AgentRuntimeBackend,
+        providerName: String? = nil,
+        modelName: String?,
+        reasoningEffort: String?,
+        isAvailable: Bool = true
+    ) {
+        guard !isRunning else { return }
+        runtimeBackend = backend
+        runtimeProviderName = providerName
+        runtimeModelName = modelName
+        runtimeReasoningEffort = reasoningEffort
+        runtimeSelectionAvailable = isAvailable
     }
 
     func configureRunRepository(_ repository: any AgentRunRepositoryProtocol) {
@@ -330,6 +407,9 @@ final class AgentWorkspaceViewModel {
         do {
             guard let snapshot = try await runRepository.snapshot(runID: runID) else { return }
             apply(snapshot)
+            if case .usageUpdated(let historicalUsage) = await withEstimatedCost(.usageUpdated(usage)) {
+                usage = historicalUsage
+            }
             if snapshot.run.status == AgentRunStatus.waitingForConfirmation.rawValue,
                let definition = agents.first(where: { $0.id == snapshot.run.agentId }),
                snapshot.approvals.contains(where: { $0.status == .pending }) {
@@ -355,11 +435,15 @@ final class AgentWorkspaceViewModel {
         status = .planning
         errorMessage = nil
         resetStreamingPresentation(resetUpdateCount: true)
+        externalUsageStartedAt = Date().timeIntervalSince1970
+        hasRecordedExternalUsage = false
         let runtime = runtime
         runTask = Task { [weak self] in
             let stream = runtime.retryFailedRun(snapshot: snapshot, definition: definition)
             for await event in stream {
-                await MainActor.run { self?.apply(event) }
+                guard let self else { return }
+                let pricedEvent = await self.withEstimatedCost(event)
+                self.apply(pricedEvent)
             }
             await self?.reloadHistory()
             await self?.refreshActiveRunSnapshot()
@@ -375,26 +459,36 @@ final class AgentWorkspaceViewModel {
         runTitle = selectedAgent.title
         approvals = []
         messages = []
+        traceEvents = []
         usage = .zero
         artifacts = []
+        inspectorTab = .run
         selectedArtifactID = nil
         selectedToolCallID = nil
+        selectedTraceEventID = nil
         resetStreamingPresentation(resetUpdateCount: true)
         errorMessage = nil
         currentRunSnapshot = nil
+        currentRunContext = nil
         selectedHistoryRunID = nil
         currentRunUserPrompt = effectivePrompt
+        externalUsageStartedAt = Date().timeIntervalSince1970
+        hasRecordedExternalUsage = false
 
         let input = AgentRunInput(
             goal: effectivePrompt,
             agentID: selectedAgent.id,
             explicitRepos: selectedRepoContexts,
             explicitRepoMode: explicitRepoMode,
-            selectedModelID: selectedModelID,
+            selectedModelID: runtimeBackend == .builtinLoop ? selectedModelID : nil,
             attachments: attachments,
             githubLinks: githubLinks,
             webSearchEnabled: webSearchEnabled,
-            source: "Agent Workspace"
+            source: "Agent Workspace",
+            runtimeBackend: runtimeBackend,
+            runtimeProviderName: runtimeProviderName,
+            runtimeModelName: runtimeModelName,
+            runtimeReasoningEffort: runtimeReasoningEffort
         )
         let contextProvider = contextProvider
         let runtime = runtime
@@ -410,15 +504,18 @@ final class AgentWorkspaceViewModel {
                 definition: selectedAgent,
                 input: input
             )
+            await MainActor.run {
+                self?.currentRunContext = context
+            }
             let stream = runtime.run(
                 definition: selectedAgent,
                 prompt: input.goal,
                 context: context
             )
             for await event in stream {
-                await MainActor.run {
-                    self?.apply(event)
-                }
+                guard let self else { return }
+                let pricedEvent = await self.withEstimatedCost(event)
+                self.apply(pricedEvent)
             }
             await self?.reloadHistory()
             await self?.refreshActiveRunSnapshot()
@@ -478,12 +575,31 @@ final class AgentWorkspaceViewModel {
     }
 
     func selectArtifact(_ artifactID: UUID) {
+        inspectorTab = .artifacts
         selectedArtifactID = artifactID
         selectedToolCallID = nil
+        selectedTraceEventID = nil
     }
 
     func selectKnowledgeAudit(toolCallID: String) {
         selectedToolCallID = toolCallID
+        selectedTraceEventID = nil
+    }
+
+    func selectInspectorTab(_ tab: AgentInspectorTab) {
+        inspectorTab = tab
+        selectedToolCallID = nil
+        selectedTraceEventID = nil
+    }
+
+    func selectTraceEvent(_ eventID: String) {
+        selectedTraceEventID = eventID
+        selectedToolCallID = nil
+    }
+
+    func clearInspectorDetail() {
+        selectedToolCallID = nil
+        selectedTraceEventID = nil
     }
 
     // MARK: - Composer context
@@ -716,6 +832,8 @@ final class AgentWorkspaceViewModel {
         case .runStarted(let title):
             runTitle = title
             status = .running
+        case .traceUpdated(let trace):
+            upsert(trace)
         case .approvalUpdated(let approval):
             upsert(approval)
             if approval.status == .pending {
@@ -756,17 +874,84 @@ final class AgentWorkspaceViewModel {
         case .runCompleted:
             flushStreamingPresentation()
             status = .completed
+            recordExternalUsageIfNeeded(status: .succeeded)
             runTask = nil
         case .runFailed(let message):
             flushStreamingPresentation()
             status = .failed
             errorMessage = message
+            recordExternalUsageIfNeeded(status: .failed)
             runTask = nil
         case .runCancelled:
             flushStreamingPresentation()
             status = .cancelled
+            recordExternalUsageIfNeeded(status: .cancelled)
             runTask = nil
         }
+    }
+
+    /// Runtime usage 帧先补齐费用再进入 Observable，避免右侧检查器短暂显示旧价格。
+    /// 内置 Loop 也使用同一计算口径，但不会再次写入聚合事件，因为底层 HTTP 调用已经
+    /// 由 `AIUsageRecorder` 逐次记录。
+    private func withEstimatedCost(_ event: AgentRunEvent) async -> AgentRunEvent {
+        guard case .usageUpdated(var nextUsage) = event,
+              nextUsage.estimatedCost == nil,
+              let model = runtimeModelName ?? currentRunContext?.runtimeModelName,
+              let estimate = await AIModelPricingCatalog.shared.estimate(
+                  model: model,
+                  providerKind: runtimeProviderName ?? currentRunContext?.runtimeProviderName ?? runtimeBackend.rawValue,
+                  operation: .chat,
+                  inputTokens: nextUsage.inputTokens,
+                  outputTokens: nextUsage.outputTokens,
+                  cachedInputTokens: nextUsage.cachedTokens,
+                  cacheWriteInputTokens: nextUsage.cacheWriteTokens
+              )
+        else { return event }
+        nextUsage.estimatedCost = estimate.usd
+        nextUsage.estimatedCostSource = estimate.source
+        nextUsage.pricingModel = estimate.matchedModel
+        nextUsage.pricingRevision = estimate.revision
+        return .usageUpdated(nextUsage)
+    }
+
+    /// 外部 Runtime 不经过 Starcat 的 HTTP adapter，因此在终态补一条聚合事件；内置
+    /// Runtime 已按模型请求逐条采集，若再次写入会造成 Agent 用量与费用翻倍。
+    private func recordExternalUsageIfNeeded(status: AIUsageStatus) {
+        guard runtimeBackend != .builtinLoop,
+              !hasRecordedExternalUsage,
+              let startedAt = externalUsageStartedAt
+        else { return }
+        hasRecordedExternalUsage = true
+        let completedAt = Date().timeIntervalSince1970
+        let hasUsage = usage.totalTokens > 0 || usage.inputTokens > 0 || usage.outputTokens > 0
+        let event = AIUsageEvent(
+            id: UUID().uuidString,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            durationMs: max(0, Int((completedAt - startedAt) * 1_000)),
+            providerId: runtimeProviderName ?? runtimeBackend.rawValue,
+            providerKind: runtimeProviderName ?? runtimeBackend.rawValue,
+            model: runtimeModelName ?? currentRunContext?.runtimeModelName ?? "unknown",
+            feature: AIUsageFeature.agent.rawValue,
+            phase: selectedAgentID,
+            operation: AIUsageOperation.chat.rawValue,
+            inputTokens: hasUsage ? usage.inputTokens : nil,
+            outputTokens: hasUsage ? usage.outputTokens : nil,
+            totalTokens: hasUsage ? usage.totalTokens : nil,
+            cachedInputTokens: hasUsage ? usage.cachedTokens : nil,
+            cacheWriteInputTokens: usage.cacheWriteTokens,
+            reasoningOutputTokens: hasUsage ? usage.reasoningTokens : nil,
+            itemCount: 1,
+            usageSource: hasUsage ? AIUsageSource.provider.rawValue : AIUsageSource.unavailable.rawValue,
+            status: status.rawValue,
+            errorCategory: nil,
+            correlationId: activeRunID?.uuidString,
+            estimatedCostUSD: usage.estimatedCost.map { NSDecimalNumber(decimal: $0).doubleValue },
+            costSource: usage.estimatedCostSource,
+            pricingModel: usage.pricingModel,
+            pricingRevision: usage.pricingRevision
+        )
+        Task { await AIUsageRecorder.shared.record(event) }
     }
 
     private static func makeStreamingPresentationBuffer() -> StreamingTextPresentationBuffer {
@@ -803,6 +988,7 @@ final class AgentWorkspaceViewModel {
 
     private func apply(_ snapshot: AgentRunSnapshotRecord) {
         currentRunSnapshot = snapshot
+        currentRunContext = snapshot.context
         activeRunID = UUID(uuidString: snapshot.run.id)
         selectedHistoryRunID = snapshot.run.id
         // 历史快照切换 Agent 时保留每个 Agent 尚未发送的草稿；持久化 user_prompt
@@ -826,6 +1012,12 @@ final class AgentWorkspaceViewModel {
         explicitRepoMode = snapshot.context.explicitRepoMode ?? .only
         githubLinks = snapshot.context.githubLinks ?? []
         webSearchEnabled = snapshot.context.webSearchEnabled ?? false
+        // 历史页的过程标题、模型与推理强度必须来自该次 Run 的冻结上下文，不能继续
+        // 显示当前 Composer 选择，否则 Codex/DeepSeek/Built-in 轨迹会被贴错后端标签。
+        runtimeBackend = snapshot.context.runtimeBackend ?? .builtinLoop
+        runtimeProviderName = snapshot.context.runtimeProviderName
+        runtimeModelName = snapshot.context.runtimeModelName
+        runtimeReasoningEffort = snapshot.context.runtimeReasoningEffort
         if let modelID = snapshot.context.selectedModelID,
            availableModels.contains(where: { $0.id == modelID }) {
             selectedModelID = modelID
@@ -834,6 +1026,7 @@ final class AgentWorkspaceViewModel {
         attachments = []
         status = AgentRunStatus(rawValue: snapshot.run.status) ?? .idle
         messages = snapshot.messages
+        traceEvents = snapshot.traceEvents
         usage = snapshot.messages.compactMap(\.usage).reduce(.zero) { partial, next in
             var merged = partial
             merged.merge(next)
@@ -841,8 +1034,10 @@ final class AgentWorkspaceViewModel {
         }
         approvals = snapshot.approvals
         artifacts = snapshot.artifacts
+        inspectorTab = .run
         selectedArtifactID = artifacts.first?.id
         selectedToolCallID = nil
+        selectedTraceEventID = nil
         resetStreamingPresentation(resetUpdateCount: true)
         errorMessage = snapshot.run.errorMessage
     }
@@ -858,7 +1053,9 @@ final class AgentWorkspaceViewModel {
         runTask = Task { [weak self] in
             let stream = runtime.resumePendingRun(snapshot: snapshot, definition: definition)
             for await event in stream {
-                await MainActor.run { self?.apply(event) }
+                guard let self else { return }
+                let pricedEvent = await self.withEstimatedCost(event)
+                self.apply(pricedEvent)
             }
             await self?.reloadHistory()
             await self?.refreshActiveRunSnapshot()
@@ -882,6 +1079,18 @@ final class AgentWorkspaceViewModel {
             approvals[index] = approval
         } else {
             approvals.append(approval)
+        }
+    }
+
+    private func upsert(_ trace: AgentTraceEvent) {
+        if let index = traceEvents.firstIndex(where: { $0.id == trace.id }) {
+            traceEvents[index] = trace
+        } else {
+            traceEvents.append(trace)
+            traceEvents.sort { lhs, rhs in
+                if lhs.sequence == rhs.sequence { return lhs.startedAt < rhs.startedAt }
+                return lhs.sequence < rhs.sequence
+            }
         }
     }
 

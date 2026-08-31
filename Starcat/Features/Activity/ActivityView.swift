@@ -115,12 +115,15 @@ struct ActivityView: View {
             }
         }
         .task {
-            // 两个独立入口各自管理加载与选择；不要为了它们扫描本地 Activity 聚合库。
-            guard selectedCategory != .notification,
-                  selectedCategory != .undoStar
-            else { return }
-            // 首次进入 Activity：全量 ensureLoaded。Weekly 已迁移到 Explore,Activity 只处理本地聚合分类。
+            // 时间线 / Undo Star 自己管中栏列表，但仍要灌侧栏其它分类的本地缓存数字。
+            // 以前默认分类是「全部」，ensureLoaded 会顺便发布计数；现在默认时间线，
+            // 若不在这里读缓存，公告 / 发行版等会一直空白，点进去才出现。
             let model = ensureViewModel()
+            if selectedCategory == .notification || selectedCategory == .undoStar {
+                await model.primeSidebarCategoryCountsIfNeeded()
+                return
+            }
+            // 首次进入本地聚合分类：全量 ensureLoaded。Weekly 已迁移到 Explore。
             async let libraryLoad: Void = reloadLibraryStateMap()
             if settings.libraryFilter != .all {
                 await libraryLoad
@@ -266,15 +269,29 @@ struct ActivityView: View {
                 )
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                .onAppear {
-                    if viewModel.shouldTriggerLoadMore(for: item) {
-                        viewModel.loadMoreIfNeeded()
-                    }
+                .automaticListPagination(
+                    appearingIndex: index,
+                    visibleItemCount: visibleItems.count,
+                    loadedItemCount: viewModel.items.count,
+                    hasMore: viewModel.hasMoreItems,
+                    isLoading: viewModel.isLoading || viewModel.isApplyingCategoryFilter,
+                    identity: "activity-\(viewModel.rowRevealRevision)"
+                ) {
+                    viewModel.loadMoreIfNeeded()
                 }
             }
         }
         .listStyle(.inset)
         .alternatingRowBackgrounds()
+        .automaticListPaginationFill(
+            visibleItemCount: visibleItems.count,
+            loadedItemCount: viewModel.items.count,
+            hasMore: viewModel.hasMoreItems,
+            isLoading: viewModel.isLoading || viewModel.isApplyingCategoryFilter,
+            identity: "activity-\(viewModel.rowRevealRevision)"
+        ) {
+            viewModel.loadMoreIfNeeded()
+        }
         .task(id: viewModel.itemsRevision) {
             let repos = viewModel.items.compactMap(\.repo)
             let repoIds = repos.map(\.id)
@@ -456,7 +473,7 @@ struct ActivityView: View {
                     inlineMetadata: inlineMetadata(for: item),
                     isInLibrary: isInLibrary(repo.id),
                     openSSFScore: dependencies.openSSFScoreStore.badge(for: repo.id)
-                ),
+                ).overlayingSessionStars(dependencies.starredRegistry),
                 isSelected: isSelected
             )
             // HOM-201 P1-1（2026-06-14）：activity 行 hover 500ms 后预拉 manage 表的 README，
@@ -672,6 +689,7 @@ struct ActivityView: View {
 private struct ActivityRowView: View {
     let item: ActivityItem
     let isSelected: Bool
+    @Environment(AppDependencies.self) private var dependencies
 
     var body: some View {
         // R-01 §3.1.1（2026-06-10 P1）：RepoListDensity 已删，直接渲染 card。
@@ -716,7 +734,13 @@ private struct ActivityRowView: View {
                         if let language = repo.language, !language.isEmpty {
                             LanguageBadge(language: language, style: .full)
                         }
-                        StarsBadge(count: repo.starsCount, style: .full)
+                        StarsBadge(
+                            count: dependencies.starredRegistry.displayedStarsCount(
+                                base: repo.starsCount,
+                                ghRepoId: repo.id
+                            ),
+                            style: .full
+                        )
                     }
                     MetaBadge(systemImage: item.category.systemImage, text: item.category.localizedTitle, tint: .secondary)
                     if let date = item.createdAt {

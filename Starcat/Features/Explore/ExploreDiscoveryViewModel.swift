@@ -239,7 +239,9 @@ final class ExploreDiscoveryViewModel {
 
     func loadMoreIfNeeded(
         repository: any DiscoveryRepositoryProtocol,
-        currentRepo: DiscoveryRepoDTO,
+        currentRepo: DiscoveryRepoDTO?,
+        appearingIndex: Int? = nil,
+        visibleItemCount: Int? = nil,
         mode: ExploreMode,
         language: String?,
         topic: String?,
@@ -256,7 +258,20 @@ final class ExploreDiscoveryViewModel {
         guard publishedQueryIdentity == queryIdentity else { return }
         guard let nextPage else { return }
         guard !isLoading, !isRefreshing else { return }
-        guard repos.suffix(4).contains(currentRepo) else { return }
+        if let appearingIndex, let visibleItemCount {
+            guard ListPaginationPolicy.shouldPrefetch(
+                appearingIndex: appearingIndex,
+                itemCount: visibleItemCount,
+                hasMore: true
+            ) else { return }
+        } else if let currentRepo {
+            guard let sourceIndex = repos.firstIndex(of: currentRepo),
+                  ListPaginationPolicy.shouldPrefetch(
+                      appearingIndex: sourceIndex,
+                      itemCount: repos.count,
+                      hasMore: true
+                  ) else { return }
+        }
 
         page = nextPage
         let upperBound = min(page * Self.pageSize, filteredLocalRepos.count)
@@ -436,7 +451,7 @@ final class ExploreDiscoveryViewModel {
                     return repo.language?.caseInsensitiveCompare(language) == .orderedSame
                 }
             }
-        case .trending, .weekly:
+        case .trending, .weekly, .awesome:
             break
         }
 
@@ -567,9 +582,9 @@ final class ExploreDiscoveryViewModel {
             return repo.popularityScore ?? repo.score ?? 0
         case .newReleases:
             return repo.releaseScore ?? repo.score ?? 0
-        case .trending, .weekly:
-            // 趋势 / 周刊不应进入 ExploreDiscoveryViewModel；这里保留兜底只为防止未来误传
-            // 导致排序崩溃，正式 UI 分别由 TrendingView / WeeklyContentView 承载。
+        case .trending, .weekly, .awesome:
+            // 趋势 / 周刊 / Awesome 不应进入 ExploreDiscoveryViewModel；这里保留兜底只为
+            // 防止未来误传导致排序崩溃，正式 UI 分别由各自列表承载。
             return repo.trendingScore ?? repo.score ?? 0
         }
     }
@@ -641,7 +656,7 @@ final class ExploreDiscoveryViewModel {
             return snapshot.summary.mode(discoveryMode)?.total == 0
         case .discover:
             return true
-        case .trending, .weekly:
+        case .trending, .weekly, .awesome:
             return false
         }
     }
@@ -650,7 +665,7 @@ final class ExploreDiscoveryViewModel {
         switch mode {
         case .discover:
             return "discover"
-        case .trending, .weekly:
+        case .trending, .weekly, .awesome:
             return ""
         case .popular:
             return "popular"

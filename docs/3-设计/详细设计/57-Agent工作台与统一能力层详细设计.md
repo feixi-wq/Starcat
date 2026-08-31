@@ -1,6 +1,6 @@
 # 57 — Agent 工作台与统一能力层详细设计
 
-> 日期：2026-08-04（2026-08-21 修订外部 Runtime 边界）
+> 日期：2026-08-04（2026-08-23 修订 ACP 暂缓决策）
 >
 > 状态：新版权威方案，P0～P4 已实现，产品化终审中
 >
@@ -76,9 +76,20 @@ Starcat Agent 不再按“重新建设一套 AI、上下文、工具和 CLI 集�
 - `recall-search`
 - `release-watcher`
 
-Agent 工具栏入口已解除 `DebugFlags.agentToolbarEntry`，在 Debug / Release 与 App Store / Direct 共用同一产品入口；打开前仍统一校验 AI Chat Pro 权益与有效对话模型。因此现状应定义为：
+2026-08-22 产品决策：Agent 工作台尚未达到完全开放标准，Release、App Store 与 Direct 构建不再提供主窗口 toolbar、首次操作指引或首次启动介绍入口；当前仅允许从 Debug 构建的 `Who's Your Daddy → Open Agent Workspace` 打开。Debug 入口继续统一校验 AI Chat Pro 权益与有效对话模型，不建立绕过生产约束的第二套运行路径。因此现状应定义为：
 
-> Agent P0～P4 的运行、上下文、共享能力、写入审批、产品门禁和 Run Surface 已实现；自动化、人工可观察边界和多轮终审证据在专项目录持续收口。
+> Agent P0～P4 的运行、上下文、共享能力、写入审批、产品门禁和 Run Surface 已实现并保留，但产品入口暂时回收至 Debug；工程完成度不能再直接等同于正式开放状态。
+
+#### 2.2.1 完全开放时的恢复清单
+
+只有 dong4j 再次明确确认“Agent 工作台完全开放”后，才能在同一任务中恢复以下正式入口和配套契约，禁止只打开 toolbar 后遗漏引导、测试或发布验收：
+
+1. 在 `Starcat/Features/Home/RepoListView.swift` 恢复主窗口 toolbar 入口，并在 `Starcat/Features/Home/HomeView.swift` 恢复打开回调；入口必须继续调用 `AgentWorkspaceWindowController.show(dependencies:)`，不得绕过 `AIWorkspaceEntryGate`。
+2. 在 `Starcat/Features/Onboarding/GettingStartedOnboarding.swift` 与 `HomeView.swift` 恢复首次操作指引步骤、anchor、完成通知和进度投影，并同步更新 `StarcatTests/GettingStartedProgressStoreTests.swift`。
+3. 在 `Starcat/Features/Onboarding/FirstRunWelcomeSheet.swift` 恢复 Agent 介绍步骤；复用保留的 `OnboardingAgent` asset 与既有 String Catalog 文案，不新造第二套宣传资源。
+4. 在 `Starcat/App/StarcatApp.swift` 评估是否删除重复的 Debug 菜单入口；无论是否保留，Release 构建只能有一套正式窗口打开语义。
+5. 重新核对 Pro、有效对话模型、用量、隐私、写入审批和 App Store / Direct 渠道边界；通过定向测试、全量测试、Debug/Release 双配置编译及真实 UI 人工验收后，才能认定入口开放完成。
+6. 同步本设计、Agent 产品化专项、Release Notes 与 `docs/功能实现总览.md`；其中 `docs/功能实现总览.md` 仍需 dong4j 对该文件的单独明确授权。
 
 ### 2.3 已解除的数据阻断
 
@@ -1015,11 +1026,13 @@ propose / dry-run
 - Release 入口策略。
 - 自动化证据与真实 UI 人工验收分开记录。
 
-P0～P3、定向自动化、Release 构建与真实入口门禁验收通过后，已于 2026-08-14 解除 `DebugFlags.agentToolbarEntry`；Pro、模型、用量和隐私边界保持不变。
+P0～P3、定向自动化、Release 构建与真实入口门禁验收通过后，曾于 2026-08-14 解除 `DebugFlags.agentToolbarEntry`；2026-08-22 根据新的产品决策重新回收至 Debug 菜单。P4 工程实现继续保留，正式开放必须重新执行 §2.2.1 清单，Pro、模型、用量和隐私边界不得回退。
 
 ### P5：可选外部 Agent Runtime
 
-外部 Runtime 不采用“选择一个框架并替换全部 Agent”的路线。Starcat 保留 `LoopAgentRuntime`，通过 `AgentRuntimeRouter`、`ExternalAgentRuntimeHost` 和 Provider Adapter 形成可切换底座；Codex App Server 与 DeepSeek Harness `0.1.0-rc.8` 是首批 adapter。多后端 POC 见 `59-ExternalAgentRuntime多后端POC技术方案.md`，DeepSeek 上游协议与 carrier 评估仍见 `58-DeepSeekHarness集成评估与POC技术方案.md`。
+外部 Runtime 不采用“选择一个框架并替换全部 Agent”的路线。Starcat 保留 `LoopAgentRuntime`，通过 `AgentRuntimeRouter`、`ExternalAgentRuntimeHost` 和 Provider Adapter 形成可切换底座；Codex App Server 与外部安装的 DeepSeek Harness `0.1.1rc1` wheel 是首批 adapter。多后端 POC 见 `59-ExternalAgentRuntime多后端POC技术方案.md`，DeepSeek 上游协议与 carrier 评估仍见 `58-DeepSeekHarness集成评估与POC技术方案.md`。
+
+ACP 只作为独立候选协议保留，不进入当前 P5 实施范围。2026-08-23 决定在 Agent 工作台和现有 External Agent Runtime 完成稳定性与安全验收前暂缓接入，也不迁移现有 Codex、Claude 或 DeepSeek 路径；协议边界、RAG / Agent 双路径候选架构和重新评估门禁见 `64-ACP协议接入评估与暂缓方案.md`。
 
 已落地的底座 POC 链路是：Starcat Direct Debug 通过统一 newline-delimited JSON-RPC Host 控制一次 run 专属 Sidecar，Provider adapter 把原生事件映射为 `AgentRunEvent`。Weekly、Repo Insight、Alternatives 的 `runtimePolicy` 允许 Loop / Codex，Codex 通过 App Server `dynamicTools` 调用现有 Starcat 自动只读工具；Untagged 等带审批写入的 Agent 仍锁定 Loop；General / Research POC 可选择 Codex 或 DeepSeek。外部 Runtime 不开放写工具、不持久化外部 Session，也不经过 `starcat-cli`，显式选择不兼容后端时不静默回退 Loop。
 
@@ -1084,6 +1097,7 @@ DeepSeek 的临时 Loopback MCP HTTP Bridge、Session 级 tool allowlist、随�
 | Agent 场景文档 | 历史需求输入 | 是否实施、归属与优先级以本文 §10 为准 |
 | `30-本地RAG设计.md` | 当前 RAG 真源 | 本文只定义 Agent 如何复用，不改写 RAG 语义 |
 | `34-StarcatCLI与外部MCP桥接设计.md` | 当前外部集成真源 | CLI/MCP transport 与安全边界继续由该文档负责 |
+| `64-ACP协议接入评估与暂缓方案.md` | 当前 ACP 专题 | ACP 暂缓决策、候选架构与重新评估门禁以该文档为准 |
 
 旧文档保留是为了追溯决策，不代表其中的阶段、框架评估、场景优先级或 CLI Runtime 路线仍有效。
 

@@ -1,0 +1,911 @@
+//
+//  AgentTraceDetailPresentation.swift
+//  Starcat
+//
+//  把不同 Agent Runtime 的 Trace 明细转换为稳定、可扫描的结构化展示。
+//
+//  持久化层继续保存经过裁剪的 Provider 原文，避免为每一种 Runtime 建一套数据库
+//  schema；本层只做确定性解析，不调用模型猜测字段语义。无法可靠识别的数据始终回退
+//  到原文，因此历史 Run 也能立即获得结构化展示而无需迁移。
+//
+
+import Foundation
+import MarkdownUI
+import SwiftUI
+
+struct AgentTraceDetailPresentation: Equatable, Sendable {
+    struct Section: Equatable, Sendable {
+        let label: String
+        let content: Content
+    }
+
+    enum Content: Equatable, Sendable {
+        case text(String)
+        case markdown(String)
+        case code(String)
+        case error(String)
+        case structured(AgentTraceStructuredValue)
+    }
+
+    let sections: [Section]
+    /// 只有发生结构化转换时才提供原文入口；普通文本不重复展示两次。
+    let rawPayload: String?
+}
+
+struct AgentTraceStructuredField: Equatable, Sendable {
+    let key: String
+    let value: AgentTraceStructuredValue
+}
+
+/// Trace 的完整事实仍由持久化层保存；这里仅限制时间线首屏需要参与 SwiftUI 测量的内容量。
+/// Runtime 返回的大段 Markdown、压缩 JSON 或上百行表格若直接进入嵌套 ScrollView，会让
+/// 展开动画期间的 `sizeThatFits` 在主线程反复遍历整棵视图树，最终表现为应用卡死。
+enum AgentTracePresentationBudget {
+    static let textCharacters = 8_000
+    static let codeCharacters = 12_000
+    static let rawPayloadCharacters = 20_000
+    static let jsonParseCharacters = 256_000
+    static let objectFields = 40
+    static let collectionItems = 50
+    static let nestingDepth = 8
+
+    static var truncationMarker: String {
+        "\n\n… \(String.l10n("agent.workspace.trace.contentTruncated"))"
+    }
+
+    static func bounded(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        return String(value.prefix(limit)) + truncationMarker
+    }
+}
+
+/// Trace 持久化继续使用 Runtime/工具的稳定标识；展示层按当前 App 语言给已知工具换成
+/// 可读标题。未知工具保持原名，避免第三方 Runtime 的新事件被错误翻译。
+enum AgentTraceTitlePresentation {
+    private static let toolTitleKeys: [String: String] = [
+        "agent_parse_goal": "agent.workspace.trace.tool.agentParseGoal",
+        "context_resolve_repos": "agent.workspace.trace.tool.contextResolveRepos",
+        "repo_cluster_topics": "agent.workspace.trace.tool.repoClusterTopics",
+        "knowledge_search": "agent.workspace.trace.tool.knowledgeSearch",
+        "external_search": "agent.workspace.trace.tool.externalSearch",
+        "artifact_build_weekly_report": "agent.workspace.trace.tool.buildWeeklyReport",
+        "agent_parse_repo_insight_goal": "agent.workspace.trace.tool.parseRepoInsightGoal",
+        "context_select_repo": "agent.workspace.trace.tool.contextSelectRepo",
+        "artifact_build_repo_insight": "agent.workspace.trace.tool.buildRepoInsight",
+        "agent_parse_repo_alternatives_goal": "agent.workspace.trace.tool.parseRepoAlternativesGoal",
+        "artifact_build_repo_alternatives": "agent.workspace.trace.tool.buildRepoAlternatives",
+        "tag_inspect_untagged": "agent.workspace.trace.tool.inspectUntagged",
+        "tag_preview_untagged": "agent.workspace.trace.tool.previewUntagged",
+        "tag_apply_untagged": "agent.workspace.trace.tool.applyUntagged",
+        "starcat.search_repos": "agent.workspace.trace.tool.searchRepositories",
+        "starcat.get_readme": "agent.workspace.trace.tool.readReadme",
+        "starcat.get_repo_summary": "agent.workspace.trace.tool.readRepositorySummary",
+    ]
+
+    static func title(for event: AgentTraceEvent) -> String {
+        if event.backend == .deepSeekHarness,
+           let providerEventID = event.providerEventID,
+           let hierarchyTitle = deepSeekHierarchyTitle(providerEventID) {
+            return hierarchyTitle
+        }
+        // 固定类别按当前 App 语言即时解析，避免历史 Trace 把生成时的英文标题永久写死。
+        switch event.kind {
+        case .message:
+            return String.l10n("agent.workspace.trace.kind.message")
+        case .plan:
+            return String.l10n("agent.workspace.trace.kind.plan")
+        case .todo:
+            return String.l10n("agent.workspace.trace.kind.todo")
+        case .request:
+            return String.l10n("agent.workspace.trace.kind.request")
+        case .reasoningSummary:
+            return String.l10n("agent.workspace.trace.kind.thinking")
+        case .commentary:
+            return String.l10n("agent.workspace.trace.kind.commentary")
+        case .fileChange:
+            return String.l10n("agent.workspace.trace.kind.fileChanges")
+        case .webSearch:
+            return String.l10n("agent.workspace.trace.kind.webSearch")
+        case .warning:
+            return String.l10n("agent.workspace.trace.kind.warning")
+        case .compaction:
+            return String.l10n("agent.workspace.trace.kind.contextCompaction")
+        default:
+            break
+        }
+
+        guard event.kind == .tool else {
+            return event.title
+        }
+        let normalizedTitle = normalizedToolName(event.title)
+        guard let key = toolTitleKeys[normalizedTitle] else { return normalizedTitle }
+        return String.l10n(key)
+    }
+
+    /// turn/end 会用 warning/error 覆盖 turn/start 的 kind，但 providerEventID 始终稳定。
+    /// 因此层级标题必须从 ID 恢复，不能让“轮次 1”在终态突然变成泛化的“警告”。
+    private static func deepSeekHierarchyTitle(_ providerEventID: String) -> String? {
+        let components = providerEventID.split(separator: ":")
+        guard components.first == "turn",
+              components.count >= 2,
+              let turn = Int(components[1])
+        else { return nil }
+        if components.count >= 4,
+           components[2] == "step",
+           let step = Int(components[3]) {
+            return "\(String.l10n("agent.workspace.trace.kind.step")) \(step + 1)"
+        }
+        return "\(String.l10n("agent.workspace.trace.kind.turn")) \(turn + 1)"
+    }
+
+    /// DeepSeek Harness 通过 pi-ai 为每次 MCP 调用附加随机后缀；它属于传输层关联 ID，
+    /// 不是用户要识别的工具名。详情区仍保留完整原始 ID，时间线只显示稳定工具标识。
+    static func normalizedToolName(_ rawName: String) -> String {
+        var name = rawName
+        if name.hasPrefix("mcp__starcat__") {
+            name.removeFirst("mcp__starcat__".count)
+        }
+        if name.hasPrefix("starcat_") {
+            name.removeFirst("starcat_".count)
+            name = "starcat.\(name)"
+        }
+        if let suffix = name.range(of: #"_[0-9a-fA-F]{12}$"#, options: .regularExpression) {
+            name.removeSubrange(suffix)
+        }
+        return name
+    }
+}
+
+enum AgentTraceRowPresentation {
+    /// Runtime 的“工具调用已完成”对用户没有辨识度。已知 MCP 工具优先从真实输入/输出
+    /// 派生一行短摘要，让连续多次搜索或读取仓库时仍能一眼区分每一步。
+    static func summary(for event: AgentTraceEvent) -> String? {
+        guard event.kind == .tool else { return event.summary?.traceNonBlank }
+
+        let normalizedName = AgentTraceTitlePresentation.normalizedToolName(event.title)
+        let payloads = event.details.compactMap { AgentTracePayloadParser.decodeJSON($0.value) }
+        let input = payloads.compactMap(\.objectValue).first { object in
+            object["query"] != nil || object["owner"] != nil || object["name"] != nil
+        }
+
+        switch normalizedName {
+        case "starcat.search_repos":
+            let result = payloads.compactMap(AgentTracePayloadParser.deepSeekToolResultPayload).first
+            if let count = result?.objectValue?["repos"]?.arrayValue?.count {
+                return String(format: String.l10n("agent.workspace.trace.repoCountFormat"), count)
+            }
+            return input?["query"]?.stringValue?.traceNonBlank
+        case "starcat.get_readme", "starcat.get_repo_summary":
+            if let owner = input?["owner"]?.stringValue?.traceNonBlank,
+               let name = input?["name"]?.stringValue?.traceNonBlank {
+                return "\(owner)/\(name)"
+            }
+            return input?["repo_id"]?.stringValue?.traceNonBlank
+        default:
+            return event.summary?.traceNonBlank
+        }
+    }
+}
+
+enum AgentTraceTimelineMode: String, CaseIterable, Hashable {
+    case process
+    case allEvents
+
+    var titleKey: LocalizedStringKey {
+        switch self {
+        case .process: "agent.workspace.trace.mode.process"
+        case .allEvents: "agent.workspace.trace.mode.allEvents"
+        }
+    }
+}
+
+/// 产品过程视图中的递归事件节点。节点只保存对原始 `AgentTraceEvent` 的编排结果，
+/// 不复制或改写 Runtime 数据；因此切到“全部事件”时仍能按原始 sequence 完整审计。
+struct AgentTraceTimelineNode: Identifiable, Equatable, Sendable {
+    let event: AgentTraceEvent
+    let children: [AgentTraceTimelineNode]
+
+    var id: String { event.id }
+
+    var eventCount: Int {
+        1 + children.reduce(0) { $0 + $1.eventCount }
+    }
+}
+
+struct AgentTraceTimelineSnapshot: Equatable, Sendable {
+    let orderedEvents: [AgentTraceEvent]
+    let roots: [AgentTraceTimelineNode]
+
+    var eventCount: Int { orderedEvents.count }
+}
+
+struct AgentTraceTimelineRow: Identifiable, Equatable, Sendable {
+    let event: AgentTraceEvent
+    let depth: Int
+    let childCount: Int
+
+    var id: String { event.id }
+    var hasChildren: Bool { childCount > 0 }
+}
+
+/// 同一批持久化事件同时生成两种视图：过程模式按真实父子关系编排，审计模式按首次
+/// sequence 平铺。任何事件都不能因为“噪声”被过滤；高频 delta 应由 Adapter 合并到
+/// 稳定事件，而不是由 UI 丢弃，这样数量、历史恢复与原始顺序才有同一事实来源。
+enum AgentTraceTimelinePresentation {
+    /// 保留给只需要平铺事件的调用方；语义已经从“可见关键步骤”改为“全部持久化事件”。
+    static func visibleEvents(_ events: [AgentTraceEvent]) -> [AgentTraceEvent] {
+        makeSnapshot(events).orderedEvents
+    }
+
+    static func makeSnapshot(_ events: [AgentTraceEvent]) -> AgentTraceTimelineSnapshot {
+        let ordered = events.sorted { lhs, rhs in
+            if lhs.sequence != rhs.sequence { return lhs.sequence < rhs.sequence }
+            return lhs.id < rhs.id
+        }
+        let effectiveParents = inferredParents(for: ordered)
+        let eventIDs = Set(ordered.map(\.id))
+        var childrenByParent: [String: [AgentTraceEvent]] = [:]
+        var roots: [AgentTraceEvent] = []
+
+        for event in ordered {
+            if let parentID = effectiveParents[event.id],
+               parentID != event.id,
+               eventIDs.contains(parentID),
+               !formsParentCycle(childID: event.id, parentID: parentID, parents: effectiveParents) {
+                childrenByParent[parentID, default: []].append(event)
+            } else {
+                roots.append(event)
+            }
+        }
+
+        func node(for event: AgentTraceEvent, ancestors: Set<String>) -> AgentTraceTimelineNode {
+            // Runtime 扩展可能返回损坏的循环 parentID。过程视图必须安全退化为叶子，
+            // 不能让一次异常 Trace 在递归构建阶段拖垮整个 Agent 工作台。
+            guard !ancestors.contains(event.id) else {
+                return AgentTraceTimelineNode(event: event, children: [])
+            }
+            let nextAncestors = ancestors.union([event.id])
+            return AgentTraceTimelineNode(
+                event: event,
+                children: (childrenByParent[event.id] ?? []).map {
+                    node(for: $0, ancestors: nextAncestors)
+                }
+            )
+        }
+
+        return AgentTraceTimelineSnapshot(
+            orderedEvents: ordered,
+            roots: roots.map { node(for: $0, ancestors: []) }
+        )
+    }
+
+    static func processRows(
+        snapshot: AgentTraceTimelineSnapshot,
+        collapsedNodeIDs: Set<String>
+    ) -> [AgentTraceTimelineRow] {
+        var rows: [AgentTraceTimelineRow] = []
+
+        func append(_ node: AgentTraceTimelineNode, depth: Int) {
+            rows.append(AgentTraceTimelineRow(
+                event: node.event,
+                depth: depth,
+                childCount: node.eventCount - 1
+            ))
+            guard !collapsedNodeIDs.contains(node.id) else { return }
+            for child in node.children {
+                append(child, depth: depth + 1)
+            }
+        }
+
+        for root in snapshot.roots {
+            append(root, depth: 0)
+        }
+        return rows
+    }
+
+    /// DeepSeek 的 tool/call 经公共协议投影后没有 parentID，但它在持久化序列中严格位于
+    /// `step/start` 与下一次 `step/start` 之间。这里仅为 UI 推断父级，既修复新 Run，
+    /// 也让已经落库的历史 Run 获得相同层级，而不迁移或伪造 Runtime 原始字段。
+    private static func inferredParents(for events: [AgentTraceEvent]) -> [String: String] {
+        var result: [String: String] = [:]
+        var currentDeepSeekTurnID: String?
+        var currentDeepSeekStepID: String?
+
+        for event in events {
+            if let parentID = event.parentID {
+                result[event.id] = parentID
+            }
+            guard event.backend == .deepSeekHarness else { continue }
+
+            if let providerID = event.providerEventID {
+                if providerID.hasPrefix("turn:"), providerID.contains(":step:") {
+                    currentDeepSeekStepID = event.id
+                    if result[event.id] == nil, let currentDeepSeekTurnID {
+                        result[event.id] = currentDeepSeekTurnID
+                    }
+                    continue
+                }
+                if providerID.hasPrefix("turn:"), !providerID.contains(":step:") {
+                    currentDeepSeekTurnID = event.id
+                    currentDeepSeekStepID = nil
+                    continue
+                }
+            }
+
+            // 公共工具协议是当前唯一会丢失 DeepSeek step parentID 的路径；session/end-seed、
+            // retry 与进程级错误必须保持根事件，不能因为发生在某一步之后就被误归组。
+            if result[event.id] == nil, event.kind == .tool {
+                result[event.id] = currentDeepSeekStepID ?? currentDeepSeekTurnID
+            }
+        }
+        return result
+    }
+
+    private static func formsParentCycle(
+        childID: String,
+        parentID: String,
+        parents: [String: String]
+    ) -> Bool {
+        var visited: Set<String> = [childID]
+        var cursor: String? = parentID
+        while let current = cursor {
+            guard visited.insert(current).inserted else { return true }
+            cursor = parents[current]
+        }
+        return false
+    }
+}
+
+private enum AgentTracePayloadParser {
+    static func decodeJSON(_ text: String) -> AgentJSONValue? {
+        guard text.count <= AgentTracePresentationBudget.jsonParseCharacters,
+              let data = text.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(AgentJSONValue.self, from: data)
+    }
+
+    /// DeepSeek 的 tool/result 是 message -> content -> tool-result -> content -> text，
+    /// 其中 text 才是 Starcat MCP 的真实 JSON。只按已知 envelope 解包，结构变化时安全回退。
+    static func deepSeekToolResultPayload(_ value: AgentJSONValue) -> AgentJSONValue? {
+        guard let message = value.objectValue?["message"]?.objectValue,
+              let outerContent = message["content"]?.arrayValue
+        else { return nil }
+
+        for outer in outerContent {
+            guard let innerContent = outer.objectValue?["content"]?.arrayValue else { continue }
+            for inner in innerContent {
+                guard let text = inner.objectValue?["text"]?.stringValue else { continue }
+                if let decoded = decodeJSON(text) { return decoded }
+                return .string(text)
+            }
+        }
+        return nil
+    }
+}
+
+private extension AgentJSONValue {
+    var arrayValue: [AgentJSONValue]? {
+        guard case .array(let values) = self else { return nil }
+        return values
+    }
+}
+
+indirect enum AgentTraceStructuredValue: Equatable, Sendable {
+    case scalar(String)
+    case object([AgentTraceStructuredField])
+    case list([AgentTraceStructuredValue])
+    case table(columns: [String], rows: [[String]])
+}
+
+enum AgentTraceDetailPresentationBuilder {
+    private static let toolResultEnvelopeKeys: Set<String> = [
+        "status", "summary", "detail", "output", "log", "sources",
+    ]
+
+    static func make(event: AgentTraceEvent) -> AgentTraceDetailPresentation {
+        var sections: [AgentTraceDetailPresentation.Section] = []
+        var rawBlocks: [String] = []
+        var didStructure = false
+
+        let displayTitle = AgentTraceTitlePresentation.title(for: event)
+        if event.kind == .tool, displayTitle != event.title {
+            sections.append(.init(
+                label: String.l10n("agent.workspace.trace.toolID"),
+                content: .code(event.title)
+            ))
+        }
+
+        for detail in event.details {
+            let boundedRawValue = AgentTracePresentationBudget.bounded(
+                detail.value,
+                limit: AgentTracePresentationBudget.rawPayloadCharacters
+            )
+            rawBlocks.append("\(detail.label)\n\(boundedRawValue)")
+            if detail.format == .json,
+               let json = decodeJSON(detail.value) {
+                if let runtimePayload = AgentTracePayloadParser.deepSeekToolResultPayload(json) {
+                    sections.append(.init(
+                        label: detail.label,
+                        content: .structured(structuredValue(from: runtimePayload))
+                    ))
+                    didStructure = true
+                    continue
+                }
+                if let envelope = toolResultEnvelope(
+                    json,
+                    eventSummary: event.summary
+                ) {
+                    sections.append(contentsOf: envelope)
+                    didStructure = true
+                    continue
+                }
+            }
+
+            let result = content(for: detail)
+            sections.append(.init(label: detail.label, content: result.content))
+            didStructure = didStructure || result.didStructure
+        }
+
+        return AgentTraceDetailPresentation(
+            sections: sections,
+            rawPayload: didStructure
+                ? AgentTracePresentationBudget.bounded(
+                    rawBlocks.joined(separator: "\n\n"),
+                    limit: AgentTracePresentationBudget.rawPayloadCharacters
+                )
+                : nil
+        )
+    }
+
+    /// Starcat dynamic tool 的结果是稳定 envelope。先拆出摘要、业务输出、日志与来源，
+    /// 再对内部文本做严格格式识别，避免用户看到 JSON 包着多行文本的双重序列化结果。
+    private static func toolResultEnvelope(
+        _ value: AgentJSONValue,
+        eventSummary: String?
+    ) -> [AgentTraceDetailPresentation.Section]? {
+        guard let object = value.objectValue,
+              !toolResultEnvelopeKeys.isDisjoint(with: object.keys)
+        else { return nil }
+
+        var sections: [AgentTraceDetailPresentation.Section] = []
+        var emittedText: Set<String> = []
+
+        if let summary = object["summary"]?.stringValue?.traceNonBlank,
+           summary != eventSummary?.traceNonBlank {
+            sections.append(.init(
+                label: String.l10n("agent.workspace.trace.summary"),
+                content: .text(summary)
+            ))
+            emittedText.insert(summary)
+        }
+
+        appendEnvelopeText(
+            object["detail"]?.stringValue,
+            label: String.l10n("agent.workspace.trace.detail"),
+            to: &sections,
+            emittedText: &emittedText
+        )
+        appendEnvelopeText(
+            object["output"]?.stringValue,
+            label: String.l10n("agent.workspace.trace.output"),
+            to: &sections,
+            emittedText: &emittedText
+        )
+
+        if let log = object["log"]?.stringValue?.traceNonBlank {
+            sections.append(.init(
+                label: String.l10n("agent.workspace.trace.log"),
+                content: .code(log)
+            ))
+        }
+        if let sources = object["sources"]?.externalArray, !sources.isEmpty {
+            sections.append(.init(
+                label: String.l10n("agent.workspace.trace.sources"),
+                content: .structured(structuredValue(from: .array(sources)))
+            ))
+        }
+
+        return sections.isEmpty ? nil : sections
+    }
+
+    private static func appendEnvelopeText(
+        _ value: String?,
+        label: String,
+        to sections: inout [AgentTraceDetailPresentation.Section],
+        emittedText: inout Set<String>
+    ) {
+        guard let value = value?.traceNonBlank, emittedText.insert(value).inserted else { return }
+        sections.append(.init(label: label, content: content(fromText: value)))
+    }
+
+    private static func content(
+        for detail: AgentTraceDetail
+    ) -> (content: AgentTraceDetailPresentation.Content, didStructure: Bool) {
+        switch detail.format {
+        case .json:
+            guard detail.value.count <= AgentTracePresentationBudget.jsonParseCharacters else {
+                return (.code(AgentTracePresentationBudget.bounded(
+                    detail.value,
+                    limit: AgentTracePresentationBudget.codeCharacters
+                )), false)
+            }
+            guard let json = decodeJSON(detail.value) else {
+                return (.code(AgentTracePresentationBudget.bounded(
+                    detail.value,
+                    limit: AgentTracePresentationBudget.codeCharacters
+                )), false)
+            }
+            return (.structured(structuredValue(from: json)), true)
+        case .code:
+            return (.code(AgentTracePresentationBudget.bounded(
+                detail.value,
+                limit: AgentTracePresentationBudget.codeCharacters
+            )), false)
+        case .markdown:
+            return (.markdown(AgentTracePresentationBudget.bounded(
+                detail.value,
+                limit: AgentTracePresentationBudget.textCharacters
+            )), false)
+        case .error:
+            return (.error(AgentTracePresentationBudget.bounded(
+                detail.value,
+                limit: AgentTracePresentationBudget.textCharacters
+            )), false)
+        case .text:
+            if detail.value.count <= AgentTracePresentationBudget.jsonParseCharacters,
+               let json = decodeJSON(detail.value) {
+                return (.structured(structuredValue(from: json)), true)
+            }
+            if let fields = keyValueFields(from: detail.value) {
+                return (.structured(.object(fields)), true)
+            }
+            return (.text(AgentTracePresentationBudget.bounded(
+                detail.value,
+                limit: AgentTracePresentationBudget.textCharacters
+            )), false)
+        }
+    }
+
+    private static func content(fromText text: String) -> AgentTraceDetailPresentation.Content {
+        if let json = decodeJSON(text) {
+            return .structured(structuredValue(from: json))
+        }
+        if let fields = keyValueFields(from: text) {
+            return .structured(.object(fields))
+        }
+        return .text(text)
+    }
+
+    private static func decodeJSON(_ text: String) -> AgentJSONValue? {
+        AgentTracePayloadParser.decodeJSON(text)
+    }
+
+    private static func structuredValue(
+        from value: AgentJSONValue,
+        depth: Int = 0
+    ) -> AgentTraceStructuredValue {
+        guard depth < AgentTracePresentationBudget.nestingDepth else {
+            return .scalar(String.l10n("agent.workspace.trace.contentTruncated"))
+        }
+
+        switch value {
+        case .object(let object):
+            let keys = Array(object.keys.sorted().prefix(AgentTracePresentationBudget.objectFields))
+            var fields = keys.map { key in
+                AgentTraceStructuredField(
+                    key: key,
+                    value: structuredValue(from: object[key] ?? .null, depth: depth + 1)
+                )
+            }
+            if object.count > keys.count {
+                fields.append(.init(
+                    key: "…",
+                    value: .scalar(String.l10n("agent.workspace.trace.contentTruncated"))
+                ))
+            }
+            return .object(fields)
+        case .array(let values):
+            if let table = table(from: values) { return table }
+            var items = values.prefix(AgentTracePresentationBudget.collectionItems).map {
+                structuredValue(from: $0, depth: depth + 1)
+            }
+            if values.count > items.count {
+                items.append(.scalar(String.l10n("agent.workspace.trace.contentTruncated")))
+            }
+            return .list(Array(items))
+        case .string(let text):
+            if text.count <= AgentTracePresentationBudget.jsonParseCharacters,
+               let nested = decodeJSON(text) {
+                return structuredValue(from: nested, depth: depth + 1)
+            }
+            if let fields = keyValueFields(from: text) {
+                return .object(fields)
+            }
+            return .scalar(AgentTracePresentationBudget.bounded(
+                text,
+                limit: AgentTracePresentationBudget.textCharacters
+            ))
+        case .number(let number):
+            return .scalar(numberText(number))
+        case .bool(let value):
+            return .scalar(value ? "true" : "false")
+        case .null:
+            return .scalar("null")
+        }
+    }
+
+    private static func table(from values: [AgentJSONValue]) -> AgentTraceStructuredValue? {
+        guard values.count > 1 else { return nil }
+        let objects = values.compactMap(\.objectValue)
+        guard objects.count == values.count else { return nil }
+        let columns = Array(Set(objects.flatMap(\.keys))).sorted()
+        guard !columns.isEmpty, columns.count <= 8 else { return nil }
+
+        var rows: [[String]] = []
+        for object in objects.prefix(AgentTracePresentationBudget.collectionItems) {
+            var row: [String] = []
+            for column in columns {
+                guard let cell = scalarText(object[column] ?? .null) else { return nil }
+                row.append(cell)
+            }
+            rows.append(row)
+        }
+        if objects.count > rows.count {
+            rows.append([
+                String.l10n("agent.workspace.trace.contentTruncated")
+            ] + Array(repeating: "", count: max(0, columns.count - 1)))
+        }
+        return .table(columns: columns, rows: rows)
+    }
+
+    private static func scalarText(_ value: AgentJSONValue) -> String? {
+        switch value {
+        case .string(let text): return text
+        case .number(let number):
+            return numberText(number)
+        case .bool(let value): return value ? "true" : "false"
+        case .null: return "null"
+        case .object, .array: return nil
+        }
+    }
+
+    /// 复用 JSON 编码器输出数字，避免超大整数经过 `Int(Double)` 转换时触发溢出崩溃。
+    private static func numberText(_ number: Double) -> String {
+        (try? AgentJSONValue.number(number).jsonString()) ?? String(number)
+    }
+
+    /// 只在每个非空行都符合 `key: value` 时结构化。任何自由文本行都会让整段回退，
+    /// 避免把 Markdown、URL 或错误栈里的冒号误判成业务字段。
+    private static func keyValueFields(from text: String) -> [AgentTraceStructuredField]? {
+        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+        guard lines.count >= 2 else { return nil }
+
+        var fields: [AgentTraceStructuredField] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty,
+                  let separator = trimmed.firstIndex(of: ":")
+            else { return nil }
+            let key = String(trimmed[..<separator]).trimmingCharacters(in: .whitespaces)
+            let valueStart = trimmed.index(after: separator)
+            let value = String(trimmed[valueStart...]).trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, !value.isEmpty,
+                  key.allSatisfy({ $0.isLetter || $0.isNumber || "_.-".contains($0) })
+            else { return nil }
+            fields.append(.init(key: key, value: .scalar(value)))
+        }
+        return fields
+    }
+}
+
+/// Runtime 详情的统一 renderer。Runtime/Tool 仍决定事件内容，本视图只决定同一种数据形态
+/// 在 macOS 时间线里的稳定布局，避免 Adapter 直接拼 SwiftUI 或 UI 猜 Provider 协议。
+struct AgentTraceDetailsView: View {
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @State private var isRawExpanded = false
+
+    let event: AgentTraceEvent
+
+    private var presentation: AgentTraceDetailPresentation {
+        AgentTraceDetailPresentationBuilder.make(event: event)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let attempt = event.attempt {
+                Text("\(String.l10n("action.retry")) \(attempt)")
+                    .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(Array(presentation.sections.enumerated()), id: \.offset) { _, section in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(section.label)
+                        .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    contentView(section.content)
+                }
+            }
+
+            if let rawPayload = presentation.rawPayload {
+                Button {
+                    // 原始 payload 可能接近展示预算上限；禁用高度动画，避免动画帧内反复
+                    // 测量整段等宽文本。折叠状态仍立即更新，不影响整行点击契约。
+                    isRawExpanded.toggle()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isRawExpanded ? "chevron.down" : "chevron.right")
+                            .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text("agent.workspace.trace.rawData")
+                            .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+
+                if isRawExpanded {
+                    codeBlock(rawPayload)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func contentView(_ content: AgentTraceDetailPresentation.Content) -> some View {
+        switch content {
+        case .text(let text):
+            Text(text)
+                .font(interfaceScale.font(.captionSmall))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+        case .markdown(let text):
+            AgentTraceMarkdownText(markdown: text, tone: .primary)
+        case .code(let text):
+            codeBlock(text)
+        case .error(let text):
+            Text(text)
+                .font(interfaceScale.font(.captionSmall))
+                .foregroundStyle(Color.red)
+                .textSelection(.enabled)
+        case .structured(let value):
+            AgentTraceStructuredValueView(value: value)
+        }
+    }
+
+    private func codeBlock(_ text: String) -> some View {
+        Text(text)
+            .font(interfaceScale.font(.code, design: .monospaced))
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            }
+    }
+}
+
+/// Runtime 的 reasoning summary 与 commentary 都可能包含强调、列表和行内代码。
+/// MarkdownUI 不继承外层 SwiftUI 字号，因此这里显式绑定 Trace 的紧凑排版。
+struct AgentTraceMarkdownText: View {
+    enum Tone {
+        case primary
+        case secondary
+    }
+
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+
+    let markdown: String
+    let tone: Tone
+
+    var body: some View {
+        Markdown(markdown)
+            .markdownTheme(traceTheme)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var traceTheme: Theme {
+        Theme()
+            .text {
+                ForegroundColor(tone == .primary ? .primary : .secondary)
+                FontSize(interfaceScale.scaled(StarcatTypography.captionSmall.pointSize))
+            }
+            .code {
+                FontFamilyVariant(.monospaced)
+                FontSize(.em(0.92))
+                BackgroundColor(.secondary.opacity(0.10))
+            }
+            .link {
+                ForegroundColor(.accentColor)
+            }
+            .paragraph { configuration in
+                configuration.label
+                    .markdownMargin(top: .zero, bottom: .em(0.3))
+            }
+            .list { configuration in
+                configuration.label
+                    .markdownMargin(top: .zero, bottom: .em(0.3))
+            }
+    }
+}
+
+private struct AgentTraceStructuredValueView: View {
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+
+    let value: AgentTraceStructuredValue
+
+    var body: some View {
+        switch value {
+        case .scalar(let text):
+            Text(text)
+                .font(interfaceScale.font(.captionSmall))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+        case .object(let fields):
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(fields.enumerated()), id: \.offset) { _, field in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(field.key)
+                            .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 88, idealWidth: 112, maxWidth: 152, alignment: .leading)
+                        AgentTraceStructuredValueView(value: field.value)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        case .list(let values):
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(index + 1).")
+                            .font(interfaceScale.font(.captionSmall))
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 20, alignment: .trailing)
+                        AgentTraceStructuredValueView(value: value)
+                    }
+                }
+            }
+        case .table(let columns, let rows):
+            ScrollView(.horizontal) {
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
+                    GridRow {
+                        ForEach(columns, id: \.self) { column in
+                            Text(column)
+                                .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                                Text(cell)
+                                    .font(interfaceScale.font(.captionSmall))
+                                    .foregroundStyle(.primary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension String {
+    /// Trace payload 经常包含只有换行的字段；结构化展示时把它视为缺失值。
+    var traceNonBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}

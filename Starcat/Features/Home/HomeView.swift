@@ -99,12 +99,22 @@ struct HomeView: View {
     /// 开始使用清单的“添加标签”应直接打开 Tags 管理里的新建标签 sheet。
     @State private var showNewTagSheetOnTagManagementOpen: Bool = false
 
-    /// HOM-52：批量 AI 整理"操作选择" sheet 显示状态。
-    @State private var showBatchAIOptions: Bool = false
-    /// HOM-52：批量 AI 整理进度面板 sheet 显示状态。
-    @State private var showBatchAIPanel: Bool = false
-    /// HOM-52：当前正在编辑的 Options（启动 sheet 时初始化，跨 sheet 关闭保留以记住上次选择）。
-    @State private var batchAIOptions: BatchAIQueueOptions = BatchAIQueueOptions()
+    /// HOM-52：批量 AI 整理固定工作区的一次性启动载荷。
+    @State private var batchAIOptionsPresentation: BatchAIOptionsPresentation?
+    /// 全部选中项均已有标签时给出轻量提示，避免点击按钮后毫无反馈。
+    @State private var batchAISelectionNotice: String?
+    /// HOM-52：当前正在编辑的 Options。
+    /// 手动入口固定生成标签，自动应用与摘要默认关闭；不能改全局 Options 默认值，
+    /// 因为自动整理仍依赖其“摘要 + 标签”的既有组合。摘要的两个上下文选项会在每次打开
+    /// Sheet 时重新读取全局设置，但 Sheet 内修改不会回写全局。
+    @State private var batchAIOptions: BatchAIQueueOptions = {
+        var options = BatchAIQueueOptions()
+        options.actions = [.tags]
+        options.autoApplyTags = false
+        return options
+    }()
+    /// GitHub Lists AI 分组审核 sheet。中栏「未分组」横幅与侧栏后台任务 popover 共用。
+    @State private var showGitHubStarListAIGroupingSheet = false
     /// 当前需要展示的 Pro 付费墙上下文。由批量 AI 等主窗口入口触发。
     @State private var paywallContext: ProPaywallContext?
     /// 工作台入口缺少有效对话模型时，由主窗口展示可操作提示，而不是静默失败。
@@ -458,8 +468,6 @@ struct HomeView: View {
             return .ai
         case .useRAGWorkspace:
             return .ragWorkspace
-        case .useAgentWorkspace:
-            return .agentWorkspace
         case .shareProfile:
             return .shareProfile
         case .unstarRepo:
@@ -486,31 +494,6 @@ struct HomeView: View {
             if !isPresented {
                 releaseTimelineTargetID = nil
             }
-        }
-        // HOM-52：批量 AI 整理"操作选择" sheet
-        .sheet(isPresented: $showBatchAIOptions) {
-            BatchAIOptionsSheet(
-                pendingCount: viewModel.untaggedCount,
-                options: $batchAIOptions,
-                onCancel: {
-                    showBatchAIOptions = false
-                },
-                onStart: {
-                    showBatchAIOptions = false
-                    Task {
-                        await startBatchAIIntegration()
-                    }
-                }
-            )
-            .appLocaleEnvironment()
-        }
-        // HOM-52：批量 AI 整理进度面板
-        .sheet(isPresented: $showBatchAIPanel) {
-            BatchAIQueuePanel(
-                service: dependencies.batchAIQueueService,
-                onClose: { showBatchAIPanel = false }
-            )
-            .appLocaleEnvironment()
         }
         .sheet(item: homePaywallBinding) { context in
             ProPaywallSheet.hosted(context: context, dependencies: dependencies)
@@ -618,6 +601,9 @@ struct HomeView: View {
         .onChange(of: settings.autoTidySettings) { _, _ in
             dependencies.autoTidyScheduler.reconfigure()
         }
+        .onChange(of: settings.githubStarListAutoGroupingSettings.scheduleConfiguration) { _, _ in
+            dependencies.autoTidyScheduler.reconfigure()
+        }
         )
     }
 
@@ -639,7 +625,7 @@ struct HomeView: View {
             handleTrendingRepoIDChange(newID)
         }
         // HOM-68：README 加载完成后把源 HTML 喂给翻译 VM，用于刷新 cacheIsStale。
-        // 仅 Manage 详情页（selectedRepo 非 nil）需要，Trending 路径不接翻译入口。
+        // 探索 / 活动 / 周刊由 ReadmeStateView 自己 bind；这里只补 Manage 全局 readmeVM。
         .onChange(of: readmeStateSignature) { _, _ in
             refreshTranslationSourceIfNeeded()
         }
@@ -762,9 +748,6 @@ struct HomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .gettingStartedDidOpenRAGWorkspace)) { _ in
             gettingStartedStore.markCompleted(.useRAGWorkspace)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gettingStartedDidOpenAgentWorkspace)) { _ in
-            gettingStartedStore.markCompleted(.useAgentWorkspace)
-        }
         .onReceive(NotificationCenter.default.publisher(for: .starcatWorkspaceRequiresProPaywall)) { note in
             // Smart Collections 等子视图通过 AppKit 窗口入口请求付费墙；只有主窗口持有
             // `ProPaywallSheet` 的 presentation state，故在这里统一接住并展示。
@@ -859,6 +842,11 @@ struct HomeView: View {
             icon: "arrow.counterclockwise",
             bottomPadding: 24
         )
+        .toast(
+            message: $batchAISelectionNotice,
+            icon: "tag",
+            bottomPadding: 24
+        )
         )
     }
 
@@ -928,7 +916,7 @@ struct HomeView: View {
         switch stepID {
         case .selectRepo, .openRepoHomepage, .addRepoToLibrary, .organizeRepo, .useAI, .unstarRepo:
             return true
-        case .signIn, .syncStars, .useSearch, .useRAGWorkspace, .useAgentWorkspace, .shareProfile:
+        case .signIn, .syncStars, .useSearch, .useRAGWorkspace, .shareProfile:
             return false
         }
     }
@@ -1125,15 +1113,6 @@ struct HomeView: View {
         )
     }
 
-    private func openAgentWorkspaceForGettingStarted() {
-        searchCenterViewModel.dismiss()
-        // 只有门禁通过且窗口真正打开后才完成引导，不能让付费墙或模型配置提示制造假进度。
-        guard AgentWorkspaceWindowController.show(dependencies: dependencies) else {
-            return
-        }
-        NotificationCenter.default.post(name: .gettingStartedDidOpenAgentWorkspace, object: nil)
-    }
-
     private func openRepoHomepageForGettingStarted() {
         guard let repo = viewModel.selectedRepo else {
             selectFirstRepoForGettingStarted()
@@ -1240,9 +1219,10 @@ struct HomeView: View {
             selectedInsightsTopic: $selectedInsightsTopic,
             showTagManagement: $showTagManagement,
             showReleaseTimeline: $showReleaseTimeline,
+            showGitHubStarListAIGroupingSheet: $showGitHubStarListAIGroupingSheet,
             onSelectRootPage: selectSidebarRootPage,
             onShowBatchAIPanel: {
-                showBatchAIPanel = true
+                presentBatchAIProgress()
             },
             onOpenSummaryTask: { repo in
                 openCompanionRepository(repo, openSummaryPanel: true)
@@ -1326,18 +1306,24 @@ struct HomeView: View {
                     selectedActivityItem: $selectedActivityItem,
                     undoStarAutoSelectRequestID: undoStarAutoSelectRequestID,
                     onStartBatchAI: {
-                        // HOM-52：点击 banner"开始整理" → 弹 Options sheet。
-                        // 复用上一次 batchAIOptions，让"再开一次"沿用最近偏好。
-                        showBatchAIOptions = true
+                        requestBatchAIOptions(scope: .allUntagged)
+                    },
+                    onStartSelectedBatchAI: { repositories in
+                        Task {
+                            await requestSelectedBatchAIOptions(repositories: repositories)
+                        }
+                    },
+                    onStartSelectedGitHubStarListAIGrouping: { repositories in
+                        startSelectedGitHubStarListAIGrouping(repositories: repositories)
                     },
                     onShowBatchAIPanel: {
-                        showBatchAIPanel = true
+                        presentBatchAIProgress()
+                    },
+                    onStartGitHubStarListAIGrouping: {
+                        startGitHubStarListAIGrouping()
                     },
                     onOpenSearchCenter: {
                         presentSearchCenterForGettingStarted()
-                    },
-                    onOpenAgentWorkspace: {
-                        openAgentWorkspaceForGettingStarted()
                     },
                     onOpenKnowledgeRAGWorkspace: {
                         openKnowledgeRAGWorkspaceForGettingStarted()
@@ -1393,6 +1379,8 @@ struct HomeView: View {
             // Weekly 已迁移到 Explore,右栏仍复用原 WeeklyDetailView；详情选择继续由
             // WeeklySelectionService 管理,不引入 ActivityItem 中间模型。
             WeeklyDetailView(item: dependencies.weeklySelectionService.selectedItem)
+        } else if selectedSidebarPage == .trending, selectedExploreMode == .awesome {
+            AwesomeDetailView(store: dependencies.awesomeStore)
         } else if selectedSidebarPage == .trending, selectedExploreMode != .trending {
             DiscoveryDetailView(item: selectedDiscoveryRepo)
         } else {
@@ -1442,6 +1430,14 @@ struct HomeView: View {
     private func handleDatabaseScopeChange(_ revision: UInt64) async {
         guard revision > 0 else { return }
         viewModel.invalidateRepoPinsForDatabaseChange()
+        dependencies.awesomeStore.resetForAccountChange()
+
+        if authSession.state.isAuthenticated,
+           selectedSidebarPage == .trending,
+           selectedExploreMode == .awesome {
+            await dependencies.awesomeStore.loadAwesome()
+            return
+        }
 
         guard authSession.state.isAuthenticated,
               selectedSidebarPage == .manage
@@ -1499,15 +1495,16 @@ struct HomeView: View {
         } else {
             readmeVM.reset()
         }
-        // Trending repo 没有本地 Repo.id，HOM-68 第一版不为 trending 提供翻译入口
-        // （翻译缓存需要 repo_id 外键，trending 走独立 trending_readmes 表，
-        //  避免引入复杂的双写路径；用户切到 Manage 后再翻译即可）。这里只清状态。
-        translationVM.prepare(
-            repo: nil,
-            sourceHtml: nil,
-            targetLanguage: settings.effectiveReadmeTranslationLanguage,
-            mode: settings.readmeTranslationMode
-        )
+        // 有详情页时由 ReadmeStateView 按当前仓 bind。这里只在取消选中时清掉共享 VM，
+        // 避免切到空态后上一仓翻译还在跑。
+        if newID == nil {
+            translationVM.prepare(
+                repo: nil,
+                sourceHtml: nil,
+                targetLanguage: settings.effectiveReadmeTranslationLanguage,
+                mode: settings.readmeTranslationMode
+            )
+        }
     }
 
     private func refreshTranslationSourceIfNeeded() {
@@ -1557,6 +1554,12 @@ struct HomeView: View {
         // user id 没变（如 unauthenticated ↔ awaitingUserCode 中间态、authenticated(A) 内部刷新）
         // → 不动任何业务状态，避免误清缓存导致 UI 无谓重渲。
         guard oldUserID != newUserID else { return }
+
+        // AI Lists 建议和队列快照都属于账号作用域。真正换账号或登出时立即取消旧请求，
+        // 并在 runLoop 退出后清掉内存态，避免旧账号建议出现在新账号审核页。
+        Task { @MainActor in
+            await dependencies.batchAIQueueService.resetForAccountChange()
+        }
 
         if let newUser = newState.user {
             // 登录态变化统一走 `handleAuthenticatedEntry`（区分会话恢复 vs 真换账号）。
@@ -1635,6 +1638,7 @@ struct HomeView: View {
         selectedTrendingRepo = nil
         selectedDiscoveryRepoID = nil
         selectedDiscoveryRepo = nil
+        dependencies.awesomeStore.selectedRepositoryID = nil
         selectedActivityItem = nil
         // MUL-176 followup：切走 Activity 时一并清掉周刊选中，避免下次回 Activity
         // 时右侧详情停留在上次的周刊项目上。
@@ -1752,6 +1756,13 @@ struct HomeView: View {
             Task { await openRepositoryDeepLink(repository) }
             return
 
+        case .spotlightRepository(let repositoryID):
+            // Spotlight 已由用户授权索引本机 private repo；必须走 local-only 路由，
+            // 不能借公开 Universal Link 绕过 ProjectPrivacyPolicy。
+            dependencies.mainWindowNavigationDispatcher.pendingRequest = nil
+            Task { await openSpotlightRepository(repositoryID: repositoryID) }
+            return
+
         case .repositoryRelease(let release):
             viewModel.clearTemporaryGlobalFilters()
             releaseTimelineTargetID = release.releaseID
@@ -1766,19 +1777,7 @@ struct HomeView: View {
     @MainActor
     private func openRepositoryDeepLink(_ target: RepositoryDeepLink) async {
         do {
-            if let repositoryID = target.repositoryID,
-               let localRepo = try await dependencies.repoRepository.findById(repositoryID) {
-                guard ProjectPrivacyPolicy.allowsUniversalLink(for: localRepo) else {
-                    repositoryDeepLinkErrorMessage = String.l10n("repo.share.open.error.unavailable")
-                    return
-                }
-                openCompanionRepository(localRepo)
-                return
-            }
-            if let localRepo = try await dependencies.repoRepository.findByOwnerName(
-                owner: target.owner,
-                name: target.name
-            ) {
+            if let localRepo = try await findLocalRepository(for: target) {
                 guard ProjectPrivacyPolicy.allowsUniversalLink(for: localRepo) else {
                     repositoryDeepLinkErrorMessage = String.l10n("repo.share.open.error.unavailable")
                     return
@@ -1807,6 +1806,36 @@ struct HomeView: View {
         }
     }
 
+    /// Spotlight 条目来自当前用户数据库，只允许本地命中；这样既能打开 private repo，
+    /// 又不会把 private 身份转成可公开传播的 URL，也不会因过期索引触发 GitHub 网络拉取。
+    @MainActor
+    private func openSpotlightRepository(repositoryID: Int64) async {
+        do {
+            guard let localRepo = try await dependencies.repoRepository.findById(repositoryID) else {
+                repositoryDeepLinkErrorMessage = String.l10n("repo.share.open.error.unavailable")
+                return
+            }
+            openCompanionRepository(localRepo)
+        } catch {
+            AppLog.ui.error(
+                "Spotlight repository navigation failed: \(error.localizedDescription, privacy: .public)"
+            )
+            repositoryDeepLinkErrorMessage = String.l10n("repo.share.open.error.unavailable")
+        }
+    }
+
+    /// stable GitHub ID 优先，owner/name 只作为 rename 前链接或旧索引的兼容回退。
+    private func findLocalRepository(for target: RepositoryDeepLink) async throws -> Repo? {
+        if let repositoryID = target.repositoryID,
+           let repository = try await dependencies.repoRepository.findById(repositoryID) {
+            return repository
+        }
+        return try await dependencies.repoRepository.findByOwnerName(
+            owner: target.owner,
+            name: target.name
+        )
+    }
+
     // MARK: - 辅助
 
     /// HomeView 首次挂载时的启动编排。
@@ -1830,10 +1859,9 @@ struct HomeView: View {
                 await viewModel.refreshSidebar()
             }
         }
-
         // HOM-126：启动自动后台 AI 整理调度器。
         // - `start()` 内部幂等，HomeView 多次进入只装一次。
-        // - 启动后挂启动延迟（60s 后触发一次）+ 24h 定时器 + onBatchFinished 回调。
+        // - 启动后分别按标签整理和仓库分组设置挂启动延迟、定时器与结果回调。
         // - 同步完成事件由下方 `.onChange(of: syncManager.state)` 转发给调度器
         //   （理由见 AutoTidyScheduler.notifySyncStateChanged 文档）。
         dependencies.autoTidyScheduler.start()
@@ -2131,36 +2159,205 @@ struct HomeView: View {
         }
     }
 
-    /// HOM-52：用户点击 banner"开始整理"后的真正启动入口。
-    ///
-    /// 流程：
-    /// 1. 从 RepoRepository 拉取 fetchUntagged() 作为本次整理输入集（不依赖 viewModel.items，
-    ///    避免搜索过滤后的子集被误处理）。
-    /// 2. 调 BatchAIQueueService.start 启动队列。
-    /// 3. 立刻打开进度面板让用户看到第一帧。
-    ///
-    /// 错误处理：fetchUntagged 失败仅记日志，不弹错——这是用户主动触发的场景，
-    /// 失败时按钮仍可继续点（dependencies 状态未变，第二次点击会重试）。
-    private func startBatchAIIntegration() async {
+    /// 未分组中栏横幅「开始整理」：先过 Pro 门控，再打开现有 GitHub Lists 审核 sheet。
+    private func startGitHubStarListAIGrouping() {
+        do {
+            try dependencies.entitlementGate.requirePro(.batchAI)
+            PerformanceTracer.shared.mark(.gitHubStarListAIGroupingRequested)
+            showGitHubStarListAIGroupingSheet = true
+        } catch {
+            paywallContext = ProPaywallContext(feature: .batchAI, message: error.localizedDescription)
+        }
+    }
+
+    /// Manage 多选入口复用现有审核窗口，只把本次点击时冻结的仓库作为整理范围。
+    private func startSelectedGitHubStarListAIGrouping(repositories: [Repo]) {
         do {
             try dependencies.entitlementGate.requirePro(.batchAI)
         } catch {
             paywallContext = ProPaywallContext(feature: .batchAI, message: error.localizedDescription)
             return
         }
-        let untagged: [Repo]
+
+        let existingMemberships = Dictionary(uniqueKeysWithValues: repositories.map { repo in
+            (repo.id, viewModel.githubStarListIDsByRepo[repo.id] ?? [])
+        })
+        let membershipCounts = Dictionary(uniqueKeysWithValues: viewModel.githubStarLists.map { list in
+            let count = existingMemberships.values.count(where: { $0.contains(list.id) })
+            return (list.id, count)
+        })
+        let preflightContext = GitHubStarListAIGroupingPreflightContext(
+            repositoryCount: repositories.count,
+            ungroupedRepositoryCount: existingMemberships.values.count(where: \.isEmpty),
+            analysisRepositoryCount: max(
+                0,
+                repositories.count - viewModel.githubStarListAIAutoIgnoredRepoIDs
+                    .intersection(Set(repositories.map(\.id))).count
+            ),
+            automaticallyIgnoredRepoIDs: viewModel.githubStarListAIAutoIgnoredRepoIDs
+                .intersection(Set(repositories.map(\.id))),
+            availableLists: viewModel.githubStarLists,
+            membershipCountByListID: membershipCounts,
+            rulesByListID: viewModel.githubStarListAIRulesByListID
+        )
+
+        PerformanceTracer.shared.mark(.gitHubStarListAIGroupingRequested)
+        GitHubStarListAIGroupingWindowController.present(
+            dependencies: dependencies,
+            preflightContext: preflightContext,
+            selectedRepositories: repositories,
+            existingMemberships: existingMemberships,
+            onDismiss: {
+                showGitHubStarListAIGroupingSheet = false
+            }
+        )
+        // Sidebar 仍用这份状态暂停装饰动画并统一处理窗口关闭；它再次请求 present 时，
+        // WindowController 会命中已存在窗口，不会用全库预检覆盖本次选中范围。
+        showGitHubStarListAIGroupingSheet = true
+    }
+
+    /// HOM-52：用户确认配置后的真正启动入口。
+    ///
+    /// 流程：
+    /// 1. 顶部横幅延迟拉取最新未分类全集；多选入口使用点击时固定的 Repo 值快照。
+    /// 2. 调 BatchAIQueueService.start 启动队列。
+    /// 3. 立刻打开进度面板让用户看到第一帧。
+    ///
+    /// 错误处理：fetchUntagged 失败仅记日志，不弹错——这是用户主动触发的场景，
+    /// 失败时按钮仍可继续点（dependencies 状态未变，第二次点击会重试）。
+    private func startBatchAIIntegration(scope: BatchAIRepositoryScope) async -> Bool {
         do {
-            untagged = try await dependencies.repoRepository.fetchUntagged()
+            try dependencies.entitlementGate.requirePro(.batchAI)
         } catch {
-            AppLog.ai.error("[batch-ai] fetchUntagged failed: \(error.localizedDescription, privacy: .public)")
-            return
+            paywallContext = ProPaywallContext(feature: .batchAI, message: error.localizedDescription)
+            return false
         }
-        guard !untagged.isEmpty else { return }
+        batchAIOptions.actions.insert(.tags)
+        guard dependencies.batchAIQueueService.configurationIssue(for: batchAIOptions) == nil else {
+            // Sheet 会用同一预检结果展示具体原因并保持打开；这里防止设置在点击瞬间变化后
+            // 仍去拉仓库或抢占正在运行的自动整理。
+            return false
+        }
+        let repositories: [Repo]
+        do {
+            repositories = try await scope.resolveRepositories {
+                try await dependencies.repoRepository.fetchUntagged()
+            }
+        } catch {
+            AppLog.ai.error("[batch-ai] resolve repositories failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard !repositories.isEmpty else { return false }
+        let wasSelectionScoped = scope.isSelectionScoped
         // 用户主动整理优先于静默自动轮次。必须等待旧 runLoop 完全退出后再复用
         // BatchAIQueueService，避免两轮同时改写 jobs / options 和标签数据。
         await dependencies.batchAIQueueService.preemptAutomaticRunForManualStart()
-        dependencies.batchAIQueueService.start(repos: untagged, options: batchAIOptions)
-        showBatchAIPanel = true
+        guard dependencies.batchAIQueueService.start(repos: repositories, options: batchAIOptions) else {
+            return false
+        }
+        if wasSelectionScoped {
+            dependencies.manageMultiSelectionStore.exit()
+        }
+        batchAIOptionsPresentation = nil
+        return true
+    }
+
+    /// 根据入口固定本次仓库范围，并重置本轮可选操作。
+    ///
+    /// 生成标签是固定主任务；摘要及其上下文每轮默认关闭，避免上一轮选择或全局摘要设置
+    /// 意外影响新的批量整理任务。
+    private func presentBatchAIOptions(
+        scope: BatchAIRepositoryScope,
+        skippedTaggedCount: Int = 0
+    ) {
+        batchAIOptions.actions = [.tags]
+        batchAIOptions.codeContextEnabledOverride = false
+        batchAIOptions.externalContextEnabledOverride = false
+        // 先固化本轮范围和数量，再创建 AppKit hosting tree，首帧不会读到上一轮全量状态。
+        let presentation = BatchAIOptionsPresentation(
+            scope: scope,
+            skippedTaggedCount: skippedTaggedCount
+        )
+        batchAIOptionsPresentation = presentation
+        let context = BatchAIWorkspacePreflightContext(
+            scope: presentation.scope,
+            pendingCount: presentation.pendingCount(untaggedCount: viewModel.untaggedCount),
+            skippedTaggedCount: presentation.skippedTaggedCount
+        )
+        BatchAIWorkspaceWindowController.present(
+            dependencies: dependencies,
+            initialMode: .preflight(context),
+            options: $batchAIOptions,
+            hasUsableExternalSearchProvider: hasUsableExternalSearchProvider,
+            onStart: startBatchAIIntegration,
+            onDismiss: dismissBatchAIOptions
+        )
+    }
+
+    /// 新任务不能覆盖尚未确认的标签；两个入口共用同一条守门逻辑。
+    private func requestBatchAIOptions(scope: BatchAIRepositoryScope) {
+        guard scope.pendingCount(untaggedCount: viewModel.untaggedCount) > 0 else { return }
+        if dependencies.batchAIQueueService.hasUnresolvedManualWork {
+            presentBatchAIProgress()
+        } else {
+            presentBatchAIOptions(scope: scope)
+        }
+    }
+
+    /// 多选列表可能来自全部仓库、语言或其它分类；开始前必须以数据库标签关系过滤，
+    /// 不能依赖列表缓存，否则用户刚添加标签后仍可能重复触发 AI 生成。
+    private func requestSelectedBatchAIOptions(repositories: [Repo]) async {
+        guard !repositories.isEmpty else { return }
+        if dependencies.batchAIQueueService.hasUnresolvedManualWork {
+            presentBatchAIProgress()
+            return
+        }
+
+        let assignments: [Int64: [Tag]]
+        do {
+            assignments = try await dependencies.repoTagRepository.fetchAllTagAssignments()
+        } catch {
+            AppLog.ai.error(
+                "[batch-ai] load tag assignments failed: \(error.localizedDescription, privacy: .public)"
+            )
+            batchAISelectionNotice = String.l10n("batch.loadTagsFailed")
+            return
+        }
+
+        let eligible = BatchAIRepositoryScope.filterUntaggedRepositories(
+            repositories,
+            tagAssignments: assignments
+        )
+        let skippedTaggedCount = repositories.count - eligible.count
+        guard !eligible.isEmpty else {
+            batchAISelectionNotice = String.l10n("batchAI.selection.allTagged")
+            return
+        }
+        presentBatchAIOptions(
+            scope: .selected(eligible),
+            skippedTaggedCount: skippedTaggedCount
+        )
+    }
+
+    /// 取消配置只清理临时任务范围，不退出多选，让用户可以继续调整勾选结果。
+    private func dismissBatchAIOptions() {
+        batchAIOptionsPresentation = nil
+    }
+
+    /// 队列在窗口关闭后继续运行；状态入口只重新挂载审核工作区，不创建或覆盖任务。
+    private func presentBatchAIProgress() {
+        BatchAIWorkspaceWindowController.present(
+            dependencies: dependencies,
+            initialMode: .review,
+            options: $batchAIOptions,
+            hasUsableExternalSearchProvider: hasUsableExternalSearchProvider,
+            onStart: startBatchAIIntegration,
+            onDismiss: dismissBatchAIOptions
+        )
+    }
+
+    private var hasUsableExternalSearchProvider: Bool {
+        !ExternalSearchRegistry(settings: dependencies.settings).usableProviderIDs().isEmpty
     }
 
     private var homePaywallBinding: Binding<ProPaywallContext?> {
@@ -2277,7 +2474,7 @@ struct HomeView: View {
             )
         case .weekly:
             selectedWeeklyLanguage = settings.listPreferenceValue(for: ListPreferenceKey.weeklyLanguage, login: login)
-        case .discover:
+        case .discover, .awesome:
             break
         }
     }

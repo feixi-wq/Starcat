@@ -245,6 +245,10 @@ struct ActivityNotificationPayload: Equatable, Sendable {
     var repositoryId: Int64? = nil
     /// 只有真实 Notifications thread 才能执行已读 / Done；组织 Issue 会话为 false。
     var canMarkDone: Bool = true
+    /// Issue / PR 的 `open` / `closed` / `merged`；其它主体为 nil。
+    var issueState: String? = nil
+    /// GitHub Issue / PR 标签，按仓库里的顺序；没有或尚未 hydrate 时为空。
+    var labels: [GitHubNotificationIssueLabel] = []
 }
 
 /// 通知时间线里当前用户 Star / Unstar / Fork 的右栏 banner。

@@ -5,9 +5,10 @@
 //  HOM-126 - 自动后台 AI 整理调度器。
 //
 //  模块职责：
-//  - 根据 `AutoTidySettings` 监听三类触发源：① App 启动延迟、② 同步完成、③ 定期定时。
-//  - 任一触发命中时，从 `RepoRepository.fetchUntagged()` 取未分类 repos，按用户配的
-//    排序策略截取前 N 个，调 `BatchAIQueueService.start(..., silent: true)` 静默跑。
+//  - 根据标签整理与 GitHub Lists 分组各自的设置监听三类触发源：
+//    ① App 启动延迟、② 同步完成、③ 定期定时。
+//  - 标签整理读取未分类标签的仓库；GitHub Lists 分组只读取未分组仓库，并在进入 AI
+//    队列前排除组织 OAuth 不可处理项与本配置下已经分析过的无匹配项。
 //  - 一轮跑完后，把 (applied / ignored / failed / total) 结果写回
 //    `AppSettings.autoTidySettings.lastRunAt + lastRunStats`，让设置页只读区展示。
 //
@@ -17,18 +18,17 @@
 //    多次写入时，避免把 BatchAIQueueService 拉成"刚跑完又被打断"的尴尬态。
 //  - **不重入**：若 BatchAIQueueService 已在 `isRunning`（无论是手动 HOM-52 还是上轮
 //    自动整理），新触发直接静默忽略——不排队、不打断。下一次触发自然会重新评估。
-//  - **设置总开关 OFF**：所有触发分支都先 guard `autoTidySettings.enabled`，
-//    用户关闭总开关后**已挂的监听不会主动卸载**（@Observable 自动追踪可观察读，
-//    closure 内 guard 足够；卸载监听会引入 disposable 状态机复杂度）。
+//  - **两套独立总开关**：触发时分别读取标签整理与 GitHub Lists 分组设置；关闭其中
+//    一套不会影响另一套。已挂的监听不主动卸载，closure 内按实时设置 guard 即可。
 //  - **生命周期**：调度器由 `AppDependencies` 持有（强引用），监听通过 weak self
 //    回调到方法上，避免循环引用。`StarcatApp` 不直接 retain。
-//  - **登录态**：未登录时 `RepoRepository.fetchUntagged()` 仍可调（返回 0 条），调度器
-//    会自然 no-op。无需额外加 auth gate。
+//  - **登录态**：未登录时仓库查询会自然返回空结果，无需额外增加 auth gate。
 //  - **测试 host**：`TestEnvironment.isRunning == true` 时跳过所有触发（同步完成 /
 //    定时器都不响应），避免 xcodebuild test 期间偷跑 AI 调用。
 //
 //  非目标（HOM-126 明确不做）：
-//  - ❌ 持久化队列：自动模式不需要"app 关掉再开继续跑"，重启后启动触发即可重做一轮。
+//  - ❌ 持久化执行中队列：不会恢复中断的网络请求；仅持久化低置信度或无匹配仓库 ID，
+//    避免配置不变时反复分析同一批仓库。分组规则或阈值变化后自动重新评估。
 //  - ❌ 强中断：调度器**只发起**整理；面板的 pause / cancel 仍由用户走 BatchAIQueuePanel。
 //  - ❌ 跨账号隔离：本地偏好按 UserDefaults 全局存，登出 / 切账号不清空配置（与
 //    AISettings 其他偏好策略一致）。
@@ -36,6 +36,13 @@
 
 import Foundation
 import Observation
+
+private struct AutoTidyRequestedActions: OptionSet, Sendable {
+    let rawValue: Int
+
+    static let standard = Self(rawValue: 1 << 0)
+    static let githubListGrouping = Self(rawValue: 1 << 1)
+}
 
 @MainActor
 @Observable
@@ -46,6 +53,7 @@ final class AutoTidyScheduler {
     private let settings: AppSettings
     private let repoRepository: any RepoRepositoryProtocol
     private let batchService: BatchAIQueueService
+    private let githubStarListGroupingSession: GitHubStarListAIGroupingSession
     private let syncManager: SyncManager
     private let entitlementGate: EntitlementGate?
 
@@ -54,6 +62,9 @@ final class AutoTidyScheduler {
     /// 上次自动触发的时刻（含被拒绝的触发——只要进入了 `triggerNow` 即记录）。
     /// 用于反抖动判断。第一次触发为 nil，直接通过。
     private(set) var lastTriggerAt: Date?
+    /// 标签整理与仓库分组拥有独立触发配置，因此反抖动时间也必须分开保存。
+    private var lastStandardTriggerAt: Date?
+    private var lastGroupingTriggerAt: Date?
 
     /// 最短两次自动触发间隔。HOM-126 要求 5 分钟。
     /// 暴露出来便于测试覆盖（默认值即生产值）。
@@ -62,9 +73,10 @@ final class AutoTidyScheduler {
     /// 启动后延迟触发的 Task 句柄。app 关闭或 disable 时取消（防止延迟段被 retain）。
     private var launchDelayTask: Task<Void, Never>?
 
-    /// 定期触发的 Timer。仅在 `triggerScheduled == true` 且 `enabled == true` 时存活。
-    /// 间隔读自 `autoTidySettings.scheduledIntervalHours`（默认 1 小时）。
+    /// 标签整理的定期触发 Timer。仅在对应定时开关启用时存活。
     private var scheduledTimer: Timer?
+    /// GitHub Lists 后台分组使用独立间隔，不能挂靠标签整理的定时器。
+    private var githubListGroupingScheduledTimer: Timer?
 
     /// 上一次观察到的 `SyncState`，用于检测「从 syncing → completed」边沿。
     /// 直接监听 `state == .completed` 会被反复触发（Equatable 包含同一时间戳的多次
@@ -86,6 +98,7 @@ final class AutoTidyScheduler {
         settings: AppSettings,
         repoRepository: any RepoRepositoryProtocol,
         batchService: BatchAIQueueService,
+        githubStarListGroupingSession: GitHubStarListAIGroupingSession,
         syncManager: SyncManager,
         entitlementGate: EntitlementGate? = nil,
         minTriggerInterval: TimeInterval = 300
@@ -93,6 +106,7 @@ final class AutoTidyScheduler {
         self.settings = settings
         self.repoRepository = repoRepository
         self.batchService = batchService
+        self.githubStarListGroupingSession = githubStarListGroupingSession
         self.syncManager = syncManager
         self.entitlementGate = entitlementGate
         self.minTriggerInterval = minTriggerInterval
@@ -122,7 +136,14 @@ final class AutoTidyScheduler {
         // 减少"上次自动跑成果"与"用户实际感知"的不一致。如果未来需要严格区分，
         // 可以读 batchService.silent 决定是否写回（当前不区分）。
         batchService.onBatchFinished = { [weak self] completed, ignored, failed, total in
-            self?.recordLastRun(completed: completed, ignored: ignored, failed: failed, total: total)
+            guard let self, self.batchService.silent else { return }
+            self.recordLastRun(completed: completed, ignored: ignored, failed: failed, total: total)
+        }
+        githubStarListGroupingSession.onAutomaticSuggestionsDeferred = { [weak self] fingerprint, repoIDs in
+            self?.recordDeferredGitHubListGroupingRepositories(
+                configurationFingerprint: fingerprint,
+                repoIDs: repoIDs
+            )
         }
 
         installLaunchDelay()
@@ -144,14 +165,20 @@ final class AutoTidyScheduler {
     ///   原生 SwiftUI 订阅入口，让它把状态变化转发给 scheduler 即可，零额外机制。
     func notifySyncStateChanged(_ newState: SyncState) {
         defer { lastObservedSyncState = newState }
-        guard settings.autoTidySettings.enabled,
-              settings.autoTidySettings.triggerOnSync else { return }
+        let snapshot = settings.autoTidySettings
+        let shouldRunStandardActions = snapshot.enabled && snapshot.triggerOnSync
+        let grouping = settings.githubStarListAutoGroupingSettings
+        let shouldRunGrouping = grouping.enabled && grouping.triggerOnSync
+        guard shouldRunStandardActions || shouldRunGrouping else { return }
         // 边沿检测：仅在「曾观察到 syncing 且现在 completed」时触发，避免
         // .completed 被反复写入相同时间戳导致的重复触发。
         guard case .completed = newState else { return }
         if case .syncing = lastObservedSyncState {
             AppLog.ai.notice("[autoTidy] trigger via sync completion")
-            triggerNow(reason: "sync")
+            triggerNow(
+                reason: "sync",
+                actions: requestedActions(standard: shouldRunStandardActions, grouping: shouldRunGrouping)
+            )
         }
     }
 
@@ -169,10 +196,19 @@ final class AutoTidyScheduler {
             try? await Task.sleep(for: .seconds(60))
             await MainActor.run {
                 guard let self else { return }
-                guard self.settings.autoTidySettings.enabled,
-                      self.settings.autoTidySettings.triggerOnLaunch else { return }
+                let snapshot = self.settings.autoTidySettings
+                let shouldRunStandardActions = snapshot.enabled && snapshot.triggerOnLaunch
+                let grouping = self.settings.githubStarListAutoGroupingSettings
+                let shouldRunGrouping = grouping.enabled && grouping.triggerOnLaunch
+                guard shouldRunStandardActions || shouldRunGrouping else { return }
                 AppLog.ai.notice("[autoTidy] trigger via launch delay (60s)")
-                self.triggerNow(reason: "launch")
+                self.triggerNow(
+                    reason: "launch",
+                    actions: self.requestedActions(
+                        standard: shouldRunStandardActions,
+                        grouping: shouldRunGrouping
+                    )
+                )
             }
         }
     }
@@ -190,19 +226,37 @@ final class AutoTidyScheduler {
     private func installScheduledTimer() {
         scheduledTimer?.invalidate()
         scheduledTimer = nil
-        guard settings.autoTidySettings.enabled,
-              settings.autoTidySettings.triggerScheduled else { return }
-        let interval = settings.autoTidySettings.scheduledIntervalSeconds
-        // Timer 在 main runloop 上跑，handler 已经在 @MainActor。
-        // `repeats: true` 让它持续触发；卸载靠 invalidate。
-        scheduledTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.settings.autoTidySettings.enabled,
-                      self.settings.autoTidySettings.triggerScheduled else { return }
-                let hours = self.settings.autoTidySettings.scheduledIntervalHours
-                AppLog.ai.notice("[autoTidy] trigger via scheduled timer (\(hours, privacy: .public)h)")
-                self.triggerNow(reason: "timer")
+        githubListGroupingScheduledTimer?.invalidate()
+        githubListGroupingScheduledTimer = nil
+
+        if settings.autoTidySettings.enabled, settings.autoTidySettings.triggerScheduled {
+            let interval = settings.autoTidySettings.scheduledIntervalSeconds
+            // Timer 在 main runloop 上跑，handler 已经在 @MainActor。
+            scheduledTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard self.settings.autoTidySettings.enabled,
+                          self.settings.autoTidySettings.triggerScheduled else { return }
+                    let hours = self.settings.autoTidySettings.scheduledIntervalHours
+                    AppLog.ai.notice("[autoTidy] trigger standard via scheduled timer (\(hours, privacy: .public)h)")
+                    self.triggerNow(reason: "timer", actions: .standard)
+                }
+            }
+        }
+
+        let grouping = settings.githubStarListAutoGroupingSettings
+        if grouping.enabled, grouping.triggerScheduled {
+            githubListGroupingScheduledTimer = Timer.scheduledTimer(
+                withTimeInterval: grouping.scheduledIntervalSeconds,
+                repeats: true
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    let current = self.settings.githubStarListAutoGroupingSettings
+                    guard current.enabled, current.triggerScheduled else { return }
+                    AppLog.ai.notice("[autoTidy] trigger GitHub Lists via scheduled timer (\(current.scheduledIntervalHours, privacy: .public)h)")
+                    self.triggerNow(reason: "github-list-timer", actions: .githubListGrouping)
+                }
             }
         }
     }
@@ -225,23 +279,24 @@ final class AutoTidyScheduler {
     /// 不复用 HOM-52 手动模式（那个会弹 BatchAIOptionsSheet 让用户选）。
     func triggerManually() {
         AppLog.ai.notice("[autoTidy] trigger via manual button (settings page)")
-        runOnce(skipDebounce: true, reason: "manual")
+        runOnce(skipDebounce: true, reason: "manual", actions: .standard)
     }
 
     // MARK: - 核心：单轮触发
 
     /// 走反抖动 + 单轮执行。
     /// 内部 helper：所有自动触发（launch / sync / timer）都经过这里。
-    private func triggerNow(reason: String) {
-        runOnce(skipDebounce: false, reason: reason)
+    private func triggerNow(reason: String, actions: AutoTidyRequestedActions) {
+        runOnce(skipDebounce: false, reason: reason, actions: actions)
     }
 
-    private func runOnce(skipDebounce: Bool, reason: String) {
-        guard settings.autoTidySettings.enabled else {
-            AppLog.ai.debug("[autoTidy] runOnce(\(reason, privacy: .public)) skipped: disabled")
-            return
-        }
-        guard settings.autoTidySettings.hasAnyAction else {
+    private func runOnce(
+        skipDebounce: Bool,
+        reason: String,
+        actions requestedActions: AutoTidyRequestedActions
+    ) {
+        var actions = enabledActions(from: requestedActions)
+        guard !actions.isEmpty else {
             AppLog.ai.debug("[autoTidy] runOnce(\(reason, privacy: .public)) skipped: no action enabled")
             return
         }
@@ -252,11 +307,10 @@ final class AutoTidyScheduler {
             AppLog.ai.info("[autoTidy] runOnce(\(reason, privacy: .public)) skipped: \(error.localizedDescription, privacy: .public)")
             return
         }
-        // 反抖动
-        if !skipDebounce, let last = lastTriggerAt {
-            let elapsed = Date().timeIntervalSince(last)
-            if elapsed < minTriggerInterval {
-                AppLog.ai.debug("[autoTidy] runOnce(\(reason, privacy: .public)) skipped: debounce (elapsed \(Int(elapsed), privacy: .public)s < \(Int(self.minTriggerInterval), privacy: .public)s)")
+        if !skipDebounce {
+            actions = actionsPassingDebounce(actions)
+            guard !actions.isEmpty else {
+                AppLog.ai.debug("[autoTidy] runOnce(\(reason, privacy: .public)) skipped: debounce")
                 return
             }
         }
@@ -265,11 +319,11 @@ final class AutoTidyScheduler {
             AppLog.ai.debug("[autoTidy] runOnce(\(reason, privacy: .public)) skipped: batchService already running")
             return
         }
-        lastTriggerAt = Date()
+        recordTriggerTime(for: actions)
 
         Task { [weak self] in
             guard let self else { return }
-            await self.executeRound(reason: reason)
+            await self.executeRound(reason: reason, actions: actions)
         }
     }
 
@@ -279,34 +333,162 @@ final class AutoTidyScheduler {
     /// 与 HOM-52 手动模式启动的中间态（用户在自动整理刚拉完未分类但还没 start
     /// 时点击手动 banner，可能造成同 repo 出现在两个批次）。
     @MainActor
-    private func executeRound(reason: String) async {
+    private func executeRound(reason: String, actions: AutoTidyRequestedActions) async {
         let snapshot = settings.autoTidySettings  // 快照防 setter 在 sleep 期间改值
+        let groupingSnapshot = settings.githubStarListAutoGroupingSettings
+        let needsStandardActions = actions.contains(.standard)
+            && snapshot.enabled
+            && snapshot.hasAnyAction
+        let needsGitHubListGrouping = actions.contains(.githubListGrouping)
+            && groupingSnapshot.enabled
         let untagged: [Repo]
+        let ungrouped: [Repo]
         do {
-            untagged = try await repoRepository.fetchUntagged()
+            async let untaggedResult: [Repo] = needsStandardActions
+                ? repoRepository.fetchUntagged()
+                : []
+            async let ungroupedResult: [Repo] = needsGitHubListGrouping
+                ? repoRepository.fetchListPage(
+                    scope: .githubStarListUngrouped,
+                    filters: .empty,
+                    sort: .starredAtDesc,
+                    limit: Int.max,
+                    offset: 0
+                )
+                : []
+            untagged = try await untaggedResult
+            ungrouped = try await ungroupedResult
         } catch {
-            AppLog.ai.error("[autoTidy] fetchUntagged failed: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        guard !untagged.isEmpty else {
-            AppLog.ai.notice("[autoTidy] executeRound(\(reason, privacy: .public)) no untagged repos, no-op")
-            return
-        }
-        let picked = snapshot.sortOrder.pick(from: untagged, limit: snapshot.maxPerRun)
-        guard !picked.isEmpty else { return }
-
-        // 再次确认 batchService 仍空闲（fetchUntagged 是 async，期间可能有用户手动启动）
-        guard !batchService.isRunning else {
-            AppLog.ai.debug("[autoTidy] executeRound(\(reason, privacy: .public)) skipped: batchService became running mid-flight")
+            AppLog.ai.error("[autoTidy] load candidate repos failed: \(error.localizedDescription, privacy: .public)")
             return
         }
 
-        let options = snapshot.makeBatchOptions()
-        AppLog.ai.notice("[autoTidy] executeRound(\(reason, privacy: .public)) starting: untagged=\(untagged.count, privacy: .public), picked=\(picked.count, privacy: .public), summary=\(snapshot.generateSummary, privacy: .public), tags=\(snapshot.generateTags, privacy: .public), threshold=\(snapshot.confidenceThreshold, privacy: .public)")
-        batchService.start(repos: picked, options: options, silent: true)
+        // 两类动作拥有各自范围和执行服务：标签/摘要只处理未打标签仓库；Lists 只处理
+        // 未分组仓库。v34 自动忽略和本规则已尝试项由 grouping session 在截取批量前排除。
+        let standardPicked = snapshot.sortOrder.pick(from: untagged, limit: snapshot.maxPerRun)
+        guard !standardPicked.isEmpty || !ungrouped.isEmpty else {
+            AppLog.ai.notice("[autoTidy] executeRound(\(reason, privacy: .public)) no candidate repos, no-op")
+            return
+        }
+
+        var startedStandardCount = 0
+        if needsStandardActions, !standardPicked.isEmpty {
+            if batchService.isRunning {
+                AppLog.ai.debug("[autoTidy] standard actions skipped: batchService became running mid-flight")
+            } else {
+                let options = snapshot.makeBatchOptions(standardActionRepoIDs: Set(standardPicked.map(\.id)))
+                if options.isValidForStart {
+                    let didStart = batchService.start(repos: standardPicked, options: options, silent: true)
+                    startedStandardCount = didStart ? standardPicked.count : 0
+                }
+            }
+        }
+
+        var startedGroupingCount = 0
+        if needsGitHubListGrouping, !ungrouped.isEmpty {
+            if githubStarListGroupingSession.mode == .manual || githubStarListGroupingSession.isRunning {
+                AppLog.ai.debug("[autoTidy] GitHub Lists grouping skipped: manual/previous grouping is active")
+            } else {
+                // 已取消 Star 或已加入分组的仓库无需继续占用 UserDefaults；每轮用当前未分组
+                // 集合顺手收缩一次，避免长期使用后 attempted IDs 只增不减。
+                let currentUngroupedIDs = Set(ungrouped.map(\.id))
+                let activeAttemptedIDs = groupingSnapshot.attemptedRepositoryIDs
+                    .intersection(currentUngroupedIDs)
+                let result = await githubStarListGroupingSession.startAutomatic(
+                    repos: ungrouped,
+                    confidenceThreshold: groupingSnapshot.confidenceThreshold,
+                    maxPerRun: groupingSnapshot.maxPerRun,
+                    sortOrder: groupingSnapshot.sortOrder,
+                    attemptedRepositoryIDs: activeAttemptedIDs,
+                    previousConfigurationFingerprint: groupingSnapshot.attemptConfigurationFingerprint
+                )
+                switch result {
+                case .unavailable:
+                    break
+                case .upToDate(let fingerprint):
+                    updateGitHubListGroupingAttemptContext(
+                        configurationFingerprint: fingerprint,
+                        retainedAttemptedRepositoryIDs: activeAttemptedIDs
+                    )
+                case .started(let fingerprint, let repositoryCount):
+                    startedGroupingCount = repositoryCount
+                    updateGitHubListGroupingAttemptContext(
+                        configurationFingerprint: fingerprint,
+                        retainedAttemptedRepositoryIDs: activeAttemptedIDs
+                    )
+                }
+            }
+        }
+        AppLog.ai.notice("[autoTidy] executeRound(\(reason, privacy: .public)) started: standard=\(startedStandardCount, privacy: .public), grouping=\(startedGroupingCount, privacy: .public), summary=\(needsStandardActions && snapshot.generateSummary, privacy: .public), tags=\(needsStandardActions && snapshot.generateTags, privacy: .public), groupingThreshold=\(groupingSnapshot.confidenceThreshold, privacy: .public)")
     }
 
     // MARK: - 写回运行结果
+
+    private func requestedActions(standard: Bool, grouping: Bool) -> AutoTidyRequestedActions {
+        var actions: AutoTidyRequestedActions = []
+        if standard { actions.insert(.standard) }
+        if grouping { actions.insert(.githubListGrouping) }
+        return actions
+    }
+
+    private func enabledActions(from requested: AutoTidyRequestedActions) -> AutoTidyRequestedActions {
+        var actions: AutoTidyRequestedActions = []
+        if requested.contains(.standard), settings.autoTidySettings.hasEnabledBackgroundAction {
+            actions.insert(.standard)
+        }
+        if requested.contains(.githubListGrouping), settings.githubStarListAutoGroupingSettings.enabled {
+            actions.insert(.githubListGrouping)
+        }
+        return actions
+    }
+
+    /// 两套触发器分别反抖动；同一时刻的同步事件仍可一次启动两类任务，而两个独立定时器
+    /// 也不会因为其中一个刚触发就永久饿死另一个。
+    private func actionsPassingDebounce(
+        _ requested: AutoTidyRequestedActions,
+        now: Date = .now
+    ) -> AutoTidyRequestedActions {
+        var actions: AutoTidyRequestedActions = []
+        if requested.contains(.standard),
+           lastStandardTriggerAt.map({ now.timeIntervalSince($0) >= minTriggerInterval }) ?? true {
+            actions.insert(.standard)
+        }
+        if requested.contains(.githubListGrouping),
+           lastGroupingTriggerAt.map({ now.timeIntervalSince($0) >= minTriggerInterval }) ?? true {
+            actions.insert(.githubListGrouping)
+        }
+        return actions
+    }
+
+    private func recordTriggerTime(for actions: AutoTidyRequestedActions, now: Date = .now) {
+        if actions.contains(.standard) { lastStandardTriggerAt = now }
+        if actions.contains(.githubListGrouping) { lastGroupingTriggerAt = now }
+        lastTriggerAt = now
+    }
+
+    private func updateGitHubListGroupingAttemptContext(
+        configurationFingerprint: String,
+        retainedAttemptedRepositoryIDs: Set<Int64>
+    ) {
+        var grouping = settings.githubStarListAutoGroupingSettings
+        if grouping.attemptConfigurationFingerprint != configurationFingerprint {
+            grouping.attemptedRepositoryIDs = []
+        } else {
+            grouping.attemptedRepositoryIDs = retainedAttemptedRepositoryIDs
+        }
+        grouping.attemptConfigurationFingerprint = configurationFingerprint
+        settings.githubStarListAutoGroupingSettings = grouping
+    }
+
+    private func recordDeferredGitHubListGroupingRepositories(
+        configurationFingerprint: String,
+        repoIDs: Set<Int64>
+    ) {
+        var grouping = settings.githubStarListAutoGroupingSettings
+        guard grouping.attemptConfigurationFingerprint == configurationFingerprint else { return }
+        grouping.attemptedRepositoryIDs.formUnion(repoIDs)
+        settings.githubStarListAutoGroupingSettings = grouping
+    }
 
     /// `BatchAIQueueService.onBatchFinished` 回调入口：把本轮成果写回 settings。
     private func recordLastRun(completed: Int, ignored: Int, failed: Int, total: Int) {

@@ -37,6 +37,8 @@ struct CacheDirectoryLocator {
         case translation
         case externalSearch
         case wiki
+        case issueTimeline
+        case issueCommentDraft
         case recommendation
         case repoAIChatHistory
         case ragDatabase
@@ -122,6 +124,12 @@ struct CacheDirectoryLocator {
         case .wiki:
             return try applicationSupportRoot()
                 .appendingPathComponent("wiki-cache", isDirectory: true)
+        case .issueTimeline:
+            return try applicationSupportRoot()
+                .appendingPathComponent("issue-timeline-cache", isDirectory: true)
+        case .issueCommentDraft:
+            return try applicationSupportRoot()
+                .appendingPathComponent("issue-comment-draft-cache", isDirectory: true)
         case .recommendation:
             return try applicationSupportRoot()
                 .appendingPathComponent("recommendation-cache", isDirectory: true)

@@ -5,7 +5,8 @@
 //  Agent Runtime 后端声明、能力矩阵与路由器。
 //
 //  后端选择属于 AgentDefinition 的声明式契约，不允许 Workspace 根据 Agent ID
-//  临时分支。只读业务 Agent 可在 Loop / Codex 间切换；带审批写入的 Agent 继续锁定 Loop。
+//  临时分支。Workspace 与 Router 必须共用同一套解析规则，避免界面显示的 Runtime
+//  与实际执行后端不一致。
 //
 
 import Foundation
@@ -45,7 +46,7 @@ struct AgentRuntimeCapabilities: Equatable, Sendable {
         supportsReliableCancellation: true
     )
 
-    static let codexAppServerPOC = AgentRuntimeCapabilities(
+    static let codexAppServer = AgentRuntimeCapabilities(
         supportsResume: false,
         supportsSteering: false,
         supportsInteractiveApproval: false,
@@ -55,8 +56,9 @@ struct AgentRuntimeCapabilities: Equatable, Sendable {
         supportsReliableCancellation: true
     )
 
-    /// rc.8 的 stdio JSON-RPC 没有 cancel、session close 和双向 approval。
-    static let deepSeekHarnessRC8 = AgentRuntimeCapabilities(
+    /// 当前 `0.1.1rc1` Runtime 的 stdio JSON-RPC adapter 尚未开放 cancel、
+    /// session close 和双向 approval；能力矩阵描述 Starcat 已接入能力，不跟包版本命名。
+    static let deepSeekHarness = AgentRuntimeCapabilities(
         supportsResume: false,
         supportsSteering: false,
         supportsInteractiveApproval: false,
@@ -83,23 +85,32 @@ struct AgentRuntimePolicy: Hashable, Sendable {
         defaultBackend: .builtinLoop
     )
 
-    /// Codex 通过 dynamic tools 只接入 Starcat 的自动只读工具。DeepSeek rc.8 尚无
-    /// 等价双向工具协议，因此不能把两者伪装成同一能力。
-    static let codexReadOnly = AgentRuntimePolicy(
-        allowedBackends: [.builtinLoop, .codexAppServer],
+    /// 只读业务 Agent 可在内置 Loop、Codex dynamic tools 与 DeepSeek 每轮 MCP
+    /// Bridge 之间切换。三条协议共享 AgentDefinition，但各自保持独立执行边界。
+    static let businessReadOnly = AgentRuntimePolicy(
+        allowedBackends: [.builtinLoop, .codexAppServer, .deepSeekHarness],
         defaultBackend: .builtinLoop
     )
 
-    static let externalPOC = AgentRuntimePolicy(
+    static let externalReadOnly = AgentRuntimePolicy(
         allowedBackends: [.codexAppServer, .deepSeekHarness],
         defaultBackend: .codexAppServer
     )
+
+    /// 将全局 Runtime 偏好解析为当前 Agent 真正允许的后端。
+    ///
+    /// Runtime 偏好会跨 Agent 保留；切换到能力更窄的 Agent 时不能留下一个可选但
+    /// 无法执行的组合。这里回退到 definition 明确声明的默认值，Workspace 用它展示，
+    /// Router 用它执行，从而避免“界面显示 DeepSeek，实际却运行 Loop”的隐式降级。
+    func resolvedBackend(for preferredBackend: AgentRuntimeBackend) -> AgentRuntimeBackend {
+        allowedBackends.contains(preferredBackend) ? preferredBackend : defaultBackend
+    }
 }
 
 /// 把 Workspace 与具体 Runtime 解耦，并保持现有 `AgentRuntime` 协议不变。
 ///
 /// Router 每次 run 都按 definition 的 policy 解析后端。命令广播给已装配的 Runtime：
-/// `AgentRunCommand` 自带 runID，非目标 Runtime 会安全忽略；这样无需为 POC 扩数据库或
+/// `AgentRunCommand` 自带 runID，非目标 Runtime 会安全忽略；这样无需扩数据库或
 /// 修改公共命令协议来保存 runID → backend 映射。
 struct AgentRuntimeRouter: AgentRuntime {
     let preferredBackend: AgentRuntimeBackend
@@ -139,16 +150,8 @@ struct AgentRuntimeRouter: AgentRuntime {
 
     func resolvedBackend(for definition: AgentDefinition) -> AgentRuntimeBackend? {
         let policy = definition.runtimePolicy
-        if policy.allowedBackends.contains(preferredBackend), runtimes[preferredBackend] != nil {
-            return preferredBackend
-        }
-        // 用户显式选择外部后端后不允许悄悄降级成 Loop；不兼容的 Agent 应显示不可用，
-        // 否则 UI 看起来在跑 Codex，实际却会再次命中 Loop 的本地预算。
-        guard preferredBackend == .builtinLoop else { return nil }
-        if policy.allowedBackends.contains(policy.defaultBackend), runtimes[policy.defaultBackend] != nil {
-            return policy.defaultBackend
-        }
-        return nil
+        let resolvedBackend = policy.resolvedBackend(for: preferredBackend)
+        return runtimes[resolvedBackend] == nil ? nil : resolvedBackend
     }
 
     private func resolvedRuntime(for definition: AgentDefinition) -> any AgentRuntime {

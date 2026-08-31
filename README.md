@@ -1,15 +1,16 @@
 <div align="center">
 <a href="https://starcat.ink"><img src="./banner.webp" width="100%" alt="Starcat" align="center"/></a>
 
-<h2>Starcat</h2>
-<p>GitHub Stars management, local RAG knowledge base, Agent workspace, GitHub notifications, My Projects, library and repository insights, macOS desktop widgets, AI summaries, semantic search, release tracking, browser plugins, Alfred / uTools / Raycast, and more.</p>
+<h1>Starcat — Native GitHub Stars Manager &amp; AI Knowledge Base for macOS</h1>
+<p>Organize, search, and ask questions across your GitHub Stars — locally on your Mac.</p>
 
 <a href="https://github.com/starcat-app/homebrew-starcat"><img src="https://img.shields.io/badge/Install%20with-Homebrew-FBBF24?style=for-the-badge&logo=homebrew&logoColor=white" width="220" alt="Install with Homebrew"/></a>
+<a href="https://github.com/starcat-app/Starcat"><img src="https://img.shields.io/github/stars/starcat-app/Starcat?style=for-the-badge&logo=github&label=Star%20Starcat&color=24292f" alt="Star Starcat on GitHub"/></a>
 <br/>
 <a href="https://apps.apple.com/app/starcat-for-github/id6788809803?mt=12"><img src="./screenshots/mac-app-store-en.png" alt="Download on the Mac App Store" height="40"/></a>
 <br/>
 <sub>
-<b>macOS 15 Sequoia or newer</b>: Install with <a href="https://github.com/starcat-app/homebrew-starcat">Homebrew</a>, download the <a href="https://starcat.ink/downloads/Starcat-1.4.0-arm64.dmg">current Direct build (1.4.0)</a> for Apple Silicon Macs, or get <b><a href="https://apps.apple.com/app/starcat-for-github/id6788809803?mt=12">Starcat for GitHub</a></b> from the Mac App Store.<br>
+<b>macOS 15 Sequoia or newer</b>: Install with <a href="https://github.com/starcat-app/homebrew-starcat">Homebrew</a>, download the <a href="https://starcat.ink">Direct build</a> for Apple Silicon Macs, or get <b><a href="https://apps.apple.com/app/starcat-for-github/id6788809803?mt=12">Starcat for GitHub</a></b> from the Mac App Store.<br>
 Previous versions and release notes: <a href="./CHANGELOG.md">Changelog</a> · <a href="https://starcat.ink/changelog.html">Website changelog</a><br>
 Public issue tracker: <a href="https://github.com/starcat-app/starcat-pro/issues">Report a bug or request a feature</a><br>
 User docs: <a href="https://starcat.mintlify.app/">starcat.mintlify.app</a> · Mac App Store: <a href="https://dong4j.app/starcat/">dong4j.app/starcat</a> · Privacy: <a href="https://starcat.ink/privacy.html">Privacy Policy</a> · <a href="https://starcat.ink/eula.html">EULA</a><br>
@@ -22,7 +23,7 @@ User docs: <a href="https://starcat.mintlify.app/">starcat.mintlify.app</a> · M
 <div align="center">
 <a href="https://starcat.ink"><img src="https://img.shields.io/badge/website-starcat.ink-38BDF8?style=flat&color=blue" alt="website"/></a>
 <a href="https://dong4j.app/starcat/"><img src="https://img.shields.io/badge/Mac%20App%20Store-dong4j.app-lightgrey.svg?style=flat&color=blue" alt="Mac App Store"/></a>
-<a href="https://starcat.ink/downloads/Starcat-1.4.0-arm64.dmg"><img src="https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey.svg?style=flat&color=blue" alt="platform"/></a>
+<a href="https://starcat.ink"><img src="https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey.svg?style=flat&color=blue" alt="platform"/></a>
 <a href="https://github.com/starcat-app/starcat-localization"><img src="https://img.shields.io/badge/localization-open-lightgrey.svg?style=flat&color=blue" alt="localization"/></a>
 <a href="https://github.com/starcat-app/starcat-pro/issues"><img src="https://img.shields.io/github/issues/starcat-app/starcat-pro?style=flat&color=blue" alt="issues"/></a>
 <a href="https://github.com/starcat-app"><img src="https://img.shields.io/badge/org-starcat--app-lightgrey.svg?style=flat&color=blue" alt="organization"/></a>
@@ -40,13 +41,13 @@ While building Starcat I started thinking about what a GitHub Star is. We treat 
 
 A public Star is still an endorsement. Repositories you plan to learn, use, or keep go into the Starcat knowledge base. Starring does not create a backlog you must tidy. Only ingested repos enter search, summaries, and RAG.
 
-Starcat started as a paid product. Almost nobody bought it. Managing GitHub Stars this deeply turned out to be a niche of one. The related projects are now open source, except [`starcat-license-api`](https://github.com/starcat-app/starcat-license-api), which stays private because it issues Direct licenses. Official **Mac App Store** and **Direct** ([starcat.ink](https://starcat.ink)) builds remain available and will keep being maintained. You can also build from this repository and run your own stack.
-
 <div align="center">
 <img width="900" src="./main.webp" alt="Starcat main window"/>
 </div>
 
-The current public version is **Starcat 1.4.0**.
+### Why Starcat is open source
+
+Starcat began as a paid product, but the market for deeply managing GitHub Stars proved smaller than expected. Opening the ecosystem makes it easier for the people who need it to inspect, extend, and self-host it. The related projects are now open source, except [`starcat-license-api`](https://github.com/starcat-app/starcat-license-api), which stays private because it issues Direct licenses. Official **Mac App Store** and **Direct** ([starcat.ink](https://starcat.ink)) builds remain available and will keep being maintained.
 
 ## See Starcat in action
 
@@ -412,3 +413,19 @@ The vendored CodeFlow page also loads these libraries:
 [MIT](./LICENSE) © 2026 dong4j
 
 Third-party notices: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
+
+## Community
+
+This project has been linked and endorsed by [LINUX DO Community](https://linux.do/).
+
+## Star History
+
+<div align="center">
+<a href="https://star-history.dera.page/#starcat-app/Starcat">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=starcat-app/Starcat&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=starcat-app/Starcat" />
+    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=starcat-app/Starcat" />
+  </picture>
+</a>
+</div>

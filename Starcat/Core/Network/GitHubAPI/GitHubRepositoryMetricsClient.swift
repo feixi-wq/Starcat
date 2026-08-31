@@ -253,16 +253,52 @@ struct GitHubRepositoryCommunityProfile: Decodable, Equatable, Sendable {
     }
 }
 
+/// Contents API 返回的目录项；只用于补足 Community Profile 无法表达的多文件 Issue 模板目录。
+private struct GitHubRepositoryContentEntry: Decodable, Equatable, Sendable {
+    let name: String
+    let type: String
+
+    var isIssueTemplateCandidate: Bool {
+        guard type == "file" else { return false }
+        let normalizedName = name.lowercased()
+        guard normalizedName != "config.yml" else { return false }
+        // GitHub 当前只把 .md 识别为传统模板、.yml 识别为 Issue Form；.yaml 不在官方约定内。
+        return normalizedName.hasSuffix(".md") || normalizedName.hasSuffix(".yml")
+    }
+}
+
 /// RAG 既有 Release 远程证据使用的类型化响应。
 struct GitHubRepositoryReleaseMetric: Decodable, Equatable, Sendable {
+    /// Metrics Client 的 decoder 未开 `convertFromSnakeCase`，附件字段必须显式映射。
+    struct Asset: Decodable, Equatable, Sendable {
+        let id: Int64
+        let name: String
+        let contentType: String?
+        let size: Int
+        let url: String?
+        let browserDownloadUrl: String
+        let downloadCount: Int
+        let createdAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, size, url
+            case contentType = "content_type"
+            case browserDownloadUrl = "browser_download_url"
+            case downloadCount = "download_count"
+            case createdAt = "created_at"
+        }
+    }
+
     let tagName: String
     let name: String?
     let body: String?
     let htmlURL: String
     let publishedAt: String?
+    /// 旧夹具 / 304 重校验响应可能没有该字段。
+    let assets: [Asset]?
 
     enum CodingKeys: String, CodingKey {
-        case name, body
+        case name, body, assets
         case tagName = "tag_name"
         case htmlURL = "html_url"
         case publishedAt = "published_at"
@@ -271,15 +307,22 @@ struct GitHubRepositoryReleaseMetric: Decodable, Equatable, Sendable {
 
 /// RAG 既有 Security Advisory 远程证据使用的类型化响应。
 struct GitHubRepositorySecurityAdvisoryMetric: Decodable, Equatable, Sendable {
+    private struct Publisher: Decodable, Equatable, Sendable {
+        let login: String
+    }
+
     let ghsaID: String
     let cveID: String?
     let summary: String
     let severity: String
     let htmlURL: String?
     let publishedAt: String
+    private let publisher: Publisher?
+
+    var publisherLogin: String? { publisher?.login }
 
     enum CodingKeys: String, CodingKey {
-        case summary, severity
+        case summary, severity, publisher
         case ghsaID = "ghsa_id"
         case cveID = "cve_id"
         case htmlURL = "html_url"
@@ -328,6 +371,11 @@ protocol GitHubRepositoryMetricsClient: Sendable {
         ifNoneMatch: String?,
         observer: GitHubMetricsRequestObserver?
     ) async throws -> GitHubMetricsResponse<GitHubRepositoryCommunityProfile>
+
+    func loadIssueTemplateAvailability(
+        repository: RepoIdentity,
+        observer: GitHubMetricsRequestObserver?
+    ) async throws -> Bool
 
     func loadReleases(
         repository: RepoIdentity,
@@ -436,6 +484,14 @@ extension GitHubRepositoryMetricsClient {
             ifNoneMatch: nil,
             observer: observer
         )
+    }
+
+    /// 测试桩和不支持 Contents API 的实现保留 Community Profile 原语义。
+    func loadIssueTemplateAvailability(
+        repository _: RepoIdentity,
+        observer _: GitHubMetricsRequestObserver?
+    ) async throws -> Bool {
+        false
     }
 
     func loadReleases(
@@ -687,6 +743,22 @@ actor DefaultGitHubRepositoryMetricsClient: GitHubRepositoryMetricsClient {
         )
     }
 
+    func loadIssueTemplateAvailability(
+        repository: RepoIdentity,
+        observer: GitHubMetricsRequestObserver?
+    ) async throws -> Bool {
+        do {
+            let response: GitHubMetricsResponse<[GitHubRepositoryContentEntry]> = try await get(
+                endpoints.repository(repository, suffix: "contents/.github/ISSUE_TEMPLATE"),
+                observer: observer
+            )
+            return response.value.contains(where: \.isIssueTemplateCandidate)
+        } catch GitHubRepositoryMetricsError.unavailable(let statusCode, _) where statusCode == 404 {
+            // 没有 ISSUE_TEMPLATE 目录是正常的“未提供”状态，不应让整个社区信号加载失败。
+            return false
+        }
+    }
+
     func loadReleases(
         repository: RepoIdentity,
         limit: Int,
@@ -714,7 +786,12 @@ actor DefaultGitHubRepositoryMetricsClient: GitHubRepositoryMetricsClient {
             endpoints.repository(
                 repository,
                 suffix: "security-advisories",
-                queryItems: [URLQueryItem(name: "per_page", value: String(max(1, min(limit, 100))))]
+                queryItems: [
+                    URLQueryItem(name: "per_page", value: String(max(1, min(limit, 100)))),
+                    URLQueryItem(name: "state", value: "published"),
+                    URLQueryItem(name: "sort", value: "published"),
+                    URLQueryItem(name: "direction", value: "desc")
+                ]
             ),
             ifNoneMatch: ifNoneMatch,
             observer: observer

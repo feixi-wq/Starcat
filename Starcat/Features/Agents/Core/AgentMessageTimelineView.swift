@@ -4,8 +4,8 @@
 //
 //  Agent 工作台的连续任务叙事与最终结果界面。
 //
-//  持久化消息仍是唯一事实源；本视图只消费 AgentTimelineProjection 的确定性投影。
-//  原始 reasoning 不进入普通界面，call/result 合并和折叠状态也不会写回运行数据。
+//  对话正文继续由 AgentTimelineProjection 负责，执行过程优先消费持久化 Runtime Trace。
+//  原始 reasoning 不进入普通界面；只有 Provider 明确给出的 summary 可以展示和恢复。
 //
 
 import SwiftUI
@@ -13,6 +13,8 @@ import SwiftUI
 struct AgentMessageTimelineView: View {
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @State private var expandedItemIDs: Set<String> = []
+    @State private var collapsedTraceGroupIDs: Set<String> = []
+    @State private var traceMode: AgentTraceTimelineMode = .process
     @State private var processExpandedOverride: Bool?
     @State private var messageTail = ScrollTailController()
 
@@ -29,7 +31,25 @@ struct AgentMessageTimelineView: View {
     }
 
     private var isProcessExpanded: Bool {
-        processExpandedOverride ?? presentation.isProcessExpandedByDefault
+        processExpandedOverride ?? traceProcessExpandedByDefault
+    }
+
+    private var traceProcessExpandedByDefault: Bool {
+        guard !viewModel.traceEvents.isEmpty else { return presentation.isProcessExpandedByDefault }
+        return viewModel.status == .running
+            || viewModel.status == .planning
+            || viewModel.status == .waitingForConfirmation
+            || viewModel.traceEvents.contains { [.failed, .waiting].contains($0.status) }
+    }
+
+    /// Runtime Trace 取代旧过程区后，审批仍必须保留交互入口。这里只复用旧投影中的
+    /// approval section，避免把 tool/message 再展示一遍，也不伪造 Runtime 事件。
+    private var runtimeApprovalSections: [AgentProcessSection] {
+        presentation.processSections.filter { $0.kind == .approval }
+    }
+
+    private var traceSnapshot: AgentTraceTimelineSnapshot {
+        AgentTraceTimelinePresentation.makeSnapshot(viewModel.traceEvents)
     }
 
     private var runIdentity: String {
@@ -52,7 +72,9 @@ struct AgentMessageTimelineView: View {
 
                     agentIdentityRow
 
-                    if !presentation.processSections.isEmpty {
+                    if !viewModel.traceEvents.isEmpty {
+                        runtimeTraceSection
+                    } else if !presentation.processSections.isEmpty {
                         processSection
                     }
 
@@ -107,12 +129,15 @@ struct AgentMessageTimelineView: View {
             // 不沿用上一 Run 的手动选择或滚动意图。
             processExpandedOverride = nil
             expandedItemIDs.removeAll()
+            collapsedTraceGroupIDs.removeAll()
+            traceMode = .process
             messageTail.resumeFollowing()
         }
     }
 
     private var isEmpty: Bool {
         presentation.userItems.isEmpty
+            && viewModel.traceEvents.isEmpty
             && presentation.processSections.isEmpty
             && presentation.finalAnswer == nil
             && presentation.inlineArtifacts.isEmpty
@@ -215,6 +240,268 @@ struct AgentMessageTimelineView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Shell 保持一致，内容严格来自当前 backend 的实际事件。这里没有预设“分析/检索/生成”
+    /// 阶段，因此无工具任务只出现 reasoning/plan，有工具任务才出现 tool/MCP/web 等行。
+    private var runtimeTraceSection: some View {
+        // Snapshot 构建包含父子归组，单次 body 只能计算一次；审计统计若反复读取 computed
+        // property，会在长 Run 上重复遍历整棵事件树，重新引入滚动主线程压力。
+        let snapshot = traceSnapshot
+        let processRows = AgentTraceTimelinePresentation.processRows(
+            snapshot: snapshot,
+            collapsedNodeIDs: collapsedTraceGroupIDs
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Button {
+                // Trace 数量和详情高度由 Runtime 决定。整体高度动画会让 SwiftUI 在每帧
+                // 重算整条时间线，大型 Run 上会复现展开卡死，因此这里使用即时切换。
+                processExpandedOverride = !isProcessExpanded
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isProcessExpanded ? "chevron.down" : "chevron.right")
+                        .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("agent.workspace.timeline.execution")
+                        .font(interfaceScale.font(.caption, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("· \((snapshot.eventCount + runtimeApprovalSections.count).formatted())")
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(viewModel.runtimeBackend.displayName)
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .accessibilityLabel(String.l10n("agent.workspace.timeline.execution"))
+            .accessibilityHint(String.l10n(isProcessExpanded ? "gettingStarted.collapse" : "gettingStarted.expand"))
+
+            if isProcessExpanded {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        EqualWidthSegmentedControl(
+                            items: AgentTraceTimelineMode.allCases,
+                            selection: $traceMode,
+                            title: \.titleKey,
+                            font: interfaceScale.font(.captionSmall, weight: .medium),
+                            controlHeight: 28
+                        )
+                        .frame(width: 220)
+                    }
+
+                    if traceMode == .allEvents {
+                        traceAuditSummary(snapshot)
+                    }
+
+                    if traceMode == .process {
+                        ForEach(processRows) { row in
+                            traceRow(
+                                row.event,
+                                depth: row.depth,
+                                childCount: row.childCount
+                            )
+                        }
+                    } else {
+                        ForEach(snapshot.orderedEvents) { event in
+                            traceRow(event, showsSequence: true)
+                        }
+                    }
+                    ForEach(runtimeApprovalSections) { section in
+                        processRow(section)
+                    }
+                }
+                .padding(.leading, 20)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.09))
+                        .frame(width: 1)
+                        .padding(.leading, 6)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func traceAuditSummary(_ snapshot: AgentTraceTimelineSnapshot) -> some View {
+        HStack(spacing: 6) {
+            traceMetricChip(
+                title: String.l10n("agent.workspace.trace.audit.total"),
+                count: snapshot.eventCount,
+                icon: "point.3.connected.trianglepath.dotted"
+            )
+            traceMetricChip(
+                title: String.l10n("agent.workspace.trace.audit.model"),
+                count: snapshot.orderedEvents.filter {
+                    [.request, .reasoningSummary, .commentary, .plan].contains($0.kind)
+                }.count,
+                icon: "brain"
+            )
+            traceMetricChip(
+                title: String.l10n("agent.workspace.trace.audit.tools"),
+                count: snapshot.orderedEvents.filter {
+                    [.tool, .mcpTool, .command, .webSearch].contains($0.kind)
+                }.count,
+                icon: "wrench.and.screwdriver"
+            )
+            traceMetricChip(
+                title: String.l10n("agent.workspace.trace.audit.issues"),
+                count: snapshot.orderedEvents.filter {
+                    [.warning, .retry, .error].contains($0.kind)
+                }.count,
+                icon: "exclamationmark.triangle"
+            )
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func traceMetricChip(title: String, count: Int, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text(title)
+            Text(count.formatted())
+                .fontWeight(.semibold)
+        }
+        .font(interfaceScale.font(.captionSmall))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.045), in: Capsule())
+    }
+
+    private func traceRow(
+        _ event: AgentTraceEvent,
+        depth: Int = 0,
+        childCount: Int = 0,
+        showsSequence: Bool = false
+    ) -> some View {
+        let isCollapsed = collapsedTraceGroupIDs.contains(event.id)
+        return Button {
+            // 中栏只承担步骤导航，结构化输入输出统一进入右侧检查器；避免大 JSON/Markdown
+            // 在主 ScrollView 内展开后重复布局，并保持 Run Surface 的扫描节奏。
+            viewModel.selectTraceEvent(event.id)
+            if childCount > 0 {
+                if isCollapsed {
+                    collapsedTraceGroupIDs.remove(event.id)
+                } else {
+                    collapsedTraceGroupIDs.insert(event.id)
+                }
+            }
+        } label: {
+            traceRowLabel(
+                event,
+                childCount: childCount,
+                isCollapsed: isCollapsed,
+                showsSequence: showsSequence
+            )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .accessibilityHint(
+            childCount > 0
+                ? String.l10n(isCollapsed ? "gettingStarted.expand" : "gettingStarted.collapse")
+                : String.l10n("agent.workspace.inspector.step.subtitle")
+        )
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .padding(.leading, CGFloat(min(depth, 4)) * 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if viewModel.selectedTraceEventID == event.id {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.09))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.accentColor.opacity(0.24), lineWidth: 0.5)
+                    }
+            }
+        }
+    }
+
+    private func traceRowLabel(
+        _ event: AgentTraceEvent,
+        childCount: Int,
+        isCollapsed: Bool,
+        showsSequence: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: traceStatusIcon(event.status))
+                .foregroundStyle(traceStatusTint(event.status))
+                .font(interfaceScale.font(.captionSmall))
+                .frame(width: 16, height: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    if showsSequence {
+                        Text("#\(event.sequence.formatted())")
+                            .font(interfaceScale.font(.captionSmall, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: traceKindIcon(event.kind))
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                    Text(AgentTraceTitlePresentation.title(for: event))
+                        .font(interfaceScale.font(.caption, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                }
+                if showsSequence,
+                   let providerEventID = event.providerEventID,
+                   providerEventID != event.title {
+                    Text(providerEventID)
+                        .font(interfaceScale.font(.captionSmall, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let summary = AgentTraceRowPresentation.summary(for: event),
+                   summary != event.title {
+                    AgentTraceMarkdownText(markdown: summary, tone: .secondary)
+                        .lineLimit(2)
+                } else if event.kind == .reasoningSummary && nonBlank(event.summary) == nil {
+                    Group {
+                        if event.status == .running {
+                            Text("agent.workspace.trace.reasoningPending")
+                        } else {
+                            Text("agent.workspace.trace.reasoningUnavailable")
+                        }
+                    }
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            if let duration = event.durationMilliseconds {
+                Text("\(duration.formatted()) ms")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+            }
+            if childCount > 0 {
+                Text("\(childCount.formatted())")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+            }
+            Image(systemName: childCount > 0
+                ? (isCollapsed ? "chevron.right" : "chevron.down")
+                : "chevron.right")
+                .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+    }
+
+    /// Trace 摘要来自外部 runtime，空白增量不应占据一行 UI。
+    private func nonBlank(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     @ViewBuilder
     private func processRow(_ section: AgentProcessSection) -> some View {
         switch section.kind {
@@ -249,54 +536,82 @@ struct AgentMessageTimelineView: View {
     private func activityRow(_ section: AgentProcessSection) -> some View {
         let status = aggregateStatus(section.items)
         let isExpanded = expandedItemIDs.contains(section.id)
+        let hasDetails = section.items.contains(where: \.hasExecutionDetails)
         return VStack(alignment: .leading, spacing: 6) {
-            Button {
-                toggle(section.id)
-                if let auditedItem = section.items.first(where: { $0.toolAudit?.knowledgeRetrieval != nil }),
-                   let toolCallID = auditedItem.toolCallID {
-                    viewModel.selectKnowledgeAudit(toolCallID: toolCallID)
-                }
-            } label: {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: statusIcon(status))
-                        .foregroundStyle(statusTint(status))
-                        .font(interfaceScale.font(.captionSmall))
-                        .frame(width: 16, height: 18)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(activityNarrative(section))
-                            .font(interfaceScale.font(.caption))
-                            .foregroundStyle(.primary)
-                            .lineLimit(3)
-                        if let summary = activitySummary(section) {
-                            Text(summary)
-                            .font(interfaceScale.font(.captionSmall))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        }
+            if hasDetails {
+                Button {
+                    toggle(section.id)
+                    if let auditedItem = section.items.first(where: { $0.toolAudit?.knowledgeRetrieval != nil }),
+                       let toolCallID = auditedItem.toolCallID {
+                        viewModel.selectKnowledgeAudit(toolCallID: toolCallID)
                     }
-                    Spacer()
-                    if section.items.count > 1 {
-                        Text("×\(section.items.count.formatted())")
-                            .font(interfaceScale.font(.captionSmall))
-                            .foregroundStyle(.secondary)
-                    }
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(interfaceScale.font(.captionSmall, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
+                } label: {
+                    activityRowLabel(
+                        section,
+                        status: status,
+                        isExpanded: isExpanded,
+                        showsDisclosure: true
+                    )
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .accessibilityHint(String.l10n(isExpanded ? "gettingStarted.collapse" : "gettingStarted.expand"))
+            } else {
+                activityRowLabel(
+                    section,
+                    status: status,
+                    isExpanded: false,
+                    showsDisclosure: false
+                )
             }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
 
-            if isExpanded {
-                ForEach(section.items) { item in
+            if isExpanded, hasDetails {
+                ForEach(section.items.filter(\.hasExecutionDetails)) { item in
                     toolExecutionDetail(item)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func activityRowLabel(
+        _ section: AgentProcessSection,
+        status: AgentToolResultStatus?,
+        isExpanded: Bool,
+        showsDisclosure: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: statusIcon(status))
+                .foregroundStyle(statusTint(status))
+                .font(interfaceScale.font(.captionSmall))
+                .frame(width: 16, height: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(activityNarrative(section))
+                    .font(interfaceScale.font(.caption))
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                if let summary = activitySummary(section) {
+                    Text(summary)
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            if section.items.count > 1 {
+                Text("×\(section.items.count.formatted())")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+            }
+            if showsDisclosure {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
     }
 
     private func toolExecutionDetail(_ item: AgentTimelineItem) -> some View {
@@ -307,6 +622,10 @@ struct AgentMessageTimelineView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            toolDetailBlock(labelKey: "agent.workspace.trace.input", value: item.input)
+            toolDetailBlock(labelKey: "agent.workspace.trace.output", value: item.output)
+            toolDetailBlock(labelKey: "agent.workspace.trace.log", value: item.log)
+
             if !item.sources.isEmpty {
                 sourceBlock(item.sources)
             }
@@ -326,6 +645,18 @@ struct AgentMessageTimelineView: View {
         }
         .padding(.leading, 24)
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func toolDetailBlock(labelKey: String, value: String?) -> some View {
+        if let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(String.l10n(labelKey))
+                    .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                auditText(value)
+            }
+        }
     }
 
     private func approvalRow(_ item: AgentTimelineItem) -> some View {
@@ -470,11 +801,13 @@ struct AgentMessageTimelineView: View {
     }
 
     private func auditText(_ text: String) -> some View {
-        Text(text)
+        Text(AgentTracePresentationBudget.bounded(
+            text,
+            limit: AgentTracePresentationBudget.codeCharacters
+        ))
             .font(interfaceScale.font(.code, design: .monospaced))
             .foregroundStyle(.primary)
             .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
@@ -547,6 +880,51 @@ struct AgentMessageTimelineView: View {
         case .completed: return .green
         case .failed, .timedOut, .rejected: return .red
         case .skipped, nil: return .secondary
+        }
+    }
+
+    private func traceStatusIcon(_ status: AgentTraceStatus) -> String {
+        switch status {
+        case .pending: return "circle"
+        case .running: return "circle.dotted"
+        case .waiting: return "pause.circle.fill"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        case .cancelled: return "stop.circle.fill"
+        case .skipped: return "minus.circle"
+        }
+    }
+
+    private func traceStatusTint(_ status: AgentTraceStatus) -> Color {
+        switch status {
+        case .completed: return .green
+        case .failed: return .red
+        case .waiting: return .orange
+        case .running: return .accentColor
+        case .pending, .cancelled, .skipped: return .secondary
+        }
+    }
+
+    private func traceKindIcon(_ kind: AgentTraceKind) -> String {
+        switch kind {
+        case .lifecycle: return "bolt.horizontal"
+        case .message: return "text.bubble"
+        case .plan: return "list.bullet.clipboard"
+        case .todo: return "checklist"
+        case .request: return "arrow.up.doc"
+        case .reasoningSummary: return "brain"
+        case .commentary: return "text.bubble"
+        case .tool: return "wrench.and.screwdriver"
+        case .command: return "terminal"
+        case .fileChange: return "doc.badge.gearshape"
+        case .webSearch: return "globe"
+        case .mcpTool: return "shippingbox"
+        case .approval: return "checkmark.shield"
+        case .warning: return "exclamationmark.triangle"
+        case .retry: return "arrow.clockwise"
+        case .error: return "xmark.octagon"
+        case .compaction: return "arrow.down.right.and.arrow.up.left"
+        case .unknown: return "circle.grid.2x2"
         }
     }
 

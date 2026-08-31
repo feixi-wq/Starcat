@@ -18,6 +18,31 @@ import Testing
 @Suite("AgentWorkspaceViewModel")
 struct AgentWorkspaceViewModelTests {
 
+    @Test("Agent Runtime 知识配置快照跟踪 SQLite 回退、检索与重排设置")
+    func runtimeKnowledgeConfigurationSnapshotTracksRAGSettings() throws {
+        let suiteName = "AgentWorkspaceViewModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults, keychain: InMemoryKeychain())
+        let initial = AgentRuntimeKnowledgeConfigurationSnapshot(settings: settings)
+
+        var backendConfiguration = settings.ragBackendConfiguration
+        backendConfiguration.fallbackToSQLite.toggle()
+        settings.ragBackendConfiguration = backendConfiguration
+        let backendChanged = AgentRuntimeKnowledgeConfigurationSnapshot(settings: settings)
+        #expect(backendChanged != initial)
+
+        settings.ragRetrievalSettings = .strict
+        let retrievalChanged = AgentRuntimeKnowledgeConfigurationSnapshot(settings: settings)
+        #expect(retrievalChanged != backendChanged)
+
+        var rerankConfiguration = settings.ragRerankConfiguration
+        rerankConfiguration.isEnabled.toggle()
+        settings.ragRerankConfiguration = rerankConfiguration
+        let rerankChanged = AgentRuntimeKnowledgeConfigurationSnapshot(settings: settings)
+        #expect(rerankChanged != retrievalChanged)
+    }
+
     @Test("Weekly 可用默认指令和自动时间窗发送，但必须先选择有效模型")
     func weeklySubmissionValidationUsesWorkflowPolicy() {
         let viewModel = AgentWorkspaceViewModel(agents: [BuiltInAgents.githubWeeklyReport])
@@ -28,6 +53,66 @@ struct AgentWorkspaceViewModelTests {
         #expect(viewModel.prompt.isEmpty)
         #expect(viewModel.selectedRepoContexts.isEmpty)
         #expect(viewModel.canSubmit)
+    }
+
+    @Test("Codex Runtime 不依赖 Starcat BYOK 模型并冻结自己的模型参数")
+    func codexSubmissionUsesRuntimeModelSelection() async throws {
+        let recorder = AgentRunInputRecorder()
+        let viewModel = AgentWorkspaceViewModel(
+            agents: [BuiltInAgents.githubWeeklyReport],
+            runtime: EventReplayAgentRuntime(events: [
+                .runStarted(title: "Run"),
+                .runCompleted,
+            ]),
+            contextProvider: RecordingAgentRunContextProvider(recorder: recorder)
+        )
+        viewModel.configureRuntimeSelection(
+            backend: .codexAppServer,
+            modelName: "gpt-fixture",
+            reasoningEffort: "high"
+        )
+
+        #expect(viewModel.selectedModelID == nil)
+        #expect(viewModel.canSubmit)
+        viewModel.run()
+        try await waitUntil { viewModel.status == .completed }
+
+        let input = try #require(await recorder.input())
+        #expect(input.selectedModelID == nil)
+        #expect(input.runtimeBackend == .codexAppServer)
+        #expect(input.runtimeModelName == "gpt-fixture")
+        #expect(input.runtimeReasoningEffort == "high")
+    }
+
+    @Test("DeepSeek Runtime 冻结独立 Provider 与模型且不依赖 Loop 模型")
+    func deepSeekSubmissionUsesRuntimeProviderSelection() async throws {
+        let recorder = AgentRunInputRecorder()
+        let viewModel = AgentWorkspaceViewModel(
+            agents: [BuiltInAgents.githubWeeklyReport],
+            runtime: EventReplayAgentRuntime(events: [
+                .runStarted(title: "Run"),
+                .runCompleted,
+            ]),
+            contextProvider: RecordingAgentRunContextProvider(recorder: recorder)
+        )
+        viewModel.configureRuntimeSelection(
+            backend: .deepSeekHarness,
+            providerName: "Team Gateway",
+            modelName: "reasoning-model",
+            reasoningEffort: "high"
+        )
+
+        #expect(viewModel.selectedModelID == nil)
+        #expect(viewModel.canSubmit)
+        viewModel.run()
+        try await waitUntil { viewModel.status == .completed }
+
+        let input = try #require(await recorder.input())
+        #expect(input.selectedModelID == nil)
+        #expect(input.runtimeBackend == .deepSeekHarness)
+        #expect(input.runtimeProviderName == "Team Gateway")
+        #expect(input.runtimeModelName == "reasoning-model")
+        #expect(input.runtimeReasoningEffort == "high")
     }
 
     @Test("Repo Insight 必须且只能选择一个仓库")
@@ -221,6 +306,47 @@ struct AgentWorkspaceViewModelTests {
         #expect(viewModel.artifacts.count == 2)
         #expect(viewModel.selectedArtifact?.content == "# 周刊")
         #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test("Runtime trace lifecycle 在工作台按稳定 id 原位更新")
+    func runtimeTraceUpsertsWithoutDuplicatingRows() async throws {
+        let runID = UUID()
+        let started = AgentTraceEvent(
+            id: "\(runID.uuidString):tool-1",
+            runID: runID,
+            backend: .codexAppServer,
+            sequence: 0,
+            kind: .tool,
+            status: .running,
+            title: "fixture_lookup"
+        )
+        let completed = AgentTraceEvent(
+            id: started.id,
+            runID: runID,
+            backend: .codexAppServer,
+            sequence: 0,
+            kind: .tool,
+            status: .completed,
+            title: "fixture_lookup",
+            details: [.init(label: "Output", value: "ok")],
+            completedAt: Date()
+        )
+        let viewModel = AgentWorkspaceViewModel(
+            agents: [BuiltInAgents.githubWeeklyReport],
+            runtime: EventReplayAgentRuntime(events: [
+                .runStarted(title: BuiltInAgents.githubWeeklyReport.title),
+                .traceUpdated(started),
+                .traceUpdated(completed),
+                .runCompleted,
+            ])
+        )
+        configureRunnable(viewModel)
+        viewModel.prompt = "生成周刊"
+
+        viewModel.run()
+        try await waitUntil { viewModel.status == .completed }
+
+        #expect(viewModel.traceEvents == [completed])
     }
 
     @Test("Agent 中间区可渲染为连续任务叙事而非调试卡片")
@@ -712,6 +838,71 @@ struct AgentWorkspaceViewModelTests {
         #expect(viewModel.prompt == "insight draft")
     }
 
+    @Test("切换 Agent 清空上一任务展示并保留各自草稿")
+    func selectingAnotherAgentClearsRunPresentation() async throws {
+        let runID = UUID()
+        let runtime = EventReplayAgentRuntime(events: [
+            .runStarted(title: "Weekly"),
+            .messageAppended(AgentMessage(
+                runID: runID,
+                role: .assistant,
+                turn: 0,
+                sequence: 0,
+                parts: [.text("old output")]
+            )),
+            .artifactCreated(AgentArtifact(type: .markdown, title: "Old", content: "old")),
+            .usageUpdated(AgentUsage(inputTokens: 10, outputTokens: 20)),
+            .runCompleted,
+        ])
+        let viewModel = AgentWorkspaceViewModel(
+            agents: [BuiltInAgents.githubWeeklyReport, BuiltInAgents.repoInsight],
+            runtime: runtime
+        )
+        configureRunnable(viewModel)
+        viewModel.prompt = "weekly draft"
+        viewModel.run()
+        try await waitUntil { viewModel.status == .completed }
+
+        viewModel.selectAgent(BuiltInAgents.repoInsight)
+
+        #expect(viewModel.status == .idle)
+        #expect(viewModel.messages.isEmpty)
+        #expect(viewModel.traceEvents.isEmpty)
+        #expect(viewModel.artifacts.isEmpty)
+        #expect(viewModel.usage == .zero)
+        #expect(viewModel.currentRunContext == nil)
+        #expect(viewModel.currentRunRecord == nil)
+        #expect(viewModel.currentRunUserPrompt.isEmpty)
+        #expect(viewModel.selectedHistoryRunID == nil)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.prompt.isEmpty)
+    }
+
+    @Test("历史任务默认展示五条并可展开全部")
+    func historyPresentationUsesFiveItemCollapsedLimit() {
+        let runs = (0..<8).map { index in
+            let timestamp = ISO8601DateFormatter.shared.string(from: Date())
+            return AgentRunRecord(
+                id: UUID().uuidString,
+                agentId: BuiltInAgents.githubWeeklyReport.id,
+                title: "Run \(index)",
+                userPrompt: "Prompt",
+                contextSource: "Unit",
+                contextJSON: "{}",
+                status: AgentRunStatus.completed.rawValue,
+                model: nil,
+                usageJSON: nil,
+                errorMessage: nil,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                finishedAt: timestamp
+            )
+        }
+
+        #expect(AgentHistoryPresentation.visibleRuns(runs, isExpanded: false).count == 5)
+        #expect(AgentHistoryPresentation.visibleRuns(runs, isExpanded: true).count == 8)
+    }
+
     @Test("发送瞬间冻结结构化 Run Input")
     func freezesStructuredRunInputBeforeAsyncContextBuild() async throws {
         let recorder = AgentRunInputRecorder()
@@ -841,6 +1032,9 @@ struct AgentWorkspaceViewModelTests {
                     starsCount: 8_000
                 )],
                 explicitRepoMode: .exclude,
+                runtimeBackend: .codexAppServer,
+                runtimeModelName: "gpt-fixture",
+                runtimeReasoningEffort: "high",
                 githubLinks: [AIComposerGitHubLink(
                     url: URL(string: "https://github.com/groue/GRDB.swift")!,
                     owner: "groue",
@@ -903,6 +1097,19 @@ struct AgentWorkspaceViewModelTests {
             createdAt: Date(timeIntervalSince1970: 1_788_000_120)
         )
         try await repository.appendArtifact(artifact, runID: runID)
+        let trace = AgentTraceEvent(
+            id: "\(runID.uuidString):search-1",
+            runID: runID,
+            backend: .codexAppServer,
+            providerEventID: "search-1",
+            sequence: 0,
+            kind: .webSearch,
+            status: .completed,
+            title: "Web search",
+            summary: "Starcat",
+            completedAt: Date()
+        )
+        try await repository.saveTraceEvent(trace)
         try await repository.updateRunStatus(
             runID: runID,
             status: .completed,
@@ -932,6 +1139,12 @@ struct AgentWorkspaceViewModelTests {
         #expect(viewModel.explicitRepoMode == .exclude)
         #expect(viewModel.githubLinks.first?.repository == "GRDB.swift")
         #expect(viewModel.webSearchEnabled)
+        #expect(viewModel.runtimeBackend == .codexAppServer)
+        #expect(viewModel.runtimeModelName == "gpt-fixture")
+        #expect(viewModel.runtimeReasoningEffort == "high")
+        #expect(viewModel.traceEvents.map(\.id) == [trace.id])
+        #expect(viewModel.traceEvents.first?.kind == .webSearch)
+        #expect(viewModel.traceEvents.first?.summary == "Starcat")
     }
 
     @Test("重启后打开 pending approval 只恢复等待态且不会自动决策")
@@ -1325,6 +1538,10 @@ private struct RecordingAgentRunContextProvider: AgentRunContextProviding {
             explicitRepos: input.explicitRepos,
             explicitRepoMode: input.explicitRepoMode,
             selectedModelID: input.selectedModelID,
+            runtimeBackend: input.runtimeBackend,
+            runtimeProviderName: input.runtimeProviderName,
+            runtimeModelName: input.runtimeModelName,
+            runtimeReasoningEffort: input.runtimeReasoningEffort,
             githubLinks: input.githubLinks,
             webSearchEnabled: input.webSearchEnabled
         )

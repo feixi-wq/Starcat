@@ -92,6 +92,8 @@ struct AppSettingsTests {
         anySearchSettings.isEnabled = true
         settings.setExternalSearchSettings(anySearchSettings, for: .anySearch)
         settings.notificationsEnabled = false
+        settings.githubIssueEventTimelineEnabled = true
+        settings.openRepositoryMarkdownInApp = true
         settings.hideDockIcon = true
         settings.snakeStyle = .greedy
         settings.keyboardShortcutsEnabled = false
@@ -128,6 +130,8 @@ struct AppSettingsTests {
         #expect(settings.chatHistoryStorageKind == .jsonFiles)
         #expect(settings.externalSearchSettings(for: .anySearch).isEnabled == false)
         #expect(settings.notificationsEnabled == true)
+        #expect(settings.githubIssueEventTimelineEnabled == false)
+        #expect(settings.openRepositoryMarkdownInApp == false)
         #expect(settings.hideDockIcon == false)
         #expect(settings.snakeStyle == .off)
         #expect(settings.keyboardShortcutsEnabled == true)
@@ -142,6 +146,30 @@ struct AppSettingsTests {
         #expect(settings.externalSearchAPIKey(for: .anySearch) == nil)
         #expect(settings.isProUser == false)
         #expect(keychain.snapshot.isEmpty)
+    }
+
+    @Test("Issue 事件流: 默认关闭并持久化")
+    func githubIssueEventTimelineDefaultsOffAndPersists() {
+        let defaults = makeIsolatedDefaults()
+        let settings = AppSettings(defaults: defaults)
+        #expect(settings.githubIssueEventTimelineEnabled == false)
+
+        settings.githubIssueEventTimelineEnabled = true
+
+        let restored = AppSettings(defaults: defaults)
+        #expect(restored.githubIssueEventTimelineEnabled == true)
+    }
+
+    @Test("同仓 Markdown 应用内打开: 默认关闭并持久化")
+    func openRepositoryMarkdownInAppDefaultsOffAndPersists() {
+        let defaults = makeIsolatedDefaults()
+        let settings = AppSettings(defaults: defaults)
+        #expect(settings.openRepositoryMarkdownInApp == false)
+
+        settings.openRepositoryMarkdownInApp = true
+
+        let restored = AppSettings(defaults: defaults)
+        #expect(restored.openRepositoryMarkdownInApp == true)
     }
 
     @Test("macOS 集成: 隐藏 Dock 图标默认关闭并持久化")
@@ -282,7 +310,7 @@ struct AppSettingsTests {
 
     // MARK: - 快捷键偏好
 
-    @Test("快捷键: AI 发送独立，五项应用命令默认启用并使用预设键位")
+    @Test("快捷键: AI 发送独立，六项应用命令默认启用并使用预设键位")
     func shortcutDefaults() {
         let settings = AppSettings(defaults: makeIsolatedDefaults())
         #expect(settings.aiChatRequiresCommandReturn == false)
@@ -291,15 +319,20 @@ struct AppSettingsTests {
         #expect(settings.globalSearchShortcutEnabled)
         #expect(settings.regularSearchShortcut == .regularSearchDefault)
         #expect(settings.regularSearchShortcutEnabled)
+        #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
+        #expect(settings.readmeFindShortcutEnabled)
         #expect(settings.refreshCurrentContentShortcut == StarcatShortcutCatalog.refreshCurrentContentDefault)
         #expect(settings.refreshCurrentContentShortcutEnabled)
         #expect(settings.knowledgeRAGShortcut == StarcatShortcutCatalog.openKnowledgeRAGDefault)
         #expect(settings.knowledgeRAGShortcutEnabled)
         #expect(settings.selectedRepoAIShortcut == StarcatShortcutCatalog.openSelectedRepoAIDefault)
         #expect(settings.selectedRepoAIShortcutEnabled)
+        #expect(settings.regularSearchShortcut.displayText == "⇧⌘F")
+        #expect(settings.readmeFindShortcut.displayText == "⌘F")
+        #expect(settings.regularSearchShortcut.displaySegments == ["⇧", "⌘", "F"])
     }
 
-    @Test("快捷键: 五项键位与两层开关持久化，AI 发送方式不随总开关改变")
+    @Test("快捷键: 六项键位与两层开关持久化，AI 发送方式不随总开关改变")
     func shortcutSettingsPersist() {
         let defaults = makeIsolatedDefaults()
         let settings = AppSettings(defaults: defaults)
@@ -307,6 +340,7 @@ struct AppSettingsTests {
         settings.keyboardShortcutsEnabled = false
         settings.globalSearchShortcutEnabled = false
         settings.regularSearchShortcutEnabled = false
+        settings.readmeFindShortcutEnabled = false
         settings.refreshCurrentContentShortcutEnabled = false
         settings.knowledgeRAGShortcutEnabled = false
         settings.selectedRepoAIShortcutEnabled = false
@@ -321,6 +355,13 @@ struct AppSettingsTests {
             key: "g",
             command: true,
             option: false,
+            control: false,
+            shift: false
+        )
+        settings.readmeFindShortcut = .init(
+            key: "f",
+            command: true,
+            option: true,
             control: false,
             shift: false
         )
@@ -353,6 +394,8 @@ struct AppSettingsTests {
         #expect(restored.globalSearchShortcutEnabled == false)
         #expect(restored.regularSearchShortcut.displayText == "⌘G")
         #expect(restored.regularSearchShortcutEnabled == false)
+        #expect(restored.readmeFindShortcut.displayText == "⌥⌘F")
+        #expect(restored.readmeFindShortcutEnabled == false)
         #expect(restored.refreshCurrentContentShortcut.displayText == "⌥⌘R")
         #expect(restored.refreshCurrentContentShortcutEnabled == false)
         #expect(restored.knowledgeRAGShortcut.displayText == "⌃⌘J")
@@ -404,9 +447,12 @@ struct AppSettingsTests {
         #expect(formerAboutShortcut.validationError == nil)
         #expect(KeyboardShortcutConfiguration.globalSearchDefault.validationError == nil)
         #expect(KeyboardShortcutConfiguration.regularSearchDefault.validationError == nil)
+        #expect(StarcatShortcutCatalog.readmeFindDefault.validationError == nil)
+        #expect(KeyboardShortcutConfiguration.regularSearchDefault.displaySegments == ["⇧", "⌘", "F"])
+        #expect(StarcatShortcutCatalog.readmeFindDefault.displaySegments == ["⌘", "F"])
     }
 
-    @Test("快捷键: 五个可配置动作不能使用相同组合")
+    @Test("快捷键: 六个可配置动作不能使用相同组合")
     func configurableShortcutConflict() {
         let candidate = KeyboardShortcutConfiguration.globalSearchDefault
 
@@ -415,9 +461,14 @@ struct AppSettingsTests {
                 == .duplicateConfiguredAction
         )
         #expect(candidate.validationError(conflictingWith: [.regularSearchDefault]) == nil)
+        #expect(
+            KeyboardShortcutConfiguration.regularSearchDefault.validationError(
+                conflictingWith: [StarcatShortcutCatalog.readmeFindDefault]
+            ) == nil
+        )
     }
 
-    @Test("快捷键: 任意持久化重复配置都会让五项一起回退默认组合")
+    @Test("快捷键: 任意持久化重复配置都会让六项一起回退默认组合")
     func duplicatedStoredShortcutsFallBackTogether() throws {
         let defaults = makeIsolatedDefaults()
         let duplicated = KeyboardShortcutConfiguration(
@@ -435,9 +486,61 @@ struct AppSettingsTests {
 
         #expect(settings.globalSearchShortcut == .globalSearchDefault)
         #expect(settings.regularSearchShortcut == .regularSearchDefault)
+        #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
         #expect(settings.refreshCurrentContentShortcut == StarcatShortcutCatalog.refreshCurrentContentDefault)
         #expect(settings.knowledgeRAGShortcut == StarcatShortcutCatalog.openKnowledgeRAGDefault)
         #expect(settings.selectedRepoAIShortcut == StarcatShortcutCatalog.openSelectedRepoAIDefault)
+    }
+
+    @Test("快捷键: 磁盘上的旧常规搜索 ⌘F 迁到 ⌘⇧F，README 使用 ⌘F")
+    func legacyRegularSearchCommandFMigratesToShiftCommandF() throws {
+        let defaults = makeIsolatedDefaults()
+        let encoded = String(
+            decoding: try JSONEncoder().encode(KeyboardShortcutConfiguration.legacyRegularSearchDefault),
+            as: UTF8.self
+        )
+        defaults.set(encoded, forKey: AppSettings.Keys.regularSearchShortcut)
+
+        let settings = AppSettings(defaults: defaults)
+
+        #expect(settings.regularSearchShortcut == .regularSearchDefault)
+        #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
+        #expect(settings.regularSearchShortcut.displayText == "⇧⌘F")
+        #expect(settings.readmeFindShortcut.displayText == "⌘F")
+    }
+
+    @Test("快捷键: 用户自定义的常规搜索键位不会被 README 拆分覆盖")
+    func customRegularSearchShortcutIsPreserved() throws {
+        let defaults = makeIsolatedDefaults()
+        let custom = KeyboardShortcutConfiguration(
+            key: "g",
+            command: true,
+            option: false,
+            control: false,
+            shift: false
+        )
+        let encoded = String(decoding: try JSONEncoder().encode(custom), as: UTF8.self)
+        defaults.set(encoded, forKey: AppSettings.Keys.regularSearchShortcut)
+
+        let settings = AppSettings(defaults: defaults)
+
+        #expect(settings.regularSearchShortcut == custom)
+        #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
+    }
+
+    @Test("快捷键路由: 重复激活同一栏保持当前栏")
+    func commandRouterActivateIsIdempotent() {
+        let router = StarcatCommandRouter()
+
+        #expect(router.activeRefreshPane == .list)
+        router.activate(.list)
+        #expect(router.activeRefreshPane == .list)
+        router.activate(.detail)
+        #expect(router.activeRefreshPane == .detail)
+        router.activate(.detail)
+        #expect(router.activeRefreshPane == .detail)
+        router.activate(.list)
+        #expect(router.activeRefreshPane == .list)
     }
 
     @Test("快捷键路由: 最后操作详情时只刷新详情")
@@ -577,6 +680,11 @@ struct AppSettingsTests {
                 identity: "appkit-host-regression",
                 isEnabled: true
             ) {}
+            .starcatReadmeFindCommand(identity: "appkit-host-regression") {}
+            .starcatListSearchCommand(
+                identity: "appkit-host-regression",
+                isEnabled: false
+            ) {}
             // 必须位于消费命令路由的 modifier 外层，模拟 appHostEnvironment 的注入顺序。
             .starcatCommandRouterEnvironment(router)
 
@@ -593,6 +701,56 @@ struct AppSettingsTests {
         window.contentViewController = hostingController
 
         #expect(window.contentViewController === hostingController)
+    }
+
+    @Test("快捷键路由: README 查找与列表搜索互不按栏分流")
+    func commandRouterFindAndListSearchAreIndependent() {
+        let router = StarcatCommandRouter()
+        var calls: [String] = []
+        router.registerListSearchAction(
+            StarcatCommandAction(title: "list", isEnabled: true) { calls.append("list") },
+            ownerID: UUID()
+        )
+        router.registerReadmeFindAction(
+            StarcatCommandAction(title: "readme", isEnabled: true) { calls.append("readme") },
+            ownerID: UUID()
+        )
+        router.activate(.detail)
+        router.performListSearch()
+        router.performReadmeFind()
+        #expect(calls == ["list", "readme"])
+    }
+
+    @Test("快捷键路由: 独立 README 窗 focused 查找优先于主窗口登记")
+    func commandRouterFindPrefersIndependentWindowFocusedReadme() {
+        let router = StarcatCommandRouter()
+        var calls: [String] = []
+        router.registerReadmeFindAction(
+            StarcatCommandAction(title: "main", isEnabled: true) { calls.append("main") },
+            ownerID: UUID()
+        )
+        let focusedReadme = StarcatCommandAction(title: "window", isEnabled: true) {
+            calls.append("window")
+        }
+        router.performReadmeFind(preferred: focusedReadme)
+        #expect(calls == ["window"])
+        #expect(router.isReadmeFindAvailable(preferred: focusedReadme))
+    }
+
+    @Test("快捷键路由: 没有 README 时查找按键忽略，不影响列表搜索")
+    func commandRouterReadmeFindNoopsWhenUnavailable() {
+        let router = StarcatCommandRouter()
+        var calls: [String] = []
+        router.registerListSearchAction(
+            StarcatCommandAction(title: "list", isEnabled: true) { calls.append("list") },
+            ownerID: UUID()
+        )
+        router.activate(.detail)
+        router.performReadmeFind()
+        router.performListSearch()
+        #expect(calls == ["list"])
+        #expect(router.isReadmeFindAvailable() == false)
+        #expect(router.isListSearchAvailable())
     }
 
     // MARK: - AI BYOK 设置
@@ -1477,6 +1635,15 @@ struct AutoTidySettingsTests {
         #expect(t.sortOrder == .recentlyStarred)
         #expect(t.generateSummary == false, "默认只跑标签，摘要烧 token 更多")
         #expect(t.generateTags == true)
+        #expect(s.githubStarListAutoGroupingSettings.enabled == false, "后台 GitHub 写入默认必须关闭")
+        #expect(s.githubStarListAutoGroupingSettings.triggerOnLaunch == true)
+        #expect(s.githubStarListAutoGroupingSettings.triggerOnSync == true)
+        #expect(s.githubStarListAutoGroupingSettings.triggerScheduled == false)
+        #expect(s.githubStarListAutoGroupingSettings.scheduledIntervalHours == 1)
+        #expect(s.githubStarListAutoGroupingSettings.maxPerRun == 50)
+        #expect(s.githubStarListAutoGroupingSettings.sortOrder == .recentlyStarred)
+        #expect(s.githubStarListAutoGroupingSettings.confidenceThreshold == 0.90)
+        #expect(s.githubStarListAutoGroupingSettings.attemptedRepositoryIDs.isEmpty)
         #expect(t.useConfidenceThreshold == true, "默认启用阈值过滤，保险地只应用高置信度标签")
         #expect(t.confidenceThreshold == 0.90)
         #expect(t.lastRunAt == nil)
@@ -1500,6 +1667,18 @@ struct AutoTidySettingsTests {
         t.lastRunAt = Date(timeIntervalSince1970: 1_700_000_000)
         t.lastRunStats = AutoTidyLastRunStats(total: 50, applied: 40, ignored: 5, failed: 5)
         s1.autoTidySettings = t
+        s1.githubStarListAutoGroupingSettings = GitHubStarListAutoGroupingSettings(
+            enabled: true,
+            triggerOnLaunch: false,
+            triggerOnSync: false,
+            triggerScheduled: true,
+            scheduledIntervalHours: 6,
+            maxPerRun: 200,
+            sortOrder: .earliestStarred,
+            confidenceThreshold: 0.80,
+            attemptedRepositoryIDs: [11, 22],
+            attemptConfigurationFingerprint: "rules-v1"
+        )
 
         let s2 = AppSettings(defaults: defaults)
         #expect(s2.autoTidySettings.enabled == true)
@@ -1508,6 +1687,16 @@ struct AutoTidySettingsTests {
         #expect(s2.autoTidySettings.maxPerRun == 200)
         #expect(s2.autoTidySettings.sortOrder == .random)
         #expect(s2.autoTidySettings.generateSummary == true)
+        #expect(s2.githubStarListAutoGroupingSettings.enabled == true)
+        #expect(s2.githubStarListAutoGroupingSettings.triggerOnLaunch == false)
+        #expect(s2.githubStarListAutoGroupingSettings.triggerOnSync == false)
+        #expect(s2.githubStarListAutoGroupingSettings.triggerScheduled == true)
+        #expect(s2.githubStarListAutoGroupingSettings.scheduledIntervalHours == 6)
+        #expect(s2.githubStarListAutoGroupingSettings.maxPerRun == 200)
+        #expect(s2.githubStarListAutoGroupingSettings.sortOrder == .earliestStarred)
+        #expect(s2.githubStarListAutoGroupingSettings.confidenceThreshold == 0.80)
+        #expect(s2.githubStarListAutoGroupingSettings.attemptedRepositoryIDs == [11, 22])
+        #expect(s2.githubStarListAutoGroupingSettings.attemptConfigurationFingerprint == "rules-v1")
         #expect(s2.autoTidySettings.useConfidenceThreshold == false)
         #expect(s2.autoTidySettings.confidenceThreshold == 0.75, "用户值在 toggle 关掉时也应保留，便于再次开启时还原")
         #expect(s2.autoTidySettings.lastRunAt?.timeIntervalSince1970 == 1_700_000_000)
@@ -1561,9 +1750,42 @@ struct AutoTidySettingsTests {
         #expect(built.scheduledIntervalSeconds == TimeInterval(24 * 60 * 60))
     }
 
+    @Test("GitHub Lists 自动分组设置从旧 AutoTidy JSON 一次迁移并限制阈值")
+    func migratesIndependentGitHubListGroupingSettings() {
+        let legacy = #"{"generateGitHubListGrouping":true,"githubListGroupingConfidenceThreshold":0.87}"#
+        let migrated = GitHubStarListAutoGroupingSettings.migratedFromLegacyAutoTidyJSON(legacy)
+        #expect(migrated?.enabled == true)
+        #expect(migrated?.confidenceThreshold == 0.87)
+        #expect(GitHubStarListAutoGroupingSettings(enabled: true, confidenceThreshold: 0.2).confidenceThreshold == 0.5)
+        #expect(GitHubStarListAutoGroupingSettings(enabled: true, confidenceThreshold: 2).confidenceThreshold == 1)
+    }
+
+    @Test("GitHub Lists 自动分组旧 JSON 补齐独立触发与范围默认值")
+    func decodesGitHubListGroupingForwardCompat() throws {
+        let partialJSON = #"{"enabled":true,"confidenceThreshold":0.8}"#
+        let decoded = try JSONDecoder().decode(
+            GitHubStarListAutoGroupingSettings.self,
+            from: Data(partialJSON.utf8)
+        )
+
+        #expect(decoded.triggerOnLaunch == true)
+        #expect(decoded.triggerOnSync == true)
+        #expect(decoded.triggerScheduled == false)
+        #expect(decoded.scheduledIntervalHours == 1)
+        #expect(decoded.maxPerRun == 50)
+        #expect(decoded.sortOrder == .recentlyStarred)
+        #expect(decoded.attemptedRepositoryIDs.isEmpty)
+        #expect(decoded.attemptConfigurationFingerprint == nil)
+        #expect(GitHubStarListAutoGroupingSettings.clampScheduledIntervalHours(0) == 1)
+        #expect(GitHubStarListAutoGroupingSettings.clampScheduledIntervalHours(25) == 24)
+        #expect(GitHubStarListAutoGroupingSettings.clampMaxPerRun(1) == 5)
+        #expect(GitHubStarListAutoGroupingSettings.clampMaxPerRun(600) == 500)
+    }
+
     @Test("makeBatchOptions: 只勾摘要 → actions={summary}, autoApply=false")
     func batchOptionsSummaryOnly() {
         var t = AutoTidySettings.default
+        t.enabled = true
         t.generateSummary = true
         t.generateTags = false
         let opts = t.makeBatchOptions()
@@ -1573,7 +1795,9 @@ struct AutoTidySettingsTests {
 
     @Test("makeBatchOptions: 勾了标签 → autoApplyTags=true（自动模式明示同意）")
     func batchOptionsAutoApply() {
-        let opts = AutoTidySettings.default.makeBatchOptions()
+        var t = AutoTidySettings.default
+        t.enabled = true
+        let opts = t.makeBatchOptions()
         #expect(opts.actions == [.tags])
         #expect(opts.autoApplyTags == true)
         #expect(opts.confidenceThreshold == 0.90)
@@ -1582,12 +1806,25 @@ struct AutoTidySettingsTests {
     @Test("makeBatchOptions: useConfidenceThreshold=false 时把 confidenceThreshold 降级为 0（不过滤）")
     func batchOptionsThresholdDisabled() {
         var t = AutoTidySettings.default
+        t.enabled = true
         t.useConfidenceThreshold = false
         t.confidenceThreshold = 0.75  // 用户历史值，should be preserved in settings but not passed down
         let opts = t.makeBatchOptions()
         #expect(opts.confidenceThreshold == 0, "toggle 关掉后下游收到 0，等价于不过滤、所有 AI 建议都应用")
         // 用户值未被破坏（仍保留在 settings 字段中），便于再次开启时还原
         #expect(t.confidenceThreshold == 0.75)
+    }
+
+    @Test("仓库分组全局开关不依赖标签自动整理总开关")
+    func githubListGroupingHasIndependentGlobalSwitch() {
+        let defaults = makeIsolatedDefaults()
+        let settings = AppSettings(defaults: defaults)
+        settings.autoTidySettings.enabled = false
+        settings.githubStarListAutoGroupingSettings.enabled = true
+
+        #expect(settings.autoTidySettings.hasEnabledBackgroundAction == false)
+        #expect(settings.githubStarListAutoGroupingSettings.enabled == true)
+        #expect(settings.githubStarListAutoGroupingSettings.confidenceThreshold == 0.90)
     }
 
     @Test("pick(recentlyStarred): 取最近 star 在前的 N 条")

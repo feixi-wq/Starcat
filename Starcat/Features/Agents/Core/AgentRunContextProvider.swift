@@ -31,6 +31,10 @@ struct EmptyAgentRunContextProvider: AgentRunContextProviding {
             explicitRepos: input.explicitRepos,
             explicitRepoMode: input.explicitRepoMode,
             selectedModelID: input.selectedModelID,
+            runtimeBackend: input.runtimeBackend,
+            runtimeProviderName: input.runtimeProviderName,
+            runtimeModelName: input.runtimeModelName,
+            runtimeReasoningEffort: input.runtimeReasoningEffort,
             githubLinks: input.githubLinks,
             webSearchEnabled: input.webSearchEnabled
         )
@@ -76,6 +80,10 @@ struct RepositoryAgentRunContextProvider: AgentRunContextProviding {
                 explicitRepos: input.explicitRepos,
                 explicitRepoMode: input.explicitRepoMode,
                 selectedModelID: input.selectedModelID,
+                runtimeBackend: input.runtimeBackend,
+                runtimeProviderName: input.runtimeProviderName,
+                runtimeModelName: input.runtimeModelName,
+                runtimeReasoningEffort: input.runtimeReasoningEffort,
                 githubLinks: input.githubLinks,
                 webSearchEnabled: input.webSearchEnabled,
                 knowledgeEligibleRepoIDs: knowledgeEligibleRepoIDs
@@ -90,6 +98,10 @@ struct RepositoryAgentRunContextProvider: AgentRunContextProviding {
                 explicitRepos: input.explicitRepos,
                 explicitRepoMode: input.explicitRepoMode,
                 selectedModelID: input.selectedModelID,
+                runtimeBackend: input.runtimeBackend,
+                runtimeProviderName: input.runtimeProviderName,
+                runtimeModelName: input.runtimeModelName,
+                runtimeReasoningEffort: input.runtimeReasoningEffort,
                 githubLinks: input.githubLinks,
                 webSearchEnabled: input.webSearchEnabled
             )

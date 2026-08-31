@@ -16,6 +16,7 @@ enum AIUsageFeature: String, Codable, CaseIterable, Identifiable, Sendable {
     case repoSummary = "repo_summary"
     case repoNote = "repo_note"
     case repoTags = "repo_tags"
+    case repoGrouping = "repo_grouping"
     case repoChat = "repo_chat"
     case readmeTranslation = "readme_translation"
     case agent
@@ -91,12 +92,18 @@ struct AIUsageEvent: Codable, FetchableRecord, PersistableRecord, Equatable, Ide
     var outputTokens: Int?
     var totalTokens: Int?
     var cachedInputTokens: Int?
+    var cacheWriteInputTokens: Int? = nil
     var reasoningOutputTokens: Int?
     var itemCount: Int
     var usageSource: String
     var status: String
     var errorCategory: String?
     var correlationId: String?
+    /// 费用与定价匹配信息在事件完成时冻结，后续目录更新不会重写历史记录。
+    var estimatedCostUSD: Double? = nil
+    var costSource: String? = nil
+    var pricingModel: String? = nil
+    var pricingRevision: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -110,10 +117,15 @@ struct AIUsageEvent: Codable, FetchableRecord, PersistableRecord, Equatable, Ide
         case outputTokens = "output_tokens"
         case totalTokens = "total_tokens"
         case cachedInputTokens = "cached_input_tokens"
+        case cacheWriteInputTokens = "cache_write_input_tokens"
         case reasoningOutputTokens = "reasoning_output_tokens"
         case itemCount = "item_count"
         case usageSource = "usage_source"
         case status, errorCategory = "error_category"
         case correlationId = "correlation_id"
+        case estimatedCostUSD = "estimated_cost_usd"
+        case costSource = "cost_source"
+        case pricingModel = "pricing_model"
+        case pricingRevision = "pricing_revision"
     }
 }

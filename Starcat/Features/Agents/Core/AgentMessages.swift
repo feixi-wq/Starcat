@@ -123,24 +123,47 @@ struct AgentUsage: Codable, Hashable, Sendable {
     var inputTokens: Int
     var outputTokens: Int
     var cachedTokens: Int
+    /// Provider 单独报告的 cache write；旧记录缺失时保持 nil，不能混入 cache read。
+    var cacheWriteTokens: Int?
     var reasoningTokens: Int
     var totalTokens: Int
     var estimatedCost: Decimal?
+    var estimatedCostSource: String?
+    var pricingModel: String?
+    var pricingRevision: String?
+    /// 以下运行指标为 optional：只有 Runtime 明确返回或 Host 实测时才展示。
+    var contextWindowUsedTokens: Int?
+    var contextWindowLimitTokens: Int?
+    var firstOutputLatencyMilliseconds: Int?
 
     init(
         inputTokens: Int = 0,
         outputTokens: Int = 0,
         cachedTokens: Int = 0,
+        cacheWriteTokens: Int? = nil,
         reasoningTokens: Int = 0,
         totalTokens: Int? = nil,
-        estimatedCost: Decimal? = nil
+        estimatedCost: Decimal? = nil,
+        estimatedCostSource: String? = nil,
+        pricingModel: String? = nil,
+        pricingRevision: String? = nil,
+        contextWindowUsedTokens: Int? = nil,
+        contextWindowLimitTokens: Int? = nil,
+        firstOutputLatencyMilliseconds: Int? = nil
     ) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cachedTokens = cachedTokens
+        self.cacheWriteTokens = cacheWriteTokens
         self.reasoningTokens = reasoningTokens
         self.totalTokens = totalTokens ?? inputTokens + outputTokens
         self.estimatedCost = estimatedCost
+        self.estimatedCostSource = estimatedCostSource
+        self.pricingModel = pricingModel
+        self.pricingRevision = pricingRevision
+        self.contextWindowUsedTokens = contextWindowUsedTokens
+        self.contextWindowLimitTokens = contextWindowLimitTokens
+        self.firstOutputLatencyMilliseconds = firstOutputLatencyMilliseconds
     }
 
     static let zero = AgentUsage()
@@ -149,11 +172,33 @@ struct AgentUsage: Codable, Hashable, Sendable {
         inputTokens += other.inputTokens
         outputTokens += other.outputTokens
         cachedTokens += other.cachedTokens
+        if let otherCacheWriteTokens = other.cacheWriteTokens {
+            cacheWriteTokens = (cacheWriteTokens ?? 0) + otherCacheWriteTokens
+        }
         reasoningTokens += other.reasoningTokens
         totalTokens += other.totalTokens
         if let otherCost = other.estimatedCost {
             estimatedCost = (estimatedCost ?? 0) + otherCost
         }
+        estimatedCostSource = other.estimatedCostSource ?? estimatedCostSource
+        pricingModel = other.pricingModel ?? pricingModel
+        pricingRevision = other.pricingRevision ?? pricingRevision
+        // Context window 是最新请求的瞬时值，首输出延迟则属于本次 Run 的首个可见响应；
+        // 两者都不能像 token 一样相加。
+        contextWindowUsedTokens = other.contextWindowUsedTokens ?? contextWindowUsedTokens
+        contextWindowLimitTokens = other.contextWindowLimitTokens ?? contextWindowLimitTokens
+        firstOutputLatencyMilliseconds = firstOutputLatencyMilliseconds
+            ?? other.firstOutputLatencyMilliseconds
+    }
+
+    /// Provider 的 usage 更新通常是覆盖式累计快照。替换 token 数字时继承 Host 已测得的
+    /// 延迟，避免后到的 token 帧把本地运行指标清空。
+    mutating func inheritRuntimeMetrics(from previous: AgentUsage?) {
+        guard let previous else { return }
+        contextWindowUsedTokens = contextWindowUsedTokens ?? previous.contextWindowUsedTokens
+        contextWindowLimitTokens = contextWindowLimitTokens ?? previous.contextWindowLimitTokens
+        firstOutputLatencyMilliseconds = firstOutputLatencyMilliseconds
+            ?? previous.firstOutputLatencyMilliseconds
     }
 }
 

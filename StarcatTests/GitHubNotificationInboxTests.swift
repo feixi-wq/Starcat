@@ -101,6 +101,26 @@ struct GitHubNotificationMapperTests {
         )
     }
 
+    @Test("Issue 标签按顺序保留多个，缺色用 GitHub 默认灰")
+    func issueLabelsParseMultipleAndRoundTrip() {
+        let raw: [Any] = [
+            ["name": "bug", "color": "d73a4a"],
+            ["name": "ci", "color": "#ededed"],
+            "docs",
+            ["name": "  "],
+            ["color": "000000"]
+        ]
+        let labels = GitHubNotificationMapper.labels(from: raw)
+        #expect(labels.map(\.name) == ["bug", "ci", "docs"])
+        #expect(labels.map(\.colorHex) == ["d73a4a", "ededed", "6e7781"])
+
+        let encoded = GitHubNotificationMapper.encodeLabels(labels)
+        let decoded = GitHubNotificationMapper.decodeLabels(encoded)
+        #expect(decoded == labels)
+        #expect(GitHubNotificationMapper.decodeLabels(nil).isEmpty)
+        #expect(GitHubNotificationMapper.decodeLabels("[]").isEmpty)
+    }
+
     @Test("列表摘录把 markdown 链接收成可见文字")
     func listSnippetStripsLinks() {
         #expect(
@@ -156,6 +176,8 @@ struct GitHubNotificationMapperTests {
         #expect(!GitHubNotificationMapper.matchesSegment(record, segment: .star))
         #expect(!GitHubNotificationMapper.matchesSegment(record, segment: .unstar))
         #expect(!GitHubNotificationMapper.matchesSegment(record, segment: .fork))
+        #expect(!GitHubNotificationMapper.matchesSegment(record, segment: .open))
+        #expect(!GitHubNotificationMapper.matchesSegment(record, segment: .inLibrary))
     }
 
     @Test("Issue / PR 分段按 subject_type 匹配")
@@ -339,6 +361,49 @@ struct GitHubNotificationMapperTests {
                 isClosed: true, isPullRequest: false, hasComment: true, locale: en
             ) == "Reopen with comment"
         )
+    }
+
+    @Test("PR 的 closed+merged 收成 merged；普通 Issue 只认 open/closed")
+    func resolvedIssueStatePrefersMerged() {
+        #expect(
+            GitHubNotificationMapper.resolvedIssueState(
+                rawState: "closed",
+                merged: true,
+                mergedAt: nil
+            ) == "merged"
+        )
+        #expect(
+            GitHubNotificationMapper.resolvedIssueState(
+                rawState: "closed",
+                merged: false,
+                mergedAt: "2026-08-22T04:00:00Z"
+            ) == "merged"
+        )
+        #expect(
+            GitHubNotificationMapper.resolvedIssueState(
+                rawState: "closed",
+                merged: false,
+                mergedAt: nil
+            ) == "closed"
+        )
+        #expect(GitHubNotificationMapper.normalizedIssueState("OPEN") == "open")
+        #expect(GitHubNotificationMapper.normalizedIssueState("draft") == nil)
+        let zh = Locale(identifier: "zh-Hans")
+        #expect(GitHubNotificationMapper.issueStateTitle(state: "merged", locale: zh) == "已合并")
+        #expect(
+            GitHubNotificationMapper.issueStateTitle(state: "open", locale: Locale(identifier: "en"))
+            == "Open"
+        )
+        #expect(
+            GitHubNotificationMapper.libraryStateStampTitle(state: .inLibrary, locale: zh) == "已入库"
+        )
+        #expect(
+            GitHubNotificationMapper.libraryStateStampTitle(state: .outsideLibrary, locale: Locale(identifier: "en"))
+            == "Out"
+        )
+        #expect(GitHubNotificationSegment.open.issueStateFilter == "open")
+        #expect(GitHubNotificationSegment.closed.issueStateFilter == "closed")
+        #expect(GitHubNotificationSegment.inLibrary.libraryStateFilter == .inLibrary)
     }
 
     @Test("时钟格式 HH:mm")
@@ -557,6 +622,103 @@ struct GitHubNotificationMapperTests {
         #expect(!GitHubNotificationMapper.canReply(subjectType: "Issue", number: nil))
     }
 
+    @Test("引用回复给每行加 >，空行写成 >")
+    func quotedMarkdownPrefixesEveryLine() {
+        #expect(GitHubNotificationMapper.quotedMarkdown("  hello\n\nworld  ") == "> hello\n>\n> world")
+        #expect(GitHubNotificationMapper.quotedMarkdown("   ") == "")
+        #expect(
+            GitHubNotificationMapper.prependQuotedReply(quote: "hi", onto: "") == "> hi\n\n"
+        )
+        #expect(
+            GitHubNotificationMapper.prependQuotedReply(quote: "hi", onto: "draft") == "> hi\n\ndraft"
+        )
+        #expect(GitHubNotificationMapper.prependQuotedReply(quote: "  ", onto: "keep") == "keep")
+    }
+
+    @Test("评论 permalink 优先 html_url，否则拼 issuecomment")
+    func commentPermalinkPrefersHTMLURLThenFragment() {
+        #expect(
+            GitHubNotificationMapper.commentPermalink(
+                htmlURL: "https://github.com/o/r/issues/1#issuecomment-9",
+                issueHTMLURL: "https://github.com/o/r/issues/1",
+                commentID: 9
+            ) == "https://github.com/o/r/issues/1#issuecomment-9"
+        )
+        #expect(
+            GitHubNotificationMapper.commentPermalink(
+                htmlURL: nil,
+                issueHTMLURL: "https://github.com/o/r/issues/1",
+                commentID: 42
+            ) == "https://github.com/o/r/issues/1#issuecomment-42"
+        )
+        #expect(
+            GitHubNotificationMapper.commentPermalink(
+                htmlURL: " ",
+                issueHTMLURL: "https://github.com/o/r/issues/1#discussion_r1",
+                commentID: 7
+            ) == "https://github.com/o/r/issues/1#issuecomment-7"
+        )
+        #expect(
+            GitHubNotificationMapper.issueCommentResourcePath(
+                repositoryFullName: "o/r",
+                commentID: 88
+            ) == "/repos/o/r/issues/comments/88"
+        )
+        #expect(GitHubNotificationMapper.issueCommentResourcePath(repositoryFullName: "o", commentID: 1) == nil)
+        #expect(GitHubNotificationMapper.isSameGitHubLogin("Dong4j", "dong4j"))
+        #expect(!GitHubNotificationMapper.isSameGitHubLogin("dong4j", "tasselx"))
+        #expect(!GitHubNotificationMapper.isSameGitHubLogin("", "dong4j"))
+    }
+
+    @Test("评论卡只给作者显示编辑")
+    func commentCardActionsEditOnlyForAuthor() {
+        let payload = ActivityNotificationPayload(
+            threadId: "t1",
+            reason: "comment",
+            chip: .comment,
+            subjectType: "Issue",
+            subjectNumber: 1,
+            repositoryFullName: "o/r",
+            actorLogin: "alice",
+            authorLogin: "alice",
+            authorCreatedAt: nil,
+            excerpt: "hello",
+            comments: [],
+            people: []
+        )
+        let comment = GitHubNotificationComment(
+            id: 3,
+            login: "bob",
+            body: "reply",
+            htmlURL: nil,
+            createdAt: nil
+        )
+        let opening = GitHubNotificationCommentCardActions.make(
+            payload: payload,
+            issueHTMLURL: "https://github.com/o/r/issues/1",
+            authorLogin: "alice",
+            comment: nil,
+            markdown: "hello",
+            currentLogin: "Alice"
+        )
+        #expect(opening.canEdit)
+        #expect(opening.canQuote)
+        #expect(opening.commentID == nil)
+        #expect(opening.permalink == "https://github.com/o/r/issues/1")
+
+        let other = GitHubNotificationCommentCardActions.make(
+            payload: payload,
+            issueHTMLURL: "https://github.com/o/r/issues/1",
+            authorLogin: comment.login,
+            comment: comment,
+            markdown: comment.body,
+            currentLogin: "alice"
+        )
+        #expect(!other.canEdit)
+        #expect(other.canQuote)
+        #expect(other.permalink == "https://github.com/o/r/issues/1#issuecomment-3")
+    }
+
     @Test("Issue 开帖人是 subject.user，不是最后一条评论")
     func openingPostAuthorIsNotLastCommenter() {
         var record = GitHubNotificationMapper.record(
@@ -622,7 +784,7 @@ struct GitHubNotificationTimelinePagingTests {
         let window = GitHubNotificationTimelinePaging.prefetchRowCount
         #expect(
             GitHubNotificationTimelinePaging.shouldPrefetchNextPage(
-                rowIndex: count - window - 1,
+                rowIndex: count - window - 2,
                 rowCount: count,
                 hasMore: true,
                 isLoading: false
@@ -630,7 +792,7 @@ struct GitHubNotificationTimelinePagingTests {
         )
         #expect(
             GitHubNotificationTimelinePaging.shouldPrefetchNextPage(
-                rowIndex: count - window,
+                rowIndex: count - window - 1,
                 rowCount: count,
                 hasMore: true,
                 isLoading: false
@@ -745,6 +907,83 @@ struct GitHubNotificationTimelinePagingTests {
                 currentCursor: anotherCursor
             ) == false
         )
+    }
+}
+
+@Suite("GitHubNotificationTimelineLibraryState")
+struct GitHubNotificationTimelineLibraryStateTests {
+
+    @Test("入库只改匹配账本行的知识库徽章，不改 id 和顺序")
+    func patchesMatchingActivityLibraryStateWithoutReordering() {
+        let selectedID = "star:starcat:42:2026-08-22T12:00:00Z"
+        let otherID = "star:starcat:99:2026-08-22T11:00:00Z"
+        let rows: [GitHubInboxTimelineRow] = [
+            activityRow(id: selectedID, repoId: 42, state: .outsideLibrary),
+            activityRow(id: otherID, repoId: 99, state: .outsideLibrary)
+        ]
+
+        let patched = GitHubNotificationTimelineLibraryState.apply(
+            rows: rows,
+            repoId: 42,
+            state: .inLibrary
+        )
+
+        #expect(patched.map(\.id) == [selectedID, otherID])
+        #expect(libraryState(of: patched[0]) == .inLibrary)
+        #expect(libraryState(of: patched[1]) == .outsideLibrary)
+    }
+
+    @Test("同一仓库的多条账本行一起改徽章；未命中时列表原样返回")
+    func patchesEveryMatchingRepoRowAndIgnoresUnknownRepo() {
+        let first = activityRow(id: "star:starcat:7:2026-08-22T10:00:00Z", repoId: 7, state: .outsideLibrary)
+        let second = activityRow(id: "unstar:starcat:7:2026-08-22T09:00:00Z", repoId: 7, state: .outsideLibrary)
+        let other = activityRow(id: "star:starcat:8:2026-08-22T08:00:00Z", repoId: 8, state: .inLibrary)
+        let rows = [first, second, other]
+
+        let patched = GitHubNotificationTimelineLibraryState.apply(
+            rows: rows,
+            repoId: 7,
+            state: .inLibrary
+        )
+        #expect(libraryState(of: patched[0]) == .inLibrary)
+        #expect(libraryState(of: patched[1]) == .inLibrary)
+        #expect(libraryState(of: patched[2]) == .inLibrary)
+
+        let unchanged = GitHubNotificationTimelineLibraryState.apply(
+            rows: rows,
+            repoId: 100,
+            state: .inLibrary
+        )
+        #expect(unchanged == rows)
+    }
+
+    private func activityRow(id: String, repoId: Int64, state: LibraryState) -> GitHubInboxTimelineRow {
+        let record = UserRepoActivityRecord(
+            id: id,
+            kind: id.hasPrefix("unstar") ? .unstar : .star,
+            source: .starcat,
+            repoId: repoId,
+            fullName: "octo/repo-\(repoId)",
+            htmlUrl: "https://github.com/octo/repo-\(repoId)",
+            occurredAt: "2026-08-22T12:00:00Z",
+            createdAt: "2026-08-22T12:00:00Z",
+            userId: 1,
+            userName: "tester"
+        )
+        return .activity(
+            UserRepoActivityListItem(
+                record: record,
+                snippet: "desc",
+                ownerLogin: "tester",
+                language: "Swift",
+                libraryState: state
+            )
+        )
+    }
+
+    private func libraryState(of row: GitHubInboxTimelineRow) -> LibraryState? {
+        guard case .activity(let item) = row else { return nil }
+        return item.libraryState
     }
 }
 
@@ -869,6 +1108,10 @@ struct GitHubNotificationInboxTests {
             markReadState: .synced,
             githubUnread: false
         )
+        try await env.threads.markNotified(
+            ids: ["t-new"],
+            notifiedAt: "2026-08-01T00:00:00Z"
+        )
 
         let incoming = GitHubNotificationMapper.record(
             from: Self.makeDTO(id: "t-new", unread: true, updatedAt: "2026-08-19T12:00:00Z"),
@@ -880,6 +1123,7 @@ struct GitHubNotificationInboxTests {
         let stored = try #require(try await env.threads.fetch(id: "t-new"))
         #expect(stored.unread == true)
         #expect(stored.markReadStateValue == .idle)
+        #expect(stored.notifiedAt == nil)
     }
 
     @Test("totalCount 是全部 thread，unreadCount 只计未读")
@@ -1068,7 +1312,11 @@ struct GitHubNotificationInboxTests {
                 actorLogin: "alice",
                 excerpt: "hello body",
                 createdAt: "2026-07-19T00:00:00Z",
-                state: "open"
+                state: "open",
+                labels: [
+                    GitHubNotificationIssueLabel(name: "bug", colorHex: "d73a4a"),
+                    GitHubNotificationIssueLabel(name: "ci", colorHex: "ededed")
+                ]
             )
         }
         env.mock.listNotificationIssueCommentsHandler = { path in
@@ -1094,10 +1342,330 @@ struct GitHubNotificationInboxTests {
         #expect(stored.excerpt == "hello body")
         #expect(stored.htmlUrl == "https://github.com/o/r/issues/1")
         #expect(stored.subjectCreatedAt == "2026-07-19T00:00:00Z")
+        #expect(stored.issueState == "open")
+        #expect(env.inbox.cachedIssueState(threadId: "h1") == "open")
         let comments = GitHubNotificationMapper.decodeComments(stored.commentsJson)
         #expect(comments.count == 1)
         #expect(comments.first?.login == "bob")
         #expect(comments.first?.body == "full **markdown** comment")
+        let labels = GitHubNotificationMapper.decodeLabels(stored.labelsJson)
+        #expect(labels.map(\.name) == ["bug", "ci"])
+        #expect(labels.map(\.colorHex) == ["d73a4a", "ededed"])
+    }
+
+    @Test("事件流打开时 hydrate 只补 subject，不拉 comments")
+    func hydrateSkipsCommentsWhenIssueEventsEnabled() async throws {
+        let env = try makeEnv()
+        env.settings.githubIssueEventTimelineEnabled = true
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            Self.listResponse([Self.makeDTO(id: "ev1")])
+        }
+        var hydrateCalls = 0
+        var commentCalls = 0
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            hydrateCalls += 1
+            return GitHubNotificationSubjectHydration(
+                htmlURL: "https://github.com/o/r/issues/1",
+                actorLogin: "alice",
+                excerpt: "hello body",
+                createdAt: "2026-07-19T00:00:00Z",
+                state: "open",
+                labels: [GitHubNotificationIssueLabel(name: "bug", colorHex: "d73a4a")]
+            )
+        }
+        env.mock.listNotificationIssueCommentsHandler = { _ in
+            commentCalls += 1
+            return []
+        }
+        env.mock.listNotificationIssueTimelineHandler = { path in
+            #expect(path == "/repos/o/r/issues/1/timeline")
+            return [
+                .comment(
+                    GitHubNotificationComment(
+                        id: 77,
+                        login: "bob",
+                        body: "from timeline",
+                        htmlURL: "https://github.com/o/r/issues/1#issuecomment-77",
+                        createdAt: "2026-08-19T00:00:00Z"
+                    )
+                )
+            ]
+        }
+
+        await env.inbox.sync()
+        await env.inbox.hydrate(id: "ev1")
+        await env.inbox.hydrate(id: "ev1")
+        let cached = try await env.inbox.loadIssueTimeline(threadId: "ev1")
+
+        #expect(hydrateCalls == 1)
+        #expect(commentCalls == 0)
+        #expect(env.mock.listNotificationIssueTimelineCalls.count == 1)
+        #expect(cached.count == 1)
+        let stored = try #require(try await env.threads.fetch(id: "ev1"))
+        #expect(stored.commentsJson == nil)
+        #expect(stored.excerpt == "hello body")
+        #expect(GitHubNotificationMapper.decodeLabels(stored.labelsJson).map(\.name) == ["bug"])
+    }
+
+    @Test("事件流关掉后，只补过 subject 的帖会再拉 comments")
+    func hydrateFetchesCommentsAfterDisablingIssueEvents() async throws {
+        let env = try makeEnv()
+        env.settings.githubIssueEventTimelineEnabled = true
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            Self.listResponse([Self.makeDTO(id: "ev2")])
+        }
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            GitHubNotificationSubjectHydration(
+                htmlURL: "https://github.com/o/r/issues/1",
+                actorLogin: "alice",
+                excerpt: "hello body",
+                createdAt: "2026-07-19T00:00:00Z",
+                state: "open",
+                labels: []
+            )
+        }
+        var commentCalls = 0
+        env.mock.listNotificationIssueCommentsHandler = { _ in
+            commentCalls += 1
+            return [
+                GitHubNotificationComment(
+                    id: 88,
+                    login: "bob",
+                    body: "after toggle off",
+                    htmlURL: "https://github.com/o/r/issues/1#issuecomment-88",
+                    createdAt: "2026-08-19T00:00:00Z"
+                )
+            ]
+        }
+        env.mock.listNotificationIssueTimelineHandler = { _ in [] }
+
+        await env.inbox.sync()
+        await env.inbox.hydrate(id: "ev2")
+        #expect(commentCalls == 0)
+        #expect(try await env.threads.fetch(id: "ev2")?.commentsJson == nil)
+
+        env.settings.githubIssueEventTimelineEnabled = false
+        await env.inbox.hydrate(id: "ev2")
+
+        #expect(commentCalls == 1)
+        let stored = try #require(try await env.threads.fetch(id: "ev2"))
+        let comments = GitHubNotificationMapper.decodeComments(stored.commentsJson)
+        #expect(comments.map(\.id) == [88])
+    }
+
+    @Test("事件流打开时发评不写 comments_json，并强制重拉 timeline")
+    func postCommentWhileIssueEventsEnabledRefetchesTimeline() async throws {
+        let env = try makeEnv()
+        env.settings.githubIssueEventTimelineEnabled = true
+        let record = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "ev3"),
+            fetchedAt: "2026-08-19T00:00:00Z",
+            firstSeenAt: "2026-08-19T00:00:00Z"
+        )
+        try await env.threads.upsertMany([record])
+        try await env.threads.updateHydration(
+            id: "ev3",
+            actorLogin: "alice",
+            excerpt: "opening",
+            commentsJson: GitHubNotificationMapper.encodeComments([
+                GitHubNotificationComment(
+                    id: 1,
+                    login: "old",
+                    body: "stale",
+                    htmlURL: nil,
+                    createdAt: "2026-08-18T00:00:00Z"
+                )
+            ]),
+            htmlUrl: "https://github.com/o/r/issues/1",
+            subjectCreatedAt: "2026-07-19T00:00:00Z",
+            hydratedAt: "2026-08-19T00:00:00Z",
+            labelsJson: nil
+        )
+        var timelineCalls = 0
+        env.mock.listNotificationIssueTimelineHandler = { _ in
+            timelineCalls += 1
+            return [
+                .comment(
+                    GitHubNotificationComment(
+                        id: 501,
+                        login: "dong4j",
+                        body: "hello from starcat",
+                        htmlURL: "https://github.com/o/r/issues/1#issuecomment-501",
+                        createdAt: "2026-08-19T14:32:00Z"
+                    )
+                )
+            ]
+        }
+        env.mock.createNotificationIssueCommentHandler = { _, body in
+            GitHubNotificationComment(
+                id: 501,
+                login: "dong4j",
+                body: body,
+                htmlURL: "https://github.com/o/r/issues/1#issuecomment-501",
+                createdAt: "2026-08-19T14:32:00Z"
+            )
+        }
+
+        _ = try await env.inbox.loadIssueTimeline(threadId: "ev3")
+        #expect(timelineCalls == 1)
+        try await env.inbox.postComment(threadId: "ev3", body: "hello from starcat")
+        #expect(timelineCalls == 2)
+        #expect(env.inbox.issueTimelineRevision(threadId: "ev3") >= 2)
+
+        let stored = try #require(try await env.threads.fetch(id: "ev3"))
+        #expect(stored.commentsJson == nil)
+
+        env.settings.githubIssueEventTimelineEnabled = false
+        var commentCalls = 0
+        env.mock.listNotificationIssueCommentsHandler = { _ in
+            commentCalls += 1
+            return [
+                GitHubNotificationComment(
+                    id: 501,
+                    login: "dong4j",
+                    body: "hello from starcat",
+                    htmlURL: "https://github.com/o/r/issues/1#issuecomment-501",
+                    createdAt: "2026-08-19T14:32:00Z"
+                )
+            ]
+        }
+        await env.inbox.hydrate(id: "ev3")
+        #expect(commentCalls == 1)
+    }
+
+    @Test("事件流冷启动读文件缓存，不再打 timeline API")
+    func issueTimelineDiskCacheSurvivesNewInbox() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("starcat-timeline-disk-\(UUID().uuidString)", isDirectory: true)
+        let disk = DiskIssueTimelineCache(rootOverride: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = { Date(timeIntervalSince1970: 1_800_000_000) }
+
+        let env = try makeEnv(clock: clock, issueTimelineDiskCache: disk)
+        env.settings.githubIssueEventTimelineEnabled = true
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            Self.listResponse([Self.makeDTO(id: "disk1")])
+        }
+        env.mock.listNotificationIssueTimelineHandler = { _ in
+            [
+                .comment(
+                    GitHubNotificationComment(
+                        id: 11,
+                        login: "bob",
+                        body: "cached comment",
+                        htmlURL: nil,
+                        createdAt: "2026-08-19T00:00:00Z"
+                    )
+                )
+            ]
+        }
+
+        await env.inbox.sync()
+        await env.inbox.hydrate(id: "disk1")
+        #expect(env.mock.listNotificationIssueTimelineCalls.count == 1)
+        #expect(disk.itemCount == 1)
+
+        let inbox2 = GitHubNotificationInboxService(
+            apiClient: env.mock,
+            threadRepository: env.threads,
+            syncStateRepository: env.syncState,
+            notificationService: AppNotificationService(
+                dispatcher: env.dispatcher,
+                settings: env.settings
+            ),
+            settings: env.settings,
+            activityRepository: env.activity,
+            clock: clock,
+            issueTimelineDiskCache: disk
+        )
+        let items = try await inbox2.loadIssueTimeline(threadId: "disk1")
+        #expect(env.mock.listNotificationIssueTimelineCalls.count == 1)
+        #expect(items.count == 1)
+        if case .comment(let comment) = items.first {
+            #expect(comment.body == "cached comment")
+        } else {
+            Issue.record("expected cached comment")
+        }
+    }
+
+    @Test("通知 updated_at 新于文件缓存时会重拉 timeline")
+    func issueTimelineDiskCacheRefetchesWhenThreadNewer() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("starcat-timeline-stale-\(UUID().uuidString)", isDirectory: true)
+        let disk = DiskIssueTimelineCache(rootOverride: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldClock = { Date(timeIntervalSince1970: 1_700_000_000) }
+
+        let env = try makeEnv(clock: oldClock, issueTimelineDiskCache: disk)
+        env.settings.githubIssueEventTimelineEnabled = true
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            Self.listResponse([Self.makeDTO(id: "stale1")])
+        }
+        var timelineCalls = 0
+        env.mock.listNotificationIssueTimelineHandler = { _ in
+            timelineCalls += 1
+            return []
+        }
+
+        await env.inbox.sync()
+        _ = try await env.inbox.loadIssueTimeline(threadId: "stale1")
+        #expect(timelineCalls == 1)
+
+        let inbox2 = GitHubNotificationInboxService(
+            apiClient: env.mock,
+            threadRepository: env.threads,
+            syncStateRepository: env.syncState,
+            notificationService: AppNotificationService(
+                dispatcher: env.dispatcher,
+                settings: env.settings
+            ),
+            settings: env.settings,
+            activityRepository: env.activity,
+            clock: oldClock,
+            issueTimelineDiskCache: disk
+        )
+        _ = try await inbox2.loadIssueTimeline(threadId: "stale1")
+        #expect(timelineCalls == 2)
+    }
+
+    @Test("已 hydrate 但缺 labels_json 的 Issue 会再拉一次 subject")
+    func hydrateRefetchesWhenLabelsMissing() async throws {
+        let env = try makeEnv()
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            Self.listResponse([Self.makeDTO(id: "h-labels")])
+        }
+        var hydrateCalls = 0
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            hydrateCalls += 1
+            return GitHubNotificationSubjectHydration(
+                htmlURL: "https://github.com/o/r/issues/1",
+                actorLogin: "alice",
+                excerpt: nil,
+                createdAt: "2026-07-19T00:00:00Z",
+                state: "open",
+                labels: [GitHubNotificationIssueLabel(name: "bug", colorHex: "d73a4a")]
+            )
+        }
+        env.mock.listNotificationIssueCommentsHandler = { _ in [] }
+
+        await env.inbox.sync()
+        await env.inbox.hydrate(id: "h-labels")
+        let first = try #require(try await env.threads.fetch(id: "h-labels"))
+        try await env.threads.updateHydration(
+            id: "h-labels",
+            actorLogin: first.actorLogin,
+            excerpt: first.excerpt,
+            commentsJson: first.commentsJson,
+            htmlUrl: first.htmlUrl,
+            subjectCreatedAt: first.subjectCreatedAt,
+            hydratedAt: first.hydratedAt ?? "2026-08-19T00:00:00Z",
+            labelsJson: nil
+        )
+        await env.inbox.hydrate(id: "h-labels")
+
+        #expect(hydrateCalls == 2)
+        let stored = try #require(try await env.threads.fetch(id: "h-labels"))
+        #expect(GitHubNotificationMapper.decodeLabels(stored.labelsJson).map(\.name) == ["bug"])
     }
 
     @Test("发表评论会 POST 并追加到本地 comments_json")
@@ -1116,7 +1684,8 @@ struct GitHubNotificationInboxTests {
             commentsJson: nil,
             htmlUrl: "https://github.com/o/r/issues/1",
             subjectCreatedAt: "2026-07-19T00:00:00Z",
-            hydratedAt: "2026-08-19T00:00:00Z"
+            hydratedAt: "2026-08-19T00:00:00Z",
+            labelsJson: nil
         )
         env.mock.createNotificationIssueCommentHandler = { path, body in
             #expect(path == "/repos/o/r/issues/1/comments")
@@ -1137,6 +1706,103 @@ struct GitHubNotificationInboxTests {
         let comments = GitHubNotificationMapper.decodeComments(stored.commentsJson)
         #expect(comments.map(\.id) == [501])
         #expect(comments.first?.body == "hello from starcat")
+    }
+
+    @Test("编辑评论会 PATCH 并回写 comments_json")
+    func updateCommentPatchesLocally() async throws {
+        let env = try makeEnv()
+        let record = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "c-edit"),
+            fetchedAt: "2026-08-19T00:00:00Z",
+            firstSeenAt: "2026-08-19T00:00:00Z"
+        )
+        try await env.threads.upsertMany([record])
+        let existing = GitHubNotificationComment(
+            id: 501,
+            login: "dong4j",
+            body: "old",
+            htmlURL: "https://github.com/o/r/issues/1#issuecomment-501",
+            createdAt: "2026-08-19T14:32:00Z"
+        )
+        try await env.threads.updateHydration(
+            id: "c-edit",
+            actorLogin: "alice",
+            excerpt: "opening",
+            commentsJson: GitHubNotificationMapper.encodeComments([existing]),
+            htmlUrl: "https://github.com/o/r/issues/1",
+            subjectCreatedAt: "2026-07-19T00:00:00Z",
+            hydratedAt: "2026-08-19T00:00:00Z",
+            labelsJson: nil
+        )
+        env.mock.updateNotificationIssueCommentHandler = { path, body in
+            #expect(path == "/repos/o/r/issues/comments/501")
+            #expect(body == "new body")
+        }
+
+        try await env.inbox.updateComment(threadId: "c-edit", commentId: 501, body: "  new body  ")
+
+        #expect(env.mock.updateNotificationIssueCommentCalls.count == 1)
+        let stored = try #require(try await env.threads.fetch(id: "c-edit"))
+        let comments = GitHubNotificationMapper.decodeComments(stored.commentsJson)
+        #expect(comments.map(\.id) == [501])
+        #expect(comments.first?.body == "new body")
+        #expect(comments.first?.login == "dong4j")
+    }
+
+    @Test("编辑开帖会 PATCH issue body 并回写 excerpt")
+    func updateOpeningBodyPatchesExcerpt() async throws {
+        let env = try makeEnv()
+        let record = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "open-edit"),
+            fetchedAt: "2026-08-19T00:00:00Z",
+            firstSeenAt: "2026-08-19T00:00:00Z"
+        )
+        try await env.threads.upsertMany([record])
+        try await env.threads.updateHydration(
+            id: "open-edit",
+            actorLogin: "alice",
+            excerpt: "old opening",
+            commentsJson: "[]",
+            htmlUrl: "https://github.com/o/r/issues/1",
+            subjectCreatedAt: "2026-07-19T00:00:00Z",
+            hydratedAt: "2026-08-19T00:00:00Z",
+            labelsJson: nil
+        )
+        env.mock.updateNotificationIssueBodyHandler = { path, body in
+            #expect(path == "/repos/o/r/issues/1")
+            #expect(body == "new opening")
+        }
+
+        try await env.inbox.updateOpeningBody(threadId: "open-edit", body: " new opening ")
+
+        #expect(env.mock.updateNotificationIssueBodyCalls.count == 1)
+        let stored = try #require(try await env.threads.fetch(id: "open-edit"))
+        #expect(stored.excerpt == "new opening")
+    }
+
+    @Test("编辑评论 403 收成 cannotEdit；演示帖拒绝")
+    func updateCommentForbiddenAndDemoRejected() async throws {
+        let env = try makeEnv()
+        let record = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "c-403"),
+            fetchedAt: "2026-08-19T00:00:00Z",
+            firstSeenAt: "2026-08-19T00:00:00Z"
+        )
+        try await env.threads.upsertMany([record])
+        env.mock.updateNotificationIssueCommentHandler = { _, _ in
+            throw NetworkError.clientError(statusCode: 403, message: "Resource not accessible")
+        }
+        await #expect(throws: GitHubNotificationInboxError.cannotEdit) {
+            try await env.inbox.updateComment(threadId: "c-403", commentId: 9, body: "nope")
+        }
+        await #expect(throws: GitHubNotificationInboxError.cannotEdit) {
+            try await env.inbox.updateComment(
+                threadId: "\(GitHubNotificationMapper.demoThreadIDPrefix)x",
+                commentId: 1,
+                body: "nope"
+            )
+        }
+        #expect(env.mock.updateNotificationIssueCommentCalls.count == 1)
     }
 
     @Test("403 视为缺 notifications scope")
@@ -1167,8 +1833,119 @@ struct GitHubNotificationInboxTests {
         #expect(env.dispatcher.requestIdentifiers.isEmpty)
 
         await env.inbox.sync()
-        #expect(env.dispatcher.requestIdentifiers.contains("github-inbox-new"))
-        #expect(!env.dispatcher.requestIdentifiers.contains("github-inbox-old"))
+        #expect(env.dispatcher.requestIdentifiers.contains("github-inbox-new-2026-08-19T00:00:00Z"))
+        #expect(!env.dispatcher.requestIdentifiers.contains { $0.contains("github-inbox-old-") })
+    }
+
+    @Test("不进入时间线时，Issue 关闭也会由增量同步发系统通知")
+    func incrementalIssueClosedNotifies() async throws {
+        let env = try makeEnv()
+        var round = 0
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            round += 1
+            let updatedAt = round == 1 ? "2026-08-19T00:00:00Z" : "2026-08-19T01:00:00Z"
+            return Self.listResponse([
+                Self.makeDTO(
+                    id: "issue-closed",
+                    reason: "subscribed",
+                    updatedAt: updatedAt
+                )
+            ])
+        }
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            GitHubNotificationSubjectHydration(
+                htmlURL: nil,
+                actorLogin: nil,
+                excerpt: nil,
+                createdAt: nil,
+                state: "closed"
+            )
+        }
+
+        await env.inbox.sync()
+        try await env.threads.updatePersistedIssueState(id: "issue-closed", state: "open")
+        await env.inbox.sync()
+
+        let request = try #require(env.dispatcher.requests.last)
+        #expect(request.identifier == "github-inbox-issue-closed-2026-08-19T01:00:00Z")
+        #expect(request.body.contains("已关闭") || request.body.contains("closed"))
+        #expect(request.threadID == "issue-closed")
+    }
+
+    @Test("不进入时间线时，PR 合并会通知且同一远端版本不重复")
+    func incrementalPullRequestMergedNotifiesOnce() async throws {
+        let env = try makeEnv()
+        var round = 0
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            round += 1
+            let updatedAt = round == 1 ? "2026-08-19T00:00:00Z" : "2026-08-19T02:00:00Z"
+            return Self.listResponse([
+                Self.makeDTO(
+                    id: "pr-merged",
+                    reason: "subscribed",
+                    updatedAt: updatedAt,
+                    subjectType: "PullRequest"
+                )
+            ])
+        }
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            GitHubNotificationSubjectHydration(
+                htmlURL: nil,
+                actorLogin: nil,
+                excerpt: nil,
+                createdAt: nil,
+                state: "merged"
+            )
+        }
+
+        await env.inbox.sync()
+        try await env.threads.updatePersistedIssueState(id: "pr-merged", state: "open")
+        await env.inbox.sync()
+        await env.inbox.sync()
+
+        #expect(env.dispatcher.requests.count == 1)
+        let request = try #require(env.dispatcher.requests.first)
+        #expect(request.identifier == "github-inbox-pr-merged-2026-08-19T02:00:00Z")
+        #expect(request.body.contains("已合并") || request.body.contains("merged"))
+        #expect(request.threadID == "pr-merged")
+    }
+
+    @Test("Discussion 更新直接通知，不额外请求 Issue 状态")
+    func incrementalDiscussionUpdateNotifiesWithoutHydration() async throws {
+        let env = try makeEnv()
+        let hydrationCalls = OSAllocatedUnfairLock<Int>(initialState: 0)
+        var round = 0
+        env.mock.listNotificationsHandler = { _, _, _, _, _ in
+            round += 1
+            let updatedAt = round == 1 ? "2026-08-19T00:00:00Z" : "2026-08-19T03:00:00Z"
+            return Self.listResponse([
+                Self.makeDTO(
+                    id: "discussion-updated",
+                    reason: "subscribed",
+                    updatedAt: updatedAt,
+                    subjectType: "Discussion"
+                )
+            ])
+        }
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            hydrationCalls.withLock { $0 += 1 }
+            return GitHubNotificationSubjectHydration(
+                htmlURL: nil,
+                actorLogin: nil,
+                excerpt: nil,
+                createdAt: nil,
+                state: nil
+            )
+        }
+
+        await env.inbox.sync()
+        await env.inbox.sync()
+
+        #expect(hydrationCalls.withLock { $0 } == 0)
+        let request = try #require(env.dispatcher.requests.last)
+        #expect(request.identifier == "github-inbox-discussion-updated-2026-08-19T03:00:00Z")
+        #expect(request.body.contains("讨论已更新") || request.body.contains("Discussion updated"))
+        #expect(request.threadID == "discussion-updated")
     }
 
     @Test("残留演示 thread 能按前缀删掉")
@@ -1208,16 +1985,162 @@ struct GitHubNotificationInboxTests {
         #expect(patched.first?.0 == "/repos/o/r/issues/1")
         #expect(patched.first?.1 == "closed")
         #expect(env.inbox.cachedIssueState(threadId: "issue-1") == "closed")
+        #expect(try await env.threads.fetch(id: "issue-1")?.issueState == "closed")
 
         try await env.inbox.reopenIssue(threadId: "issue-1")
         patched = lock.withLock { $0 }
         #expect(patched.count == 2)
         #expect(patched.last?.1 == "open")
         #expect(env.inbox.cachedIssueState(threadId: "issue-1") == "open")
+        #expect(try await env.threads.fetch(id: "issue-1")?.issueState == "open")
 
         await #expect(throws: GitHubNotificationInboxError.cannotClose) {
             try await env.inbox.closeIssue(threadId: "\(GitHubNotificationMapper.demoThreadIDPrefix)x")
         }
+        await #expect(throws: GitHubNotificationInboxError.cannotClose) {
+            try await env.inbox.updateIssueState(threadId: "issue-1", state: "merged")
+        }
+    }
+
+    @Test("缺状态的可见 Issue 会补 GET 并落库；已有 issue_state 不再打网")
+    func prefetchMissingIssueStatesPersistsAndSkipsKnown() async throws {
+        let env = try makeEnv()
+        let fetchedAt = "2026-08-19T00:00:00Z"
+        var hydrateCalls = 0
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            hydrateCalls += 1
+            return GitHubNotificationSubjectHydration(
+                htmlURL: "https://github.com/o/r/pull/2",
+                actorLogin: "alice",
+                excerpt: "pr body",
+                createdAt: "2026-07-19T00:00:00Z",
+                state: "merged"
+            )
+        }
+        var missing = GitHubNotificationMapper.record(
+            from: GitHubNotificationThreadDTO(
+                id: "need-state",
+                unread: false,
+                reason: "comment",
+                updatedAt: "2026-08-19T10:00:00Z",
+                subject: GitHubNotificationSubjectDTO(
+                    title: "Fix",
+                    url: "https://api.github.com/repos/o/r/pulls/2",
+                    latestCommentUrl: nil,
+                    type: "PullRequest"
+                ),
+                repository: GitHubNotificationRepositoryDTO(
+                    id: 1,
+                    fullName: "o/r",
+                    name: "r",
+                    owner: GitHubNotificationOwnerDTO(login: "o")
+                )
+            ),
+            fetchedAt: fetchedAt,
+            firstSeenAt: fetchedAt
+        )
+        var known = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "already-known", reason: "comment"),
+            fetchedAt: fetchedAt,
+            firstSeenAt: fetchedAt
+        )
+        known.issueState = "open"
+        try await env.threads.upsertMany([missing, known])
+        missing = try #require(try await env.threads.fetch(id: "need-state"))
+        known = try #require(try await env.threads.fetch(id: "already-known"))
+
+        await env.inbox.prefetchMissingIssueStates(from: [
+            .notification(missing, language: nil),
+            .notification(known, language: nil)
+        ])
+
+        #expect(hydrateCalls == 1)
+        #expect(env.inbox.cachedIssueState(threadId: "need-state") == "merged")
+        #expect(try await env.threads.fetch(id: "need-state")?.issueState == "merged")
+        #expect(env.inbox.cachedIssueState(threadId: "already-known") == "open")
+        #expect(env.inbox.resolvedIssueState(threadId: "already-known", persisted: "open") == "open")
+    }
+
+    @Test("缺失 issue_state 同一会话只补一轮，再切打开/关闭不再打网")
+    func missingIssueStateBackfillRunsOncePerSession() async throws {
+        let env = try makeEnv()
+        env.inbox.listSegment = .open
+        var hydrateCalls = 0
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            hydrateCalls += 1
+            return GitHubNotificationSubjectHydration(
+                htmlURL: "https://github.com/o/r/issues/1",
+                actorLogin: "alice",
+                excerpt: "body",
+                createdAt: "2026-07-19T00:00:00Z",
+                state: "open"
+            )
+        }
+        let fetchedAt = "2026-08-19T00:00:00Z"
+        try await env.threads.upsertMany([
+            GitHubNotificationMapper.record(
+                from: Self.makeDTO(id: "missing-a", reason: "comment", updatedAt: "2026-08-19T02:00:00Z"),
+                fetchedAt: fetchedAt,
+                firstSeenAt: fetchedAt
+            ),
+            GitHubNotificationMapper.record(
+                from: Self.makeDTO(id: "missing-b", reason: "comment", updatedAt: "2026-08-19T01:00:00Z"),
+                fetchedAt: fetchedAt,
+                firstSeenAt: fetchedAt
+            )
+        ])
+
+        await env.inbox.startMissingIssueStateBackfillIfNeeded()
+        #expect(hydrateCalls == 2)
+        #expect(try await env.threads.fetch(id: "missing-a")?.issueState == "open")
+        #expect(try await env.threads.fetch(id: "missing-b")?.issueState == "open")
+
+        env.inbox.listSegment = .closed
+        await env.inbox.startMissingIssueStateBackfillIfNeeded()
+        #expect(hydrateCalls == 2)
+
+        try await env.threads.upsertMany([
+            GitHubNotificationMapper.record(
+                from: Self.makeDTO(id: "missing-c", reason: "comment", updatedAt: "2026-08-19T03:00:00Z"),
+                fetchedAt: fetchedAt,
+                firstSeenAt: fetchedAt
+            )
+        ])
+        env.inbox.listSegment = .merged
+        await env.inbox.startMissingIssueStateBackfillIfNeeded()
+        #expect(hydrateCalls == 2)
+        #expect(try await env.threads.fetch(id: "missing-c")?.issueState == nil)
+    }
+
+    @Test("还没有缺失状态时不锁定本轮补齐，等同步落库后再补")
+    func missingIssueStateBackfillDoesNotLatchWhenEmpty() async throws {
+        let env = try makeEnv()
+        env.inbox.listSegment = .open
+        var hydrateCalls = 0
+        env.mock.hydrateNotificationSubjectHandler = { _ in
+            hydrateCalls += 1
+            return GitHubNotificationSubjectHydration(
+                htmlURL: "https://github.com/o/r/issues/1",
+                actorLogin: "alice",
+                excerpt: "body",
+                createdAt: "2026-07-19T00:00:00Z",
+                state: "closed"
+            )
+        }
+        await env.inbox.startMissingIssueStateBackfillIfNeeded()
+        #expect(hydrateCalls == 0)
+
+        let fetchedAt = "2026-08-19T00:00:00Z"
+        try await env.threads.upsertMany([
+            GitHubNotificationMapper.record(
+                from: Self.makeDTO(id: "after-sync", reason: "comment"),
+                fetchedAt: fetchedAt,
+                firstSeenAt: fetchedAt
+            )
+        ])
+        await env.inbox.startMissingIssueStateBackfillIfNeeded()
+        #expect(hydrateCalls == 1)
+        #expect(try await env.threads.fetch(id: "after-sync")?.issueState == "closed")
     }
 
     @Test("已 hydrate 的 thread 打开详情仍会 GET state；closed 不当成可关闭")
@@ -1252,6 +2175,7 @@ struct GitHubNotificationInboxTests {
         await env.inbox.refreshIssueState(threadId: "stale-open")
         #expect(hydrateCalls == 2)
         #expect(env.inbox.cachedIssueState(threadId: "stale-open") == "closed")
+        #expect(try await env.threads.fetch(id: "stale-open")?.issueState == "closed")
 
         let callsBeforeDemo = hydrateCalls
         await env.inbox.refreshIssueState(threadId: "\(GitHubNotificationMapper.demoThreadIDPrefix)x")
@@ -1389,6 +2313,106 @@ struct GitHubNotificationInboxTests {
         #expect(try await env.threads.fetch(id: "n1") == nil)
     }
 
+    @Test("打开 / 关闭 / 已合并筛选只看 issue_state；closed 不含 merged")
+    func issueStateSegmentsFilterPersistedState() async throws {
+        let env = try makeEnv()
+        let fetchedAt = "2026-08-19T00:00:00Z"
+        var open = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "open-1", reason: "comment", updatedAt: "2026-08-19T03:00:00Z"),
+            fetchedAt: fetchedAt,
+            firstSeenAt: fetchedAt
+        )
+        open.issueState = "open"
+        var closed = GitHubNotificationMapper.record(
+            from: Self.makeDTO(id: "closed-1", reason: "comment", updatedAt: "2026-08-19T02:00:00Z"),
+            fetchedAt: fetchedAt,
+            firstSeenAt: fetchedAt
+        )
+        closed.issueState = "closed"
+        var merged = GitHubNotificationMapper.record(
+            from: GitHubNotificationThreadDTO(
+                id: "merged-1",
+                unread: false,
+                reason: "comment",
+                updatedAt: "2026-08-19T01:00:00Z",
+                subject: GitHubNotificationSubjectDTO(
+                    title: "Fix",
+                    url: "https://api.github.com/repos/o/r/pulls/9",
+                    latestCommentUrl: nil,
+                    type: "PullRequest"
+                ),
+                repository: GitHubNotificationRepositoryDTO(
+                    id: 1,
+                    fullName: "o/r",
+                    name: "r",
+                    owner: GitHubNotificationOwnerDTO(login: "o")
+                )
+            ),
+            fetchedAt: fetchedAt,
+            firstSeenAt: fetchedAt
+        )
+        merged.issueState = "merged"
+        try await env.threads.upsertMany([open, closed, merged])
+
+        #expect(GitHubNotificationMapper.matchesSegment(open, segment: .open))
+        #expect(!GitHubNotificationMapper.matchesSegment(merged, segment: .closed))
+        #expect(GitHubNotificationMapper.matchesSegment(merged, segment: .merged))
+
+        env.inbox.listSegment = .open
+        var page = await env.inbox.fetchTimelinePage(cursor: nil)
+        #expect(page.rows.map(\.id) == ["open-1"])
+
+        env.inbox.listSegment = .closed
+        page = await env.inbox.fetchTimelinePage(cursor: nil)
+        #expect(page.rows.map(\.id) == ["closed-1"])
+
+        env.inbox.listSegment = .merged
+        page = await env.inbox.fetchTimelinePage(cursor: nil)
+        #expect(page.rows.map(\.id) == ["merged-1"])
+    }
+
+    @Test("已入库 / 未入库筛选只看账本当前知识库状态")
+    func libraryStateSegmentsFilterActivityRows() async throws {
+        let env = try makeEnv()
+        try await env.repos.upsertStarred(
+            [
+                Self.makeStarredDTO(id: 11, name: "in-lib", starredAt: "2026-08-19T12:00:00Z"),
+                Self.makeStarredDTO(id: 12, name: "out-lib", starredAt: "2026-08-19T11:00:00Z")
+            ],
+            userID: 1,
+            syncedAt: Date()
+        )
+        await env.inbox.backfillUserRepoActivity(userID: 1, login: "tester")
+        let notes = GRDBRepoNoteRepository(database: env.db)
+        try await notes.updateLibraryState(repoId: 11, state: .inLibrary)
+
+        env.inbox.listSegment = .inLibrary
+        var page = await env.inbox.fetchTimelinePage(cursor: nil)
+        let inIDs = page.rows.compactMap { row -> Int64? in
+            guard case .activity(let item) = row else { return nil }
+            return item.record.repoId
+        }
+        #expect(inIDs == [11])
+        if case .activity(let item) = page.rows.first {
+            #expect(item.libraryState == .inLibrary)
+        } else {
+            Issue.record("expected an activity row")
+        }
+
+        env.inbox.listSegment = .outsideLibrary
+        page = await env.inbox.fetchTimelinePage(cursor: nil)
+        let outIDs = page.rows.compactMap { row -> Int64? in
+            guard case .activity(let item) = row else { return nil }
+            return item.record.repoId
+        }
+        #expect(outIDs == [12])
+        if case .activity(let item) = page.rows.first {
+            #expect(item.libraryState == .outsideLibrary)
+        } else {
+            Issue.record("expected an activity row")
+        }
+    }
+
     // MARK: - Harness
 
     private struct Env {
@@ -1399,10 +2423,16 @@ struct GitHubNotificationInboxTests {
         let activity: GRDBUserRepoActivityRepository
         let mock: MockGitHubAPIClient
         let dispatcher: RecordingNotificationDispatcher
+        let settings: AppSettings
         let inbox: GitHubNotificationInboxService
+        let issueTimelineDiskCache: DiskIssueTimelineCache
     }
 
-    private func makeEnv(dwellNanoseconds: UInt64 = 1_000) throws -> Env {
+    private func makeEnv(
+        dwellNanoseconds: UInt64 = 1_000,
+        clock: @escaping () -> Date = Date.init,
+        issueTimelineDiskCache: DiskIssueTimelineCache? = nil
+    ) throws -> Env {
         let db = try InMemoryDatabaseManager()
         let threads = GRDBGitHubNotificationThreadRepository(database: db)
         let syncState = GRDBGitHubNotificationSyncStateRepository(database: db)
@@ -1417,6 +2447,10 @@ struct GitHubNotificationInboxTests {
         let settings = AppSettings(defaults: defaults, keychain: InMemoryKeychain())
         let dispatcher = RecordingNotificationDispatcher()
         let notifications = AppNotificationService(dispatcher: dispatcher, settings: settings)
+        let disk = issueTimelineDiskCache ?? DiskIssueTimelineCache(
+            rootOverride: FileManager.default.temporaryDirectory
+                .appendingPathComponent("starcat-inbox-timeline-\(UUID().uuidString)", isDirectory: true)
+        )
         let inbox = GitHubNotificationInboxService(
             apiClient: mock,
             threadRepository: threads,
@@ -1424,7 +2458,9 @@ struct GitHubNotificationInboxTests {
             notificationService: notifications,
             settings: settings,
             activityRepository: activity,
-            dwellNanoseconds: dwellNanoseconds
+            clock: clock,
+            dwellNanoseconds: dwellNanoseconds,
+            issueTimelineDiskCache: disk
         )
         return Env(
             db: db,
@@ -1434,7 +2470,9 @@ struct GitHubNotificationInboxTests {
             activity: activity,
             mock: mock,
             dispatcher: dispatcher,
-            inbox: inbox
+            settings: settings,
+            inbox: inbox,
+            issueTimelineDiskCache: disk
         )
     }
 
@@ -1442,18 +2480,28 @@ struct GitHubNotificationInboxTests {
         id: String,
         unread: Bool = true,
         reason: String = "mention",
-        updatedAt: String = "2026-08-19T00:00:00Z"
+        updatedAt: String = "2026-08-19T00:00:00Z",
+        subjectType: String = "Issue"
     ) -> GitHubNotificationThreadDTO {
-        GitHubNotificationThreadDTO(
+        let subjectURL: String
+        switch subjectType {
+        case "PullRequest":
+            subjectURL = "https://api.github.com/repos/o/r/pulls/1"
+        case "Discussion":
+            subjectURL = "https://api.github.com/repos/o/r/discussions/1"
+        default:
+            subjectURL = "https://api.github.com/repos/o/r/issues/1"
+        }
+        return GitHubNotificationThreadDTO(
             id: id,
             unread: unread,
             reason: reason,
             updatedAt: updatedAt,
             subject: GitHubNotificationSubjectDTO(
                 title: "Issue \(id)",
-                url: "https://api.github.com/repos/o/r/issues/1",
+                url: subjectURL,
                 latestCommentUrl: nil,
-                type: "Issue"
+                type: subjectType
             ),
             repository: GitHubNotificationRepositoryDTO(
                 id: 1,
@@ -1529,17 +2577,33 @@ struct GitHubNotificationInboxTests {
     }
 }
 
+private struct RecordedNotification: Sendable {
+    let identifier: String
+    let title: String
+    let body: String
+    let threadID: String?
+}
+
 private final class RecordingNotificationDispatcher: NotificationDispatching, @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock<[String]>(initialState: [])
+    private let lock = OSAllocatedUnfairLock<[RecordedNotification]>(initialState: [])
 
     func requestAuthorization() async throws -> Bool { true }
 
     func add(request: UNNotificationRequest) async throws {
-        let identifier = request.identifier
-        lock.withLock { $0.append(identifier) }
+        let snapshot = RecordedNotification(
+            identifier: request.identifier,
+            title: request.content.title,
+            body: request.content.body,
+            threadID: request.content.userInfo["threadId"] as? String
+        )
+        lock.withLock { $0.append(snapshot) }
     }
 
     var requestIdentifiers: [String] {
+        lock.withLock { $0.map(\.identifier) }
+    }
+
+    var requests: [RecordedNotification] {
         lock.withLock { $0 }
     }
 }

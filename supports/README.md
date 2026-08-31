@@ -8,9 +8,9 @@
 
 ---
 
-## 📦 项目清单（共 24 个）
+## 📦 项目清单（共 26 个）
 
-### Go 后端项目（9 个）
+### Go 后端项目（10 个）
 
 | 子目录 | GitHub | 端口 | 角色 |
 |--------|--------|:----:|------|
@@ -21,10 +21,11 @@
 | [`starcat-recommend-api/`](./starcat-recommend-api/) | [`starcat-app/starcat-recommend-api`](https://github.com/starcat-app/starcat-recommend-api) | 5005 | 相似仓库推荐 API |
 | [`starcat-discovery-api/`](./starcat-discovery-api/) | [`starcat-app/starcat-discovery-api`](https://github.com/starcat-app/starcat-discovery-api) | 5006 | 探索发现、热门、新发布榜单 |
 | [`starcat-license-api/`](./starcat-license-api/) | [`starcat-app/starcat-license-api`](https://github.com/starcat-app/starcat-license-api) 🔒 | 5010 | Direct 分发授权 API |
+| [`starcat-collection-api/`](./starcat-collection-api/) | [`starcat-app/starcat-collection-api`](https://github.com/starcat-app/starcat-collection-api) 🔒 | 5011 | 静默接收匿名公开 Star 快照，向 Trainer 提供内部导出 |
 | [`starcat-api-kit/`](./starcat-api-kit/) | [`starcat-app/starcat-api-kit`](https://github.com/starcat-app/starcat-api-kit) | — | 六个业务 API 共用的 auth / envelope / GitHub / env 等基础包 |
 | [`starcat-api/`](./starcat-api/) | [`starcat-app/starcat-api`](https://github.com/starcat-app/starcat-api) 🔒 | 8080 | 私有聚合部署单元；以 `X-SC-Svc` 分流六个业务 API，不含 license |
 
-### 其他支撑项目（15 个）
+### 其他支撑项目（17 个）
 
 | 子目录 | GitHub | 说明 |
 |--------|--------|------|
@@ -32,10 +33,12 @@
 | [`.github/`](./.github/) | [`starcat-app/.github`](https://github.com/starcat-app/.github) | 组织主页与共享社区健康文件 |
 | [`starcat-docs/`](./starcat-docs/) | [`starcat-app/starcat-docs`](https://github.com/starcat-app/starcat-docs) | Starcat 官方用户文档 |
 | [`starcat-site/`](./starcat-site/) | [`starcat-app/starcat-site`](https://github.com/starcat-app/starcat-site) | Direct、App Store 官网、博客与公开法律页面源码 |
+| [`starcat-admin-console/`](./starcat-admin-console/) | [`starcat-app/starcat-admin-console`](https://github.com/starcat-app/starcat-admin-console) | 本地优先的服务统计、数据操作、精选发布与 Awesome 来源管理控制台 |
 | [`starcat-localization/`](./starcat-localization/) | [`starcat-app/starcat-localization`](https://github.com/starcat-app/starcat-localization) | 本地化资源管理 |
 | [`homebrew-starcat/`](./homebrew-starcat/) | [`starcat-app/homebrew-starcat`](https://github.com/starcat-app/homebrew-starcat) | Starcat App Homebrew Cask（`brew install --cask starcat`） |
 | [`starcat-skill/`](./starcat-skill/) | [`starcat-app/starcat-skill`](https://github.com/starcat-app/starcat-skill) | 供 Codex / Claude 等 AI Agent 使用的 Starcat Skill |
 | [`starcat-cli/`](./starcat-cli/) | [`starcat-app/starcat-cli`](https://github.com/starcat-app/starcat-cli) | 跨平台 Starcat CLI 与 MCP 运行时 |
+| [`starcat-recsys-trainer/`](./starcat-recsys-trainer/) | [`starcat-app/starcat-recsys-trainer`](https://github.com/starcat-app/starcat-recsys-trainer) 🔒 | 推荐数据采集、标准化、离线训练、评估和 ServingBundle 发布 |
 | [`starcat-alfred-workflow/`](./starcat-alfred-workflow/) | [`starcat-app/starcat-alfred-workflow`](https://github.com/starcat-app/starcat-alfred-workflow) | 在 Alfred 中搜索 Starcat 本地仓库与 GitHub |
 | [`starcat-utools-plugin/`](./starcat-utools-plugin/) | [`starcat-app/starcat-utools-plugin`](https://github.com/starcat-app/starcat-utools-plugin) | 在 uTools 中搜索 Starcat 本地仓库与 GitHub |
 | [`starcat-raycast-extension/`](./starcat-raycast-extension/) | [`starcat-app/starcat-raycast-extension`](https://github.com/starcat-app/starcat-raycast-extension) | 在 Raycast 中搜索 Starcat 本地仓库与 GitHub |
@@ -56,7 +59,8 @@ Starcat App
   ├─ 六个业务 API
   │    ├─ 当前业务生产（2026-08-08）：六个独立 starcat-*-api Fly App
   │    └─ 已验证后停机保留：starcat-api.fly.dev + X-SC-Svc → 六个 server 包
-  └─ starcat-license-api（支付 / 授权边界，始终独立）
+  ├─ starcat-license-api（支付 / 授权边界，始终独立）
+  └─ starcat-collection-api（公开 Star 数据贡献边界，始终独立）
 ```
 
 客户端代码已经默认指向聚合 URL。Fly App、Volume、Secrets、首轮五库种子迁移已完成，并曾解除维护模式通过六服务 ping 与只读业务验证；验证后已重新开启维护模式、关闭请求自动唤醒并停止聚合 Machine。六个旧 App 未停用且仍持续写入；1.4.0 正式切流前必须以维护模式启动聚合服务，完成最终同步 / 写入冻结和全链路验收。
@@ -90,6 +94,8 @@ Starcat App
 
 **`starcat-license-api`（5010）🔒 私有** — Direct 分发授权：license activate / validate / deactivate，对接 Creem 支付。
 
+**`starcat-collection-api`（5011）🔒 私有** — 只接收经用户同意的匿名公开 Star 完整快照；不接入 Gateway，不包含 History、状态或删除逻辑。
+
 ---
 
 ## 🚀 快速开始
@@ -99,14 +105,14 @@ Starcat App
 ```bash
 cd supports
 
-# 首次 clone 全部 23 个远端目标
+# 首次 clone 全部 26 个远端目标
 ./clone-all.sh
 
 # 后续批量更新
 ./clone-all.sh --pull
 ```
 
-> `starcat-license-api` 与 `starcat-api` 是**私有**仓库，需使用具备 `starcat-app` 组织权限的 `gh auth login` 或 SSH key；`starcat-api-kit` 为公开仓库。
+> `starcat-license-api`、`starcat-collection-api`、`starcat-api` 与 `starcat-recsys-trainer` 是**私有**仓库，需使用具备 `starcat-app` 组织权限的 `gh auth login` 或 SSH key；`starcat-api-kit` 为公开仓库。
 
 ### 一次性启动全部 API
 
@@ -130,10 +136,10 @@ go run ./cmd/server
 .claude/skills/starcat-support-project-create
 ```
 
-创建流程会补齐开源治理文件和 `README.md` / `README-ZH.md`，并强制同步：
+创建流程会补齐开源治理文件和 README，并强制同步：
 
 - `clone-all.sh`
-- `scripts/sync-starcat-readme-promo.py`
+- `scripts/sync-starcat-readme-promo.py`（私有项目在公开前不登记公开推广区）
 - 本文档与 `SYNC.md`
 - 按项目类型需要的 CI、Release/Audit 和运维入口
 
@@ -148,7 +154,8 @@ secrets 需要单独确认。
 
 | 路径 | 说明 |
 |------|------|
-| `AGENTS.md` / `CLAUDE.md` | AI 协作规范 |
+| `AGENTS.md` | supports/ AI 协作唯一维护源 |
+| `.claude/CLAUDE.md` | Claude Code 配置入口（固定引用 `AGENTS.md`，勿写规范正文） |
 | `SYNC.md` | 文件同步说明 |
 | `README.md` | 本文档 |
 | `Makefile` | 运维命令入口 |
@@ -157,12 +164,13 @@ secrets 需要单独确认。
 | `.claude/` | supports/ 专用 IDE 权限 |
 | `backups/` | Fly 备份目录结构 |
 | `docs/` | 设计文档、方案、指南 |
-| `extensions/{AGENTS,CLAUDE}.md` | 插件目录 AI 规范 |
+| `extensions/AGENTS.md` | 插件目录 AI 协作规范 |
+| `extensions/.claude/CLAUDE.md` | 插件目录 Claude Code 配置入口 |
 | `scripts/` | 运维脚本 |
 
 ### 独立 git 仓库（各自管理）
 
-- 上表除 `ai-file-wall` 外的 23 个独立仓库目录
+- 上表除 `ai-file-wall` 外的 25 个独立仓库目录
 
 ### 跨机器同步（`sync-untracked.sh`）
 
@@ -194,6 +202,5 @@ secrets 需要单独确认。
 
 - [`SYNC.md`](./SYNC.md) — 文件同步说明（git 管理 vs 跨机器同步）
 - [本地编译教程](../docs/7-工具与脚本/本地编译教程.md) — 从源码编 App、本地 API 和 CLI
-- [主仓库 CLAUDE.md](../CLAUDE.md)
-- [supports/CLAUDE.md](./CLAUDE.md)
+- [主仓库 AGENTS.md](../AGENTS.md)
 - [supports/AGENTS.md](./AGENTS.md)

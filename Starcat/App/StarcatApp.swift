@@ -176,13 +176,11 @@ struct StarcatApp: App {
                 settings: dependencies?.settings ?? AppSettings.shared
             )
 
-            // DEBUG-only 菜单：作为后续调试入口的容器（清缓存 / 强制制造网络
-            // 错误 / Dump 数据库等）。语言切换 2026-06-16 移除（已在设置页落地）。
-            // 当前菜单内只放一个 disabled 占位项，等加入第一个真功能时移除占位。
+            // DEBUG-only 菜单承载首次引导重放、Pro 覆盖、Agent 工作台和窗口尺寸工具。
             // Release 包整段不存在；菜单标题 / 选项标签都用 verbatim 文本，
             // 不进入 String Catalog——避免"切到英文后调试菜单也变英文"的循环噩梦。
             #if DEBUG
-            DebugMenuCommands()
+            DebugMenuCommands(dependencies: dependencies)
             #endif
         }
 
@@ -436,6 +434,10 @@ struct StarcatApp: App {
         // `Starcat/Core/Settings/LocalizedBundle.swift` 顶部注释。
         LocalizedBundle.install()
 
+        // 外部 Runtime 已从 Debug POC 转为 Direct 正式能力。必须在任何 @AppStorage
+        // 初始化前迁移旧键，避免升级后看似自动回退内置 Loop、实际丢失用户选择。
+        ExternalAgentRuntimePreferences.migrateLegacyDefaults()
+
         AppLog.general.info("Starcat starting (bundle=\(AppConstants.bundleIdentifier, privacy: .public))")
 
         // 2026-06-12 多账号 DB 隔离：DatabaseManager 不再是单例，由 AppDependencies init
@@ -498,6 +500,8 @@ private struct StarcatAppCommands: Commands {
     let settings: AppSettings
     @FocusedValue(\.starcatRefreshAction) private var focusedRefreshAction
     @FocusedValue(\.starcatRepositoryAIAction) private var focusedRepositoryAIAction
+    @FocusedValue(\.starcatReadmeFindAction) private var focusedReadmeFindAction
+    @FocusedValue(\.starcatListSearchAction) private var focusedListSearchAction
 
     var body: some Commands {
         CommandMenu("commands.actions.menu") {
@@ -511,6 +515,21 @@ private struct StarcatAppCommands: Commands {
             )
             .disabled(!commandRouter.canOpenGlobalSearch)
 
+            Button("commands.actions.findInList") {
+                commandRouter.performListSearch(preferred: focusedListSearchAction)
+            }
+            .keyboardShortcut(
+                settings.keyboardShortcutsEnabled && settings.regularSearchShortcutEnabled
+                    ? settings.regularSearchShortcut.swiftUIShortcut
+                    : nil
+            )
+            .disabled(!commandRouter.isListSearchAvailable(preferred: focusedListSearchAction))
+
+            Button("commands.actions.findInReadme") {
+                commandRouter.performReadmeFind(preferred: focusedReadmeFindAction)
+            }
+            .disabled(!commandRouter.isReadmeFindAvailable(preferred: focusedReadmeFindAction))
+
             Button("commands.actions.openKnowledgeRAGWorkspace") {
                 commandRouter.openKnowledgeRAGWorkspace()
             }
@@ -520,6 +539,15 @@ private struct StarcatAppCommands: Commands {
                     : nil
             )
             .disabled(!commandRouter.canOpenKnowledgeRAGWorkspace)
+
+            if dependencies?.distributionGate.isAvailable(.externalAgentRuntime) == true {
+                Button("toolbar.agentWorkspace.help") {
+                    if let dependencies {
+                        AgentWorkspaceWindowController.show(dependencies: dependencies)
+                    }
+                }
+                .disabled(dependencies == nil)
+            }
 
             Button("commands.actions.openSelectedRepoAI") {
                 commandRouter.openCurrentRepositoryAI(preferred: focusedRepositoryAIAction)
@@ -572,6 +600,19 @@ private struct StarcatAppCommands: Commands {
             }
         }
 
+        // 替换系统 Edit > Find，避免 ⌘F 被默认文本查找吃掉，而 README WebView 收不到。
+        CommandGroup(replacing: .textEditing) {
+            Button("commands.actions.findInReadme") {
+                commandRouter.performReadmeFind(preferred: focusedReadmeFindAction)
+            }
+            .keyboardShortcut(
+                settings.keyboardShortcutsEnabled && settings.readmeFindShortcutEnabled
+                    ? settings.readmeFindShortcut.swiftUIShortcut
+                    : nil
+            )
+            .disabled(!commandRouter.isReadmeFindAvailable(preferred: focusedReadmeFindAction))
+        }
+
         CommandGroup(replacing: .help) {
             Button("commands.help.helpCenter") {
                 openExternal(AppWebsiteLinks.current.support)
@@ -583,6 +624,10 @@ private struct StarcatAppCommands: Commands {
 
             Button("commands.help.privacyPolicy") {
                 openExternal(AppWebsiteLinks.current.privacy)
+            }
+
+            Button("commands.help.viewOnGitHub") {
+                openExternal(AppWebsiteLinks.sourceRepository)
             }
 
             Divider()
@@ -713,9 +758,9 @@ private enum DebugWindowResizer {
 }
 
 struct DebugMenuCommands: Commands {
+    let dependencies: AppDependencies?
+
     @AppStorage(DebugFlags.debugProOverrideKey) private var debugProOverride = false
-    @AppStorage(ExternalAgentRuntimePOCPreferences.backendKey)
-    private var externalRuntimeBackend = AgentRuntimeBackend.builtinLoop.rawValue
 
     var body: some Commands {
         CommandMenu("Who's Your Daddy") {
@@ -737,12 +782,12 @@ struct DebugMenuCommands: Commands {
 
             Divider()
 
-            Picker("External Agent Runtime POC", selection: $externalRuntimeBackend) {
-                Text("Off · Loop only").tag(AgentRuntimeBackend.builtinLoop.rawValue)
-                Text("Codex App Server").tag(AgentRuntimeBackend.codexAppServer.rawValue)
-                Text("DeepSeek Harness").tag(AgentRuntimeBackend.deepSeekHarness.rawValue)
+            Button("Open Agent Workspace") {
+                guard let dependencies else { return }
+                // Debug 入口仍走正式工作台控制器，避免调试菜单形成第二套窗口与门禁语义。
+                AgentWorkspaceWindowController.show(dependencies: dependencies)
             }
-            .disabled(!DistributionGate().isAvailable(.externalAgentRuntime))
+            .disabled(dependencies == nil)
 
             Divider()
 

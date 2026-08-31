@@ -285,7 +285,27 @@ struct RepositorySecurityAdvisory: Codable, Equatable, Identifiable, Sendable {
     let summary: String
     let severity: String
     let htmlURL: URL?
+    /// GitHub 可能不返回 publisher；保持可选可让既有缓存继续解码。
+    let publisherLogin: String?
     let publishedAt: Date
+
+    init(
+        id: String,
+        cveID: String?,
+        summary: String,
+        severity: String,
+        htmlURL: URL?,
+        publisherLogin: String? = nil,
+        publishedAt: Date
+    ) {
+        self.id = id
+        self.cveID = cveID
+        self.summary = summary
+        self.severity = severity
+        self.htmlURL = htmlURL
+        self.publisherLogin = publisherLogin
+        self.publishedAt = publishedAt
+    }
 }
 
 /// 安全公告的缓存快照；派生统计只基于本次成功获取的公告列表。
@@ -349,12 +369,34 @@ struct RepositoryCachedRecentActivity: Equatable, Sendable {
     let isStale: Bool
 }
 
+/// 节奏数字与最新 Release 附件记录一起落洞察缓存；附件只存元数据，不落二进制。
+struct RepositoryReleaseCadenceCachePayload: Codable, Equatable, Sendable {
+    var cadence: RepositoryReleaseCadenceInsight?
+    var latest: RepositoryReleaseInsight?
+}
+
 /// Release 节奏允许缓存“确认无 Release”的 nil，避免每次进入仓库都重复请求 GitHub。
 struct RepositoryCachedReleaseCadenceInsight: Equatable, Sendable {
     let value: RepositoryReleaseCadenceInsight?
+    /// 与节奏同一行缓存的最新 Release（含附件记录）。旧缓存可能没有。
+    let latest: RepositoryReleaseInsight?
     let fetchedAt: Date
     let isStale: Bool
     let responseETag: String?
+
+    init(
+        value: RepositoryReleaseCadenceInsight?,
+        latest: RepositoryReleaseInsight? = nil,
+        fetchedAt: Date,
+        isStale: Bool,
+        responseETag: String?
+    ) {
+        self.value = value
+        self.latest = latest
+        self.fetchedAt = fetchedAt
+        self.isStale = isStale
+        self.responseETag = responseETag
+    }
 }
 
 /// 远端 Release 回退结果：节奏缓存与「Latest Release」卡片共用同一次 `/releases` 响应。
@@ -989,7 +1031,7 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
                 ifNoneMatch: ifNoneMatch
             )
             let profile = response.value
-            let value = RepositoryCommunityInsight(
+            let mappedValue = RepositoryCommunityInsight(
                 healthPercentage: profile.healthPercentage,
                 hasReadme: profile.hasReadme,
                 hasCodeOfConduct: profile.hasCodeOfConduct,
@@ -1004,6 +1046,10 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
                 licenseHTMLURL: profile.licenseHTMLURL,
                 pullRequestTemplateHTMLURL: profile.pullRequestTemplateHTMLURL
             )
+            let value = try await resolvingIssueTemplateAvailability(
+                in: mappedValue,
+                repository: repository
+            )
             try await cache.store(
                 value,
                 repoId: repoID,
@@ -1016,13 +1062,30 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
             return value
         } catch GitHubRepositoryMetricsError.notModified(let responseETag) {
             do {
-                return try await revalidatedCachedValue(
+                let cachedValue = try await revalidatedCachedValue(
                     repoID: repoID,
                     dataset: .communityProfile,
                     fetchedAt: fetchedAt,
                     responseETag: responseETag ?? ifNoneMatch,
                     as: RepositoryCommunityInsight.self
                 )
+                let value = try await resolvingIssueTemplateAvailability(
+                    in: cachedValue,
+                    repository: repository
+                )
+                if value != cachedValue {
+                    // 旧缓存可能保存过 API 的误判；确认目录存在后立即覆盖，避免下一次 304 再回退。
+                    try await cache.store(
+                        value,
+                        repoId: repoID,
+                        dataset: .communityProfile,
+                        range: .all,
+                        fetchedAt: fetchedAt,
+                        responseETag: responseETag ?? ifNoneMatch,
+                        defaultBranchSHA: nil
+                    )
+                }
+                return value
             } catch GitHubRepositoryMetricsError.invalidResponse where ifNoneMatch != nil {
                 return try await refreshCommunityProfile(
                     repository: repository,
@@ -1032,18 +1095,39 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
         }
     }
 
+    private func resolvingIssueTemplateAvailability(
+        in value: RepositoryCommunityInsight,
+        repository: RepoIdentity
+    ) async throws -> RepositoryCommunityInsight {
+        guard !value.hasIssueTemplate else { return value }
+        do {
+            let isAvailable = try await metricsClient.loadIssueTemplateAvailability(
+                repository: repository,
+                observer: nil
+            )
+            return value.markingIssueTemplateAvailable(isAvailable)
+        } catch is CancellationError {
+            // 目录探测只是兼容兜底，但不能吞掉切库或关闭页面触发的任务取消。
+            throw CancellationError()
+        } catch {
+            // 主 Community Profile 已成功时，兜底端点失败不应拖垮整个社区信号区块。
+            return value
+        }
+    }
+
     func cachedReleaseCadence(repoID: Int64) async throws
         -> RepositoryCachedReleaseCadenceInsight? {
-        let cached: RepositoryInsightsCachedValue<RepositoryReleaseCadenceInsight?>?
+        let cached: RepositoryInsightsCachedValue<RepositoryReleaseCadenceCachePayload>?
         cached = try await cache.load(
             repoId: repoID,
             dataset: .releaseCadence,
             range: .all,
-            as: RepositoryReleaseCadenceInsight?.self
+            as: RepositoryReleaseCadenceCachePayload.self
         )
         guard let cached else { return nil }
         return RepositoryCachedReleaseCadenceInsight(
-            value: cached.value,
+            value: cached.value.cadence,
+            latest: cached.value.latest,
             fetchedAt: cached.fetchedAt,
             isStale: cached.isStale(at: now()),
             responseETag: cached.responseETag
@@ -1076,12 +1160,14 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
                     tagName: metric.tagName,
                     name: metric.name,
                     publishedAt: metric.publishedAt.flatMap(ISO8601DateFormatter.githubDate(from:)),
-                    htmlURL: URL(string: metric.htmlURL)
+                    htmlURL: URL(string: metric.htmlURL),
+                    assets: (metric.assets ?? []).map(Self.releaseAsset)
                 )
             }
             let value = RepositoryReleaseCadenceInsight.make(releases: releases, now: fetchedAt)
+            let latest = releases.first
             try await cache.store(
-                value,
+                RepositoryReleaseCadenceCachePayload(cadence: value, latest: latest),
                 repoId: repoID,
                 dataset: .releaseCadence,
                 range: .all,
@@ -1089,17 +1175,20 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
                 responseETag: response.etag,
                 defaultBranchSHA: nil
             )
-            return RepositoryReleaseRemoteSnapshot(cadence: value, latest: releases.first)
+            return RepositoryReleaseRemoteSnapshot(cadence: value, latest: latest)
         } catch GitHubRepositoryMetricsError.notModified(let responseETag) {
             do {
-                let cadence = try await revalidatedCachedValue(
+                let payload = try await revalidatedCachedValue(
                     repoID: repoID,
                     dataset: .releaseCadence,
                     fetchedAt: fetchedAt,
                     responseETag: responseETag ?? ifNoneMatch,
-                    as: RepositoryReleaseCadenceInsight?.self
+                    as: RepositoryReleaseCadenceCachePayload.self
                 )
-                return .cadenceOnly(cadence)
+                return RepositoryReleaseRemoteSnapshot(
+                    cadence: payload.cadence,
+                    latest: payload.latest
+                )
             } catch GitHubRepositoryMetricsError.invalidResponse where ifNoneMatch != nil {
                 // 304 到达前缓存可能被清理；无 payload 时只允许无条件补拉一次。
                 return try await refreshReleaseCadence(
@@ -1108,6 +1197,22 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
                 )
             }
         }
+    }
+
+    /// 远端节奏回退只把附件带回洞察页，不写入 `releases` 订阅表。
+    private static func releaseAsset(
+        _ asset: GitHubRepositoryReleaseMetric.Asset
+    ) -> ReleaseAsset {
+        ReleaseAsset(
+            id: asset.id,
+            name: asset.name,
+            contentType: asset.contentType,
+            size: asset.size,
+            browserDownloadUrl: asset.browserDownloadUrl,
+            apiUrl: asset.url,
+            downloadCount: asset.downloadCount,
+            createdAt: asset.createdAt
+        )
     }
 
     func cachedSecurityAdvisories(repoID: Int64) async throws
@@ -1158,6 +1263,7 @@ struct DefaultRepositoryRemoteInsightsProvider: RepositoryRemoteInsightsProvidin
                     summary: metric.summary,
                     severity: metric.severity.lowercased(),
                     htmlURL: metric.htmlURL.flatMap(URL.init(string:)),
+                    publisherLogin: metric.publisherLogin,
                     publishedAt: publishedAt
                 )
             }

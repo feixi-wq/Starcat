@@ -2,7 +2,7 @@
 //  StarcatMCPLoopbackHTTPServer.swift
 //  Starcat
 //
-//  `StarcatMCPRuntime` 的 HTTP 适配器。
+//  Starcat MCP Runtime 的 HTTP 适配器。
 //
 //  MCP Swift SDK 的 server transport 是 framework-agnostic：它负责把 HTTPRequest 转成
 //  JSON-RPC，但不负责监听端口。Starcat 是 macOS 原生 App，不需要为了一个 loopback
@@ -22,17 +22,18 @@ import Security
 @MainActor
 final class StarcatMCPLoopbackHTTPServer {
     private let port: Int
-    private let runtime: StarcatMCPRuntime
+    private let runtime: any StarcatMCPHTTPRuntime
     private let tlsIdentity: SecIdentity?
     private let requestValidator: @MainActor (StarcatHTTPServerRequest) -> StarcatHTTPServerError?
     private let routeHandler: @MainActor (StarcatHTTPServerRequest) async -> StarcatHTTPServerRouteResponse?
     private let queue = DispatchQueue(label: "com.starcat.mcp.http")
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var startupContinuation: CheckedContinuation<Int, Error>?
 
     init(
         port: Int,
-        runtime: StarcatMCPRuntime,
+        runtime: any StarcatMCPHTTPRuntime,
         tlsIdentity: SecIdentity? = nil,
         requestValidator: @escaping @MainActor (StarcatHTTPServerRequest) -> StarcatHTTPServerError?,
         routeHandler: @escaping @MainActor (StarcatHTTPServerRequest) async -> StarcatHTTPServerRouteResponse? = { _ in nil }
@@ -79,34 +80,81 @@ final class StarcatMCPLoopbackHTTPServer {
             }
         }
         let diagnosticPort = port
-        listener.stateUpdateHandler = { state in
-            if case .failed(let error) = state {
-                AppLog.network.error("MCP HTTP listener failed: \(error.localizedDescription, privacy: .public)")
-                if case .posix(.EADDRINUSE) = error {
-                    return
-                }
-                DiagnosticLogStore.record(
-                    level: .error,
-                    visibility: .issue,
-                    category: "mcp",
-                    operation: "mcp.listenerRuntime",
-                    message: "MCP HTTP listener failed after startup",
-                    underlying: DiagnosticEvent.summarize(error),
-                    context: ["port": String(diagnosticPort)]
-                )
+        listener.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                self?.handleListenerState(state, diagnosticPort: diagnosticPort)
             }
         }
         listener.start(queue: queue)
         self.listener = listener
     }
 
+    /// 临时 Runtime Bridge 必须等 listener 真正进入 ready 才能启动 Harness；否则
+    /// MCP client 的首次严格同步可能先于 socket bind，导致本轮模型拿不到任何工具。
+    func startAndWaitUntilReady() async throws -> Int {
+        if let listener, let boundPort = listener.port?.rawValue, boundPort != 0 {
+            return Int(boundPort)
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            startupContinuation = continuation
+            do {
+                try start()
+            } catch {
+                startupContinuation = nil
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
     func stop() {
+        if let startupContinuation {
+            self.startupContinuation = nil
+            startupContinuation.resume(throwing: CancellationError())
+        }
         listener?.cancel()
         listener = nil
         for connection in connections.values {
             connection.cancel()
         }
         connections.removeAll()
+    }
+
+    private func handleListenerState(_ state: NWListener.State, diagnosticPort: Int) {
+        switch state {
+        case .ready:
+            guard let startupContinuation else { return }
+            self.startupContinuation = nil
+            guard let boundPort = listener?.port?.rawValue, boundPort != 0 else {
+                startupContinuation.resume(throwing: StarcatMCPError.invalidArguments(
+                    "MCP listener became ready without a bound port."
+                ))
+                return
+            }
+            startupContinuation.resume(returning: Int(boundPort))
+        case .failed(let error):
+            AppLog.network.error("MCP HTTP listener failed: \(error.localizedDescription, privacy: .public)")
+            if let startupContinuation {
+                self.startupContinuation = nil
+                startupContinuation.resume(throwing: error)
+            }
+            if case .posix(.EADDRINUSE) = error { return }
+            DiagnosticLogStore.record(
+                level: .error,
+                visibility: .issue,
+                category: "mcp",
+                operation: "mcp.listenerRuntime",
+                message: "MCP HTTP listener failed after startup",
+                underlying: DiagnosticEvent.summarize(error),
+                context: ["port": String(diagnosticPort)]
+            )
+        case .cancelled:
+            if let startupContinuation {
+                self.startupContinuation = nil
+                startupContinuation.resume(throwing: CancellationError())
+            }
+        default:
+            break
+        }
     }
 
     private func accept(_ connection: NWConnection) {

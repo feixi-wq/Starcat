@@ -233,6 +233,12 @@ final class HomeViewModel {
     /// `RepoListView` 根据这个值决定是否 attach `.onAppear` 触发 `loadMoreIfNeeded()`。
     private(set) var hasMore: Bool = false
 
+    /// 自动分页统一观察的 busy 状态；数据库 append 也必须暴露，否则尾部 row 在该阶段出现后
+    /// 看不到 loading 的 false 边沿，SwiftUI 就没有机会重新评估被 guard 掉的分页需求。
+    var isAutomaticPaginationLoading: Bool {
+        isLoading || isRefreshing || isDatabasePageAppendInFlight
+    }
+
     /// 同步刷新扩张了一个用户已经滚到底的列表时，视图需要主动补一页。
     ///
     /// 这里必须区分“真实的深滚动恢复”和“首次首页从无数据变成有下一页”：后者如果也自动
@@ -514,6 +520,14 @@ final class HomeViewModel {
     private(set) var githubStarListCounts: [String: Int] = [:]
     /// 虚拟「未分组」计数。
     private(set) var githubStarListUngroupedCount: Int = 0
+    /// 确定性 GitHub 限制导致的跨轮次跳过集合；预检和多选入口只读这份 Sidebar 快照。
+    private(set) var githubStarListAIAutoIgnoredRepoIDs: Set<Int64> = []
+    /// repo id → GitHub List ids。右键菜单只读这份随 Sidebar 一起刷新的快照，
+    /// 避免 View 构建期间逐行访问数据库，也避免把多对多关系误判成唯一归属。
+    private(set) var githubStarListIDsByRepo: [Int64: Set<String>] = [:]
+    /// list id → Starcat 私有 AI 规则。只缓存是否存在有效规则等 Sidebar 展示所需状态，
+    /// 真正运行时仍由 Sheet 重新读取并冻结快照，避免编辑期间使用过期上下文。
+    private(set) var githubStarListAIRulesByListID: [String: GitHubStarListAIRule] = [:]
     /// 用户自定义智能集合。内置集合由 `SmartCollectionKind` 提供，不入库。
     private(set) var userSmartCollections: [UserSmartCollection] = []
     /// Release 时间线入口右侧计数：只统计当前激活订阅，已取消订阅的保留行不计入。
@@ -1440,6 +1454,9 @@ final class HomeViewModel {
         githubStarLists = []
         githubStarListCounts = [:]
         githubStarListUngroupedCount = 0
+        githubStarListAIAutoIgnoredRepoIDs = []
+        githubStarListIDsByRepo = [:]
+        githubStarListAIRulesByListID = [:]
         userSmartCollections = []
         releaseSubscriptionCount = 0
 
@@ -1530,6 +1547,9 @@ final class HomeViewModel {
             async let githubListsResult = fetchGitHubStarLists()
             async let githubListCountsResult = fetchGitHubStarListCounts()
             async let githubUngroupedCountResult = fetchGitHubStarListUngroupedCount()
+            async let githubAssignmentsResult = fetchGitHubStarListAssignments()
+            async let githubAIRulesResult = fetchGitHubStarListAIRules()
+            async let githubAutoIgnoredResult = fetchGitHubStarListAIAutoIgnoredRepos()
             async let smartCollectionsResult = fetchUserSmartCollections()
             async let releaseSubscriptionCountResult = fetchReleaseSubscriptionCount()
             // HOM-179：一并刷新 repo→tagIds 映射，让 selectedTagIds 多选过滤实时生效。
@@ -1548,6 +1568,14 @@ final class HomeViewModel {
             self.githubStarLists = try await githubListsResult
             self.githubStarListCounts = try await githubListCountsResult
             self.githubStarListUngroupedCount = try await githubUngroupedCountResult
+            let githubAssignments = try await githubAssignmentsResult
+            self.githubStarListIDsByRepo = githubAssignments.mapValues { Set($0.map(\.id)) }
+            self.githubStarListAIRulesByListID = Dictionary(
+                uniqueKeysWithValues: try await githubAIRulesResult.map { ($0.listId, $0) }
+            )
+            self.githubStarListAIAutoIgnoredRepoIDs = Set(
+                try await githubAutoIgnoredResult.map(\.repoId)
+            )
             self.userSmartCollections = try await smartCollectionsResult
             self.releaseSubscriptionCount = try await releaseSubscriptionCountResult
             let assignments = try await tagAssignmentsResult
@@ -1831,6 +1859,26 @@ final class HomeViewModel {
     private func fetchGitHubStarListUngroupedCount() async throws -> Int {
         guard let githubStarListRepository else { return 0 }
         return try await githubStarListRepository.ungroupedRepoCount()
+    }
+
+    private func fetchGitHubStarListAssignments() async throws -> [Int64: [GitHubStarList]] {
+        guard let githubStarListRepository else { return [:] }
+        return try await githubStarListRepository.fetchAllListAssignments()
+    }
+
+    private func fetchGitHubStarListAIRules() async throws -> [GitHubStarListAIRule] {
+        guard let githubStarListRepository else { return [] }
+        return try await githubStarListRepository.fetchAllAIRules()
+    }
+
+    private func fetchGitHubStarListAIAutoIgnoredRepos() async throws -> [GitHubStarListAIAutoIgnoredRepo] {
+        guard let githubStarListRepository else { return [] }
+        return try await githubStarListRepository.fetchAIAutoIgnoredRepos()
+    }
+
+    /// 一个仓库可以同时属于多个 GitHub Lists；菜单通过这个查询展示每一项的独立状态。
+    func isRepo(_ repoID: Int64, inGitHubStarList listID: String) -> Bool {
+        githubStarListIDsByRepo[repoID]?.contains(listID) == true
     }
 
     private func fetchReleaseSubscriptionCount() async throws -> Int {

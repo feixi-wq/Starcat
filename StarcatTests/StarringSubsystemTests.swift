@@ -11,6 +11,7 @@
 //    5. StarredRegistryBootstrapper.clearOnSignOut 清空 registry
 //    6. StarActionService.star API 失败时 registry 不变（不污染状态）
 //    7. StarActionService 未登录时抛 .notAuthenticated
+//    8. star/unstar 会话星标数：Explore 快照 toggle 按 overlay ±1；asCardData 读 overlay
 //
 //  ⚠️ 不测「fileprivate 写权限」契约——编译期已保证（任何 View / ViewModel 试图
 //  调 `registry._add` 都编译失败）。把这条契约放在文件头注释 + 设计文档 §4.3.2。
@@ -57,7 +58,7 @@ struct StarringSubsystemTests {
     }
 
     /// 构造一个 GitHubRepoDTO（默认字段足够 upsert 不挂）。
-    private func makeRepoDTO(id: Int64, owner: String, name: String) -> GitHubRepoDTO {
+    private func makeRepoDTO(id: Int64, owner: String, name: String, stargazersCount: Int = 100) -> GitHubRepoDTO {
         let user = GitHubUserDTO(
             id: 1, login: owner, name: nil, avatarUrl: nil,
             publicRepos: nil, followers: nil, following: nil,
@@ -71,7 +72,7 @@ struct StarringSubsystemTests {
             owner: user,
             description: "desc",
             language: "Swift",
-            stargazersCount: 100,
+            stargazersCount: stargazersCount,
             forksCount: 10,
             watchersCount: 5,
             topics: ["a"],
@@ -165,6 +166,107 @@ struct StarringSubsystemTests {
         #expect(stillThere != nil)
         #expect(stillThere?.isStarred == false)
         #expect(try await deps.note.fetchLibraryState(repoId: saved.id) == .inLibrary)
+    }
+
+    @Test("unstar: 本地 starsCount 从 1 回到 0（不依赖 GitHub GET 的最终一致性）")
+    func unstarDecrementsLocalStarsCount() async throws {
+        let deps = try makeDeps()
+        deps.api.starHandler = { _, _ in }
+        deps.api.repoHandler = { owner, repo in
+            self.makeRepoDTO(id: 7777, owner: owner, name: repo, stargazersCount: 1)
+        }
+        deps.api.unstarHandler = { _, _ in }
+
+        let saved = try await deps.service.star(owner: "alice", repo: "zero-star")
+        #expect(saved.starsCount == 1)
+
+        try await deps.service.unstar(repo: saved)
+
+        let local = try await deps.repo.findById(7777)
+        #expect(local?.isStarred == false)
+        #expect(local?.starsCount == 0)
+        #expect(deps.registry.displayedStarsCount(base: 1, ghRepoId: 7777) == 0)
+    }
+
+    @Test("star/unstar: 会话星标数按点击前展示值 ±1，不依赖 GitHub GET")
+    func sessionStarsCountFollowsDisplayedSnapshot() async throws {
+        let deps = try makeDeps()
+        deps.api.starHandler = { _, _ in }
+        deps.api.repoHandler = { owner, repo in
+            self.makeRepoDTO(id: 8888, owner: owner, name: repo, stargazersCount: 100)
+        }
+        deps.api.unstarHandler = { _, _ in }
+
+        let saved = try await deps.service.star(
+            owner: "alice",
+            repo: "snapshot",
+            displayedStarsCount: 100
+        )
+        #expect(deps.registry.displayedStarsCount(base: 100, ghRepoId: saved.id) == 101)
+
+        try await deps.service.unstar(
+            ghRepoId: saved.id,
+            owner: "alice",
+            name: "snapshot",
+            displayedStarsCount: 101
+        )
+        #expect(deps.registry.displayedStarsCount(base: 100, ghRepoId: saved.id) == 100)
+    }
+
+    @Test("toggle unstar: 列表仍持接口快照时按会话展示数 -1，而不是再对快照减一次")
+    func toggleUnstarUsesSessionOverlayNotStaleSnapshot() async throws {
+        let deps = try makeDeps()
+        deps.api.starHandler = { _, _ in }
+        deps.api.repoHandler = { owner, repo in
+            self.makeRepoDTO(id: 8888, owner: owner, name: repo, stargazersCount: 100)
+        }
+        deps.api.unstarHandler = { _, _ in }
+
+        let saved = try await deps.service.star(
+            owner: "alice",
+            repo: "snapshot",
+            displayedStarsCount: 100
+        )
+        #expect(deps.registry.displayedStarsCount(base: 100, ghRepoId: saved.id) == 101)
+
+        // Explore / Activity 详情的 displayRepo 仍是点 star 前的快照：starsCount=100。
+        var staleSnapshot = saved
+        staleSnapshot.starsCount = 100
+        staleSnapshot.isStarred = true
+
+        try await deps.service.toggle(repo: staleSnapshot)
+        #expect(deps.registry.displayedStarsCount(base: 100, ghRepoId: saved.id) == 100)
+    }
+
+    @Test("asCardData(registry:): 探索卡片星标数读会话 overlay，不停留在接口快照")
+    func asCardDataUsesSessionStarsCount() async throws {
+        let deps = try makeDeps()
+        deps.api.starHandler = { _, _ in }
+        deps.api.repoHandler = { owner, repo in
+            self.makeRepoDTO(id: 8888, owner: owner, name: repo, stargazersCount: 100)
+        }
+
+        _ = try await deps.service.star(
+            owner: "alice",
+            repo: "snapshot",
+            displayedStarsCount: 100
+        )
+
+        let dto = StarcatRepoCardDTO(
+            ghRepoId: 8888,
+            fullName: "alice/snapshot",
+            owner: "alice",
+            repo: "snapshot",
+            stars: 100,
+            forks: 0
+        )
+        let card = dto.asCardData(registry: deps.registry)
+        #expect(card.isStarred == true)
+        #expect(card.starsCount == 101)
+
+        let snapshot = deps.registry.applyingDisplayState(to: dto.toEphemeralRepo())
+        #expect(snapshot.isStarred == true)
+        #expect(snapshot.starsCount == 101)
     }
 
     @Test("star: 已入库未 star repo 重新 star 后保留 libraryState")

@@ -22,8 +22,8 @@ git 不管的 → sync-untracked.sh 同步（按 sync-manifest.list 清单）
 
 | 路径 | 说明 |
 |------|------|
-| `AGENTS.md` | supports/ 目录的 AI 协作规范 |
-| `CLAUDE.md` | supports/ 目录的 Claude Code 规则 |
+| `AGENTS.md` | supports/ 目录的 AI 协作唯一维护源 |
+| `.claude/CLAUDE.md` | Claude Code 配置入口（固定引用 `AGENTS.md`，勿写规范正文） |
 | `Makefile` | 运维命令入口（fly 部署、secrets 同步等） |
 | `README.md` | 支撑项目总览 |
 | `SYNC.md` | 本文档 |
@@ -33,7 +33,7 @@ git 不管的 → sync-untracked.sh 同步（按 sync-manifest.list 清单）
 | `backups/` | Fly 数据备份目录结构 |
 | `docs/` | 设计文档、改造方案、指南 |
 | `extensions/AGENTS.md` | 浏览器插件目录的 AI 协作规范 |
-| `extensions/CLAUDE.md` | 浏览器插件目录的 Claude Code 规则 |
+| `extensions/.claude/CLAUDE.md` | 浏览器插件目录 Claude Code 配置入口 |
 | `scripts/` | 运维脚本（fly-backup、fly-restore、fly-secrets 等） |
 
 > `.gitignore` 规则：`supports/*` 默认忽略全部，再用 `!` 逐目录/文件放行。
@@ -41,7 +41,7 @@ git 不管的 → sync-untracked.sh 同步（按 sync-manifest.list 清单）
 
 ---
 
-## 独立仓库目录（23 个）
+## 独立仓库目录（25 个）
 
 以下目录各自是**独立的 git 仓库**，有自己的 GitHub remote、CI/CD 和版本号：
 
@@ -70,20 +70,23 @@ git 不管的 → sync-untracked.sh 同步（按 sync-manifest.list 清单）
 | 21 | `homebrew-starcat-cli/` | `starcat-app/homebrew-starcat-cli` |
 | 22 | `extensions/starcat-chrome-plugin/` | `starcat-app/starcat-chrome-plugin` |
 | 23 | `extensions/starcat-safari-plugin/` | `starcat-app/starcat-safari-plugin` |
+| 24 | `starcat-recsys-trainer/` | `starcat-app/starcat-recsys-trainer` 🔒 私有 |
+| 25 | `starcat-collection-api/` | `starcat-app/starcat-collection-api` 🔒 私有 |
+| 26 | `starcat-admin-console/` | `starcat-app/starcat-admin-console` |
 
 ### 一键拉取所有独立仓库
 
 ```bash
 cd supports
 
-# 首次 clone 全部 23 个远端目标
+# 首次 clone 全部 26 个远端目标
 ./clone-all.sh
 
 # 后续更新全部
 ./clone-all.sh --pull
 ```
 
-> `starcat-license-api` 与 `starcat-api` 是**私有**仓库，需要使用具备 `starcat-app` 组织权限的 `gh auth login` 或 SSH key；`starcat-api-kit` 为公开仓库。
+> `starcat-license-api`、`starcat-collection-api`、`starcat-api` 与 `starcat-recsys-trainer` 是**私有**仓库，需要使用具备 `starcat-app` 组织权限的 `gh auth login` 或 SSH key；`starcat-api-kit` 为公开仓库。
 
 ### 新增独立仓库登记
 
@@ -97,7 +100,7 @@ cd supports
 4. 更新 `README.md` 的项目总数、分类表和 GitHub URL；
 5. 验证根 `.gitignore` 仍忽略新项目工作树，禁止用 `git add -f` 加入主仓库。
 
-API 或新的项目类型还要同步 `AGENTS.md`、`CLAUDE.md` 和对应运维/发布文档。
+API 或新的项目类型还要同步 `AGENTS.md` 和对应运维/发布文档。
 
 ---
 
@@ -114,6 +117,7 @@ notes.md                          # 笔记
 .claude/settings.local.json       # 根目录 IDE 权限（被全局 gitignore 忽略）
 sparkle-private-key               # Sparkle 签名私钥
 supports/starcat-discovery-api/.env
+supports/starcat-collection-api/.env
 supports/starcat-license-api/.env
 supports/starcat-recommend-api/.env
 supports/starcat-sharing-api/.env
@@ -167,6 +171,9 @@ make sync-fly-secrets
 
 | 日期 | 决策 | 原因 |
 |------|------|------|
+| 2026-08-24 | GitHub 独立仓库从 25 个扩展到 26 个 | 新增 `starcat-admin-console`，独立承担本地服务运营、精选发布与 Awesome 来源管理 |
+| 2026-08-23 | GitHub 独立仓库从 24 个扩展到 25 个 | 新增私有 `starcat-collection-api`，独立承担经同意的公开 Star 快照收集与训练导出 |
+| 2026-08-23 | GitHub 独立仓库从 23 个扩展到 24 个 | 新增私有 `starcat-recsys-trainer`，独立承担推荐数据与离线训练管道 |
 | 2026-07-30 | GitHub 独立仓库从 20 个扩展到 21 个 | 新增 `starcat-raycast-extension`，独立维护 Raycast 搜索适配、测试与开源治理 |
 | 2026-07-29 | GitHub 独立仓库从 19 个扩展到 20 个 | 新增 `starcat-utools-plugin`，独立维护 uTools 搜索适配、测试与开源治理 |
 | 2026-07-29 | GitHub 独立仓库从 18 个扩展到 19 个 | 新增 `starcat-alfred-workflow`，独立维护 Alfred 构建、发布与开源治理 |

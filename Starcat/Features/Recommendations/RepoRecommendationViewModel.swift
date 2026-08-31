@@ -12,8 +12,9 @@
 //    旧的「in-place 切 selection + selectedRepoID 跳行」逻辑（`open(_:repoRepository:homeViewModel:)`）
 //    已删除（铁律 #1），VM 现在只负责数据 load / loadMore / reset 三件事。
 //  - **v1.1.1 修订（2026-06-29）**：从直接调 `RecommendAPI` 改为走
-//    `RecommendationContextService`（read-through cache）。`loadInitial` 先同步读 cache
-//    立刻给 items 赋初值；fresh 快照直接返回，只有 stale / miss 才走 refresh 拉新 + 写盘。
+//    `RecommendationContextService`（read-through cache）。`loadInitial` 先异步读磁盘 cache，
+//    但磁盘 I/O 在独立 actor 中执行，不阻塞主线程；SimRepo v1 继续按 TTL 刷新，自研 v2
+//    在缓存上屏后用模型版本 ETag 条件重验证，版本变化才下载并覆盖推荐正文。
 //
 
 import Foundation
@@ -29,18 +30,21 @@ final class RepoRecommendationViewModel {
     private(set) var hasMore = false
 
     private var loadedRepoID: Int64?
-    private var nextOffset: Int?
     private var currentSnapshot: RecommendationCacheSnapshot?
+    /// 当前详情会话已经向 UI 暴露的条数。磁盘可以缓存更多页，但重新进入详情时
+    /// 必须从首批开始，不能一次构造全部卡片和头像请求。
+    private var visibleItemCount = 0
 
     var hasItems: Bool { !items.isEmpty }
 
-    /// 初次加载：先同步读 cache 立刻渲染，再按 freshness 决定是否 refresh。
+    /// 初次加载：先异步读 cache，再按契约执行版本重验证或 TTL refresh。
     ///
     /// 流程：
     /// 1. `guard loadedRepoID != repoID` —— 同一 repo 重复进入详情页不重拉；
-    /// 2. 同步读 cache → 立刻赋 items / hasMore / nextOffset（**这一步不进网络**，详情页打开秒出数据）；
-    /// 3. fresh 快照直接返回；stale / miss 才走 `service.refresh` 拉新 + 写盘；
-    /// 4. 错误：保留旧 cache 值（如果 1 有），errorMessage 给 UI 显示。
+    /// 2. 在后台 actor 读 cache → 赋 items / hasMore（**这一步不进网络**）；
+    /// 3. 自研 v2 用 ETag 后台重验证，304 保留缓存、200 覆盖为新模型；
+    /// 4. 不支持版本重验证的 v1 才按 freshness 决定是否 refresh；
+    /// 5. 错误：已有缓存时静默保留；cache miss 则由 UI 展示刷新错误。
     func loadInitial(repoID: Int64, service: RecommendationContextService) async {
         guard repoID > 0 else {
             clear()
@@ -53,14 +57,39 @@ final class RepoRecommendationViewModel {
         isLoading = true
         defer { isLoading = false }
 
-        // 第 2 步：同步读 cache 立刻给 UI 数据。cache miss 时本步 no-op，
-        // 列表显示 empty + 骨架屏（与之前无 cache 行为一致）；cache hit
-        // 时秒出。
-        if let snapshot = service.cachedSnapshot(repoID: repoID) {
-            currentSnapshot = snapshot
-            items = snapshot.items
-            hasMore = snapshot.hasMore
-            nextOffset = snapshot.nextOffset
+        // 第 2 步：后台读 cache 后给 UI 数据。cache miss 时本步 no-op，
+        // 列表显示 empty + 骨架屏（与之前无 cache 行为一致）。
+        let totalStartedAt = ContinuousClock.now
+        let serviceScope = await service.currentServiceScope()
+        guard !Task.isCancelled, loadedRepoID == repoID else { return }
+        if let snapshot = await service.cachedSnapshot(repoID: repoID, serviceScope: serviceScope) {
+            apply(snapshot: snapshot, pageSize: service.pageSize, resetVisibleItems: true)
+            do {
+                let revalidation = try await service.revalidateCachedSnapshot(
+                    repoID: repoID,
+                    snapshot: snapshot,
+                    serviceScope: serviceScope
+                )
+                guard !Task.isCancelled, loadedRepoID == repoID else { return }
+                switch revalidation {
+                case .notModified:
+                    return
+                case .modified(let refreshed):
+                    apply(snapshot: refreshed, pageSize: service.pageSize, resetVisibleItems: true)
+                    return
+                case .unsupported:
+                    break
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                // 模型版本检查是推荐旁路中的旁路。缓存已经上屏时，断网或旧服务不支持
+                // 条件请求都不能拖慢、清空详情页，也不向用户报告错误。
+                AppLog.network.debug(
+                    "recommend: model revalidation failed for repo \(repoID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                return
+            }
             // 推荐缓存把空结果与有结果的重探时刻都编码在 snapshot 里；这里必须真正
             // 尊重 freshness，否则 1h / 7d TTL 只停留在磁盘字段上，每次进详情仍会打服务端。
             if snapshot.freshness() == .fresh {
@@ -68,19 +97,23 @@ final class RepoRecommendationViewModel {
             }
         } else {
             currentSnapshot = nil
+            visibleItemCount = 0
             items = []
             hasMore = false
-            nextOffset = nil
         }
 
         // 第 3 步：仅 stale / miss 才异步 refresh 拉新 + 写盘。
         do {
-            let fresh = try await service.refresh(repoID: repoID, offset: 0)
+            let fresh = try await service.refresh(
+                repoID: repoID,
+                offset: 0,
+                serviceScope: serviceScope
+            )
             guard loadedRepoID == repoID else { return }
-            currentSnapshot = fresh
-            items = fresh.items
-            hasMore = fresh.hasMore
-            nextOffset = fresh.nextOffset
+            apply(snapshot: fresh, pageSize: service.pageSize, resetVisibleItems: true)
+            AppLog.ui.debug(
+                "Recommend initial load repo=\(repoID, privacy: .public) visible=\(self.items.count, privacy: .public) cached=\(fresh.items.count, privacy: .public) elapsed=\(String(describing: totalStartedAt.duration(to: .now)), privacy: .public)"
+            )
         } catch is CancellationError {
             // SwiftUI 快速切换 repo 时取消旧任务是正常路径。
         } catch {
@@ -95,7 +128,7 @@ final class RepoRecommendationViewModel {
     func loadMore(service: RecommendationContextService) async {
         guard let repoID = loadedRepoID,
               let snapshot = currentSnapshot,
-              snapshot.hasMore,
+              (visibleItemCount < snapshot.items.count || snapshot.hasMore),
               !isLoadingMore else { return }
 
         isLoadingMore = true
@@ -103,19 +136,21 @@ final class RepoRecommendationViewModel {
         defer { isLoadingMore = false }
 
         do {
-            let newItems = try await service.refreshNextPage(
+            let nextVisibleCount = min(visibleItemCount + service.pageSize, snapshot.items.count)
+            if nextVisibleCount > visibleItemCount {
+                // 磁盘中已经缓存后续页时只解锁下一批，不发网络请求。
+                visibleItemCount = nextVisibleCount
+                apply(snapshot: snapshot, pageSize: service.pageSize, resetVisibleItems: false)
+                return
+            }
+
+            let updated = try await service.refreshNextPage(
                 repoID: repoID,
                 currentSnapshot: snapshot
             )
             guard loadedRepoID == repoID else { return }
-            // 重新读盘拿合并后的最新 snapshot（refreshNextPage 已落盘）。
-            if let updated = service.cachedSnapshot(repoID: repoID) {
-                currentSnapshot = updated
-                items = updated.items
-                hasMore = updated.hasMore
-                nextOffset = updated.nextOffset
-            }
-            _ = newItems  // 合并结果已通过读盘拿到
+            visibleItemCount = min(visibleItemCount + service.pageSize, updated.items.count)
+            apply(snapshot: updated, pageSize: service.pageSize, resetVisibleItems: false)
         } catch is CancellationError {
         } catch {
             errorMessage = error.localizedDescription
@@ -137,12 +172,29 @@ final class RepoRecommendationViewModel {
     /// 防止视图复用期间短暂显示上一个 Public 仓库的推荐结果。
     func clear() {
         loadedRepoID = nil
-        nextOffset = nil
         currentSnapshot = nil
+        visibleItemCount = 0
         items = []
         hasMore = false
         errorMessage = nil
         isLoading = false
         isLoadingMore = false
+    }
+
+    /// 把完整磁盘快照裁成当前会话可见页。`currentSnapshot` 保留全部缓存结果，
+    /// `items` 永远只包含用户已经通过“更多”解锁的前缀。
+    private func apply(
+        snapshot: RecommendationCacheSnapshot,
+        pageSize: Int,
+        resetVisibleItems: Bool
+    ) {
+        currentSnapshot = snapshot
+        if resetVisibleItems {
+            visibleItemCount = min(pageSize, snapshot.items.count)
+        } else {
+            visibleItemCount = min(visibleItemCount, snapshot.items.count)
+        }
+        items = Array(snapshot.items.prefix(visibleItemCount))
+        hasMore = visibleItemCount < snapshot.items.count || snapshot.hasMore
     }
 }

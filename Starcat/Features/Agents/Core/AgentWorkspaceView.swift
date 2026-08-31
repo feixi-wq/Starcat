@@ -40,6 +40,23 @@ enum AgentWorkspaceLayoutMetrics {
     }
 }
 
+/// 会影响 Agent `knowledge_search` 工具装配结果的 RAG 配置快照。
+///
+/// Agent Runtime 会冻结整组 Tool Registry；如果设置页在工作台存活期间修改了回退策略，
+/// 必须让 SwiftUI 观察到快照变化并重新装配，否则外部 Runtime 会继续使用旧 Provider。
+struct AgentRuntimeKnowledgeConfigurationSnapshot: Equatable {
+    let backendConfiguration: RAGBackendConfiguration
+    let retrievalSettings: RAGRetrievalSettings
+    let rerankConfiguration: RAGRerankConfiguration
+
+    @MainActor
+    init(settings: AppSettings) {
+        backendConfiguration = settings.ragBackendConfiguration
+        retrievalSettings = settings.ragRetrievalSettings
+        rerankConfiguration = settings.ragRerankConfiguration
+    }
+}
+
 /// 只测量 `HSplitView` 最终分配的实际栏宽；默认值 0 代表该栏当前未挂载或已折叠。
 private struct AgentWorkspaceLeftWidthPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
@@ -57,6 +74,13 @@ private struct AgentWorkspaceRightWidthPreferenceKey: PreferenceKey {
     }
 }
 
+private enum CodexProviderEndpointState: Equatable {
+    case unknown
+    case checking
+    case available
+    case unavailable
+}
+
 struct AgentWorkspaceView: View {
 
     private static let contextPickerPanelHeight: CGFloat = 420
@@ -66,8 +90,20 @@ struct AgentWorkspaceView: View {
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(ExternalAgentRuntimePOCPreferences.backendKey)
+    @AppStorage(ExternalAgentRuntimePreferences.backendKey)
     private var externalRuntimeBackendRawValue = AgentRuntimeBackend.builtinLoop.rawValue
+    @AppStorage(ExternalAgentRuntimePreferences.codexModelKey)
+    private var preferredCodexModelID = ""
+    @AppStorage(ExternalAgentRuntimePreferences.codexProviderKey)
+    private var preferredCodexProviderID = ""
+    @AppStorage(ExternalAgentRuntimePreferences.codexReasoningEffortKey)
+    private var preferredCodexReasoningEffort = ""
+    @AppStorage(ExternalAgentRuntimePreferences.deepSeekModelKey)
+    private var preferredDeepSeekModel = DeepSeekHarnessRuntime.defaultModel
+    @AppStorage(ExternalAgentRuntimePreferences.deepSeekProviderKey)
+    private var preferredDeepSeekProviderID = ""
+    @AppStorage(ExternalAgentRuntimePreferences.deepSeekReasoningEffortKey)
+    private var preferredDeepSeekReasoningEffort = ""
     @AppStorage(AgentWorkspaceLayoutMetrics.leftWidthDefaultsKey)
     private var persistedLeftColumnWidth = Double(AgentWorkspaceLayoutMetrics.leftIdealWidth)
     @AppStorage(AgentWorkspaceLayoutMetrics.rightWidthDefaultsKey)
@@ -80,6 +116,14 @@ struct AgentWorkspaceView: View {
     @State private var lastMeasuredRightColumnWidth: CGFloat?
     @State private var leftWidthPersistenceTask: Task<Void, Never>?
     @State private var rightWidthPersistenceTask: Task<Void, Never>?
+    @State private var codexModelCatalog = CodexModelCatalog.empty
+    @State private var codexProviderCatalog = CodexProviderCatalog.load()
+    @State private var isLoadingCodexModelCatalog = false
+    @State private var codexModelCatalogError: String?
+    @State private var codexProviderEndpointStates: [String: CodexProviderEndpointState] = [:]
+    @State private var isHistoryExpanded = false
+    /// 运行中的 Runtime 必须保持冻结；设置变更延后到当前 run 结束再装配。
+    @State private var hasPendingKnowledgeConfigurationRefresh = false
     @FocusState private var isContextPickerSearchFocused: Bool
     let chromeState: WorkspaceChromeState
 
@@ -89,6 +133,10 @@ struct AgentWorkspaceView: View {
 
     private var restoredRightColumnWidth: CGFloat {
         AgentWorkspaceLayoutMetrics.clampedRightWidth(persistedRightColumnWidth)
+    }
+
+    private var knowledgeConfigurationSnapshot: AgentRuntimeKnowledgeConfigurationSnapshot {
+        AgentRuntimeKnowledgeConfigurationSnapshot(settings: dependencies.settings)
     }
 
     var body: some View {
@@ -138,6 +186,10 @@ struct AgentWorkspaceView: View {
         .defaultCursorShield()
         .task {
             viewModel.refreshLocalizedDefinitions(availableAgentDefinitions)
+            if dependencies.distributionGate.isAvailable(.externalAgentRuntime),
+               let generalAgent = availableAgentDefinitions.first(where: { $0.id == "external-general-poc" }) {
+                viewModel.selectAgent(generalAgent)
+            }
             let repositoryCatalog = GRDBAgentRepositoryCatalog(database: dependencies.database)
             viewModel.configureContextProvider(RepositoryAgentRunContextProvider(
                 repoRepository: dependencies.repoRepository,
@@ -150,8 +202,12 @@ struct AgentWorkspaceView: View {
                 defaultProviderID: dependencies.settings.aiChatTask.providerID,
                 defaultModelName: dependencies.settings.aiChatTask.resolvedModelName
             )
+            normalizeRuntimeSelections()
             configureAgentRuntime()
             await viewModel.initializeHistory()
+        }
+        .task(id: codexCatalogTaskID) {
+            await loadCodexModelCatalogIfNeeded()
         }
         .onChange(of: viewModel.selectedModelID) { _, _ in
             configureAgentRuntime()
@@ -165,6 +221,42 @@ struct AgentWorkspaceView: View {
         }
         .onChange(of: externalRuntimeBackendRawValue) { _, _ in
             viewModel.refreshLocalizedDefinitions(availableAgentDefinitions)
+            configureAgentRuntime()
+        }
+        .onChange(of: preferredCodexModelID) { _, _ in
+            configureAgentRuntime()
+        }
+        .onChange(of: preferredCodexProviderID) { _, _ in
+            codexModelCatalog = .empty
+            // 离开不可用 Provider 后允许下次重新选择并触发新预检，避免一次失败永久锁死菜单项。
+            codexProviderEndpointStates = codexProviderEndpointStates.filter {
+                $0.key == selectedCodexProviderID
+            }
+            configureAgentRuntime()
+        }
+        .onChange(of: preferredCodexReasoningEffort) { _, _ in
+            configureAgentRuntime()
+        }
+        .onChange(of: preferredDeepSeekModel) { _, _ in
+            configureAgentRuntime()
+        }
+        .onChange(of: preferredDeepSeekProviderID) { _, _ in
+            normalizeDeepSeekSelection()
+            configureAgentRuntime()
+        }
+        .onChange(of: preferredDeepSeekReasoningEffort) { _, _ in
+            configureAgentRuntime()
+        }
+        .onChange(of: dependencies.settings.aiProviderProfiles) { _, _ in
+            normalizeDeepSeekSelection()
+            configureAgentRuntime()
+        }
+        .onChange(of: knowledgeConfigurationSnapshot) { _, _ in
+            refreshRuntimeForKnowledgeConfigurationChange()
+        }
+        .onChange(of: viewModel.isRunning) { wasRunning, isRunning in
+            guard wasRunning, !isRunning, hasPendingKnowledgeConfigurationRefresh else { return }
+            hasPendingKnowledgeConfigurationRefresh = false
             configureAgentRuntime()
         }
         .animation(.easeInOut(duration: 0.16), value: chromeState.isLeftColumnCollapsed)
@@ -186,7 +278,39 @@ struct AgentWorkspaceView: View {
     /// 每次模型选择变化都重建尚未启动的 Runtime；已经运行的实例由 ViewModel 拒绝替换，
     /// 从而保证一次 run 从首个 token 到最终 artifact 始终使用同一模型。
     private func configureAgentRuntime() {
-        let preferredBackend = selectedRuntimeBackend
+        let preferredBackend = activeRuntimeBackend
+        let starcatModelName = viewModel.availableModels
+            .first(where: { $0.id == viewModel.selectedModelID })?
+            .name
+        let runtimeModelName: String?
+        let runtimeReasoningEffort: String?
+        let runtimeProviderName: String?
+        let runtimeSelectionAvailable: Bool
+        switch preferredBackend {
+        case .codexAppServer:
+            runtimeProviderName = selectedCodexProviderOption?.displayName ?? selectedCodexProviderID
+            runtimeModelName = selectedCodexModelSelection?.modelName
+            runtimeReasoningEffort = selectedCodexModelSelection?.reasoningEffort
+            runtimeSelectionAvailable = selectedCodexProviderOption.map(isCodexProviderAvailable) ?? false
+        case .deepSeekHarness:
+            // JSON-RPC carrier 不提供目录查询；这里冻结设置页已验证 Provider 的能力快照。
+            runtimeProviderName = selectedDeepSeekSelection?.provider.displayName
+            runtimeModelName = selectedDeepSeekSelection?.model.name
+            runtimeReasoningEffort = selectedDeepSeekSelection?.reasoningEffort
+            runtimeSelectionAvailable = selectedDeepSeekSelection != nil
+        case .builtinLoop:
+            runtimeProviderName = selectedBuiltinProviderProfile?.displayName
+            runtimeModelName = starcatModelName
+            runtimeReasoningEffort = nil
+            runtimeSelectionAvailable = true
+        }
+        viewModel.configureRuntimeSelection(
+            backend: preferredBackend,
+            providerName: runtimeProviderName,
+            modelName: runtimeModelName,
+            reasoningEffort: runtimeReasoningEffort,
+            isAvailable: runtimeSelectionAvailable
+        )
         let externalSearchTool = ExternalSearchAgentTool(
             collector: AppSettingsAgentExternalSearchCollector(settings: dependencies.settings)
         )
@@ -237,15 +361,22 @@ struct AgentWorkspaceView: View {
 
         if preferredBackend != .builtinLoop {
             do {
-                let adapter = try ExternalAgentRuntimePOCPreferences.makeAdapter(backend: preferredBackend)
-                let selectedModelName = viewModel.availableModels
-                    .first(where: { $0.id == viewModel.selectedModelID })?
-                    .name
+                let adapter = try ExternalAgentRuntimePreferences.makeAdapter(
+                    backend: preferredBackend,
+                    settings: dependencies.settings
+                )
                 runtimes[preferredBackend] = ExternalAgentRuntime(
                     adapter: adapter,
                     distributionGate: dependencies.distributionGate,
-                    selectedModelName: selectedModelName,
-                    toolRegistry: toolRegistry
+                    selectedModelName: runtimeModelName,
+                    reasoningEffort: runtimeReasoningEffort,
+                    localeIdentifier: locale.identifier,
+                    preferredLanguage: preferredOutputLanguage,
+                    toolRegistry: toolRegistry,
+                    runRepository: dependencies.agentRunRepository,
+                    mcpBridgeFactory: { toolSet in
+                        try await dependencies.mcpService.makeTransientBridge(toolSet: toolSet)
+                    }
                 )
             } catch {
                 runtimes[preferredBackend] = UnavailableAgentRuntime(message: error.localizedDescription)
@@ -257,33 +388,177 @@ struct AgentWorkspaceView: View {
         ))
     }
 
+    private func refreshRuntimeForKnowledgeConfigurationChange() {
+        guard !viewModel.isRunning else {
+            // 当前 run 的工具与参数已经冻结，不能中途替换；完成后再让下一次请求读取新设置。
+            hasPendingKnowledgeConfigurationRefresh = true
+            return
+        }
+        configureAgentRuntime()
+    }
+
+    private var selectedCodexModelSelection: CodexModelSelection? {
+        codexModelCatalog.resolvedSelection(
+            preferredModelID: preferredCodexModelID.isEmpty ? nil : preferredCodexModelID,
+            preferredReasoningEffort: preferredCodexReasoningEffort.isEmpty
+                ? nil
+                : preferredCodexReasoningEffort
+        )
+    }
+
+    private var selectedCodexProviderID: String {
+        codexProviderCatalog.resolvedProviderID(
+            preferredProviderID: preferredCodexProviderID.isEmpty ? nil : preferredCodexProviderID
+        )
+    }
+
+    private var selectedCodexProviderOption: CodexProviderOption? {
+        codexProviderCatalog.providers.first(where: { $0.id == selectedCodexProviderID })
+    }
+
+    private func codexProviderEndpointState(for provider: CodexProviderOption) -> CodexProviderEndpointState {
+        guard provider.requiresEndpointProbe else { return .available }
+        return codexProviderEndpointStates[provider.id] ?? .unknown
+    }
+
+    private func isCodexProviderAvailable(_ provider: CodexProviderOption) -> Bool {
+        guard provider.isSelectable else { return false }
+        return codexProviderEndpointState(for: provider) == .available
+    }
+
+    private func isCodexProviderMenuSelectable(_ provider: CodexProviderOption) -> Bool {
+        guard provider.isSelectable else { return false }
+        switch codexProviderEndpointState(for: provider) {
+        case .checking, .unavailable:
+            return false
+        case .unknown, .available:
+            return true
+        }
+    }
+
+    private func codexEndpointUnavailableMessage(for provider: CodexProviderOption) -> String {
+        String(
+            format: String.l10n("agent.workspace.runtime.codexEndpointUnavailable"),
+            locale: locale,
+            provider.displayName
+        )
+    }
+
+    private var codexCatalogTaskID: String {
+        "\(viewModel.selectedAgentID):\(activeRuntimeBackend.rawValue):\(selectedCodexProviderID)"
+    }
+
+    /// 目录失败时保留 Codex 服务端默认行为：UI 不回退展示 BYOK 模型，turn/start 也不
+    /// 发送 model/effort 覆盖。本机桥接端点是例外：必须先预检，避免 Codex 自己进入
+    /// 多轮网络重试；用户启动桥接服务后可从模型菜单点击重试。
+    @MainActor
+    private func loadCodexModelCatalogIfNeeded() async {
+        guard activeRuntimeBackend == .codexAppServer else { return }
+        isLoadingCodexModelCatalog = true
+        defer { isLoadingCodexModelCatalog = false }
+        codexModelCatalogError = nil
+        let providerID = selectedCodexProviderID
+        if let provider = selectedCodexProviderOption, provider.requiresEndpointProbe {
+            codexProviderEndpointStates[provider.id] = .checking
+            configureAgentRuntime()
+            let isAvailable = await CodexProviderEndpointProbe().isAvailable(provider)
+            guard !Task.isCancelled,
+                  activeRuntimeBackend == .codexAppServer,
+                  selectedCodexProviderID == providerID
+            else { return }
+            codexProviderEndpointStates[provider.id] = isAvailable ? .available : .unavailable
+            configureAgentRuntime()
+            guard isAvailable else {
+                codexModelCatalog = .empty
+                codexModelCatalogError = codexEndpointUnavailableMessage(for: provider)
+                return
+            }
+        }
+        do {
+            let client = try ExternalAgentRuntimePreferences.makeCodexModelCatalogClient(
+                providerID: providerID
+            )
+            let catalog = try await client.load()
+            guard !Task.isCancelled,
+                  activeRuntimeBackend == .codexAppServer,
+                  selectedCodexProviderID == providerID
+            else { return }
+            codexModelCatalog = catalog
+            if let selection = selectedCodexModelSelection {
+                preferredCodexModelID = selection.modelID
+                preferredCodexReasoningEffort = selection.reasoningEffort ?? ""
+            }
+            configureAgentRuntime()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, activeRuntimeBackend == .codexAppServer else { return }
+            codexModelCatalog = .empty
+            codexModelCatalogError = error.localizedDescription
+            configureAgentRuntime()
+        }
+    }
+
+    private var deepSeekProviderOptions: [DeepSeekRuntimeProviderOption] {
+        DeepSeekRuntimeProviderCatalog.providers(settings: dependencies.settings)
+    }
+
+    private var selectedDeepSeekSelection: DeepSeekRuntimeSelection? {
+        DeepSeekRuntimeProviderCatalog.resolvedSelection(
+            settings: dependencies.settings,
+            preferredProviderID: preferredDeepSeekProviderID.isEmpty ? nil : preferredDeepSeekProviderID,
+            preferredModelName: preferredDeepSeekModel,
+            preferredReasoningEffort: preferredDeepSeekReasoningEffort.isEmpty
+                ? nil
+                : preferredDeepSeekReasoningEffort
+        )
+    }
+
+    private var selectedBuiltinProviderProfile: AIProviderProfile? {
+        guard let model = viewModel.availableModels.first(where: { $0.id == viewModel.selectedModelID }) else {
+            return nil
+        }
+        return dependencies.settings.aiProviderProfiles.first(where: { $0.id == model.providerID })
+    }
+
+    private func normalizeRuntimeSelections() {
+        codexProviderCatalog = CodexProviderCatalog.load()
+        preferredCodexProviderID = selectedCodexProviderID
+        normalizeDeepSeekSelection()
+    }
+
+    private func normalizeDeepSeekSelection() {
+        guard let selection = selectedDeepSeekSelection else { return }
+        preferredDeepSeekProviderID = selection.provider.id
+        preferredDeepSeekModel = selection.model.name
+        preferredDeepSeekReasoningEffort = selection.reasoningEffort ?? ""
+    }
+
     private var selectedRuntimeBackend: AgentRuntimeBackend {
-        #if DEBUG
         guard dependencies.distributionGate.isAvailable(.externalAgentRuntime) else {
             return .builtinLoop
         }
         return AgentRuntimeBackend(rawValue: externalRuntimeBackendRawValue) ?? .builtinLoop
-        #else
-        // POC 不得因历史 UserDefaults 残留进入 Direct Release；产品化前只允许 Debug 装配。
-        return .builtinLoop
-        #endif
     }
 
-    /// Header 展示 policy 解析后的实际后端。显式选择不兼容外部后端时返回 nil，和
-    /// Router 的“禁止静默回退 Loop”语义保持一致。
-    private var resolvedRuntimeBackend: AgentRuntimeBackend? {
-        guard let definition = viewModel.selectedAgent else { return nil }
-        let preferredBackend = selectedRuntimeBackend
-        if definition.runtimePolicy.allowedBackends.contains(preferredBackend) {
-            return preferredBackend
+    /// 全局偏好只表达用户上一次选择；真正展示和执行的后端必须服从当前 Agent 契约。
+    private var activeRuntimeBackend: AgentRuntimeBackend {
+        viewModel.selectedAgent?.runtimePolicy.resolvedBackend(for: selectedRuntimeBackend)
+            ?? selectedRuntimeBackend
+    }
+
+    private var availableRuntimeBackends: [AgentRuntimeBackend] {
+        guard let policy = viewModel.selectedAgent?.runtimePolicy else {
+            return AgentRuntimeBackend.allCases
         }
-        guard preferredBackend == .builtinLoop else { return nil }
-        return definition.runtimePolicy.defaultBackend
+        return AgentRuntimeBackend.allCases.filter(policy.allowedBackends.contains)
     }
 
     private var availableAgentDefinitions: [AgentDefinition] {
-        guard selectedRuntimeBackend != .builtinLoop else { return BuiltInAgents.all }
-        return BuiltInAgents.all + ExternalAgentPOCAgentDefinitions.all
+        guard dependencies.distributionGate.isAvailable(.externalAgentRuntime) else {
+            return BuiltInAgents.all
+        }
+        return ExternalAgentDefinitions.all + BuiltInAgents.all
     }
 
     /// 模型提示词使用英文语言名，避免只支持中英文而让其它 App locale 静默回退英语。
@@ -303,12 +578,11 @@ struct AgentWorkspaceView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    agentSection("agent.workspace.section.discovery", agents: viewModel.agents.filter { ["github-weekly-report", "repo-alternatives"].contains($0.id) })
-                    agentSection("agent.workspace.section.digest", agents: viewModel.agents.filter { ["repo-insight", "release-watcher"].contains($0.id) })
-                    agentSection("agent.workspace.section.organize", agents: viewModel.agents.filter { ["overlap-scan", "untagged-tidy"].contains($0.id) })
-                    let externalAgents = viewModel.agents.filter { $0.runtimePolicy != .builtinOnly }
-                    if !externalAgents.isEmpty {
-                        agentSection("External Runtime POC", agents: externalAgents)
+                    ForEach(AgentWorkspaceTaxonomy.sections) { section in
+                        let agents = AgentWorkspaceTaxonomy.agents(in: section, from: viewModel.agents)
+                        if !agents.isEmpty {
+                            agentSection(section.titleKey, agents: agents)
+                        }
                     }
                     historySection
                 }
@@ -320,6 +594,16 @@ struct AgentWorkspaceView: View {
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
     }
 
+    /// 工作台胶囊标识（Beta / Preview 等），与左侧 Agent 列表行内 Preview 标识同构。
+    private func agentWorkspaceBadge(_ key: LocalizedStringKey) -> some View {
+        Text(key)
+            .font(agentFont(.caption2, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+    }
+
     private var railHeader: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
@@ -329,8 +613,11 @@ struct AgentWorkspaceView: View {
                     .frame(width: 28, height: 28)
                     .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("agent.workspace.title")
-                        .font(agentFont(.headline))
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("agent.workspace.title")
+                            .font(agentFont(.headline))
+                        agentWorkspaceBadge("agent.workspace.badge.beta")
+                    }
                     Text("agent.workspace.subtitle")
                         .font(agentFont(.caption))
                         .foregroundStyle(.secondary)
@@ -374,12 +661,7 @@ struct AgentWorkspaceView: View {
                             .lineLimit(1)
                         Spacer(minLength: 6)
                         if !agent.isEnabled {
-                            Text("agent.workspace.badge.preview")
-                                .font(agentFont(.caption2, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            agentWorkspaceBadge("agent.workspace.badge.preview")
                         }
                     }
 
@@ -435,11 +717,48 @@ struct AgentWorkspaceView: View {
                 .padding(11)
                 .background(Color(nsColor: .separatorColor).opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
             } else {
-                ForEach(viewModel.historyRuns) { run in
+                ForEach(AgentHistoryPresentation.visibleRuns(
+                    viewModel.historyRuns,
+                    isExpanded: isHistoryExpanded
+                )) { run in
                     historyRunButton(run)
+                }
+
+                if viewModel.historyRuns.count > AgentHistoryPresentation.collapsedLimit {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            isHistoryExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isHistoryExpanded ? "chevron.up" : "ellipsis.circle")
+                                .frame(width: 18)
+                            Text(historyDisclosureTitle)
+                                .font(agentFont(.caption, weight: .medium))
+                            Spacer()
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
                 }
             }
         }
+    }
+
+    private var historyDisclosureTitle: String {
+        if isHistoryExpanded {
+            return String.l10n("agent.workspace.history.collapse")
+        }
+        let remainingCount = viewModel.historyRuns.count - AgentHistoryPresentation.collapsedLimit
+        return String(
+            format: String.l10n("agent.workspace.history.moreFormat"),
+            locale: locale,
+            remainingCount
+        )
     }
 
     private func historyRunButton(_ run: AgentRunRecord) -> some View {
@@ -575,7 +894,7 @@ struct AgentWorkspaceView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            Text(resolvedRuntimeBackend?.displayName ?? "Runtime unavailable")
+            Text(activeRuntimeBackend.displayName)
                 .font(agentFont(.caption, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
@@ -640,10 +959,35 @@ struct AgentWorkspaceView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if viewModel.selectedModelID == nil {
+            if activeRuntimeBackend == .builtinLoop, viewModel.selectedModelID == nil {
                 Label("agent.workspace.model.required", systemImage: "sparkles")
                     .font(agentFont(.caption))
                     .foregroundStyle(.secondary)
+            } else if activeRuntimeBackend == .deepSeekHarness, selectedDeepSeekSelection == nil {
+                Label("agent.workspace.runtime.providerRequired", systemImage: "server.rack")
+                    .font(agentFont(.caption))
+                    .foregroundStyle(.secondary)
+            } else if activeRuntimeBackend == .codexAppServer,
+                      let credentialKey = selectedCodexProviderOption?.credentialEnvironmentKey {
+                Label(
+                    String(
+                        format: String.l10n("agent.workspace.runtime.codexCredentialBlocked"),
+                        locale: locale,
+                        credentialKey
+                    ),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(agentFont(.caption))
+                .foregroundStyle(.secondary)
+            } else if activeRuntimeBackend == .codexAppServer,
+                      let provider = selectedCodexProviderOption,
+                      codexProviderEndpointState(for: provider) == .unavailable {
+                Label(
+                    codexEndpointUnavailableMessage(for: provider),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(agentFont(.caption))
+                .foregroundStyle(.secondary)
             }
 
             AICommandTextEditor(
@@ -673,7 +1017,11 @@ struct AgentWorkspaceView: View {
                 .disabled(viewModel.isRunning || !viewModel.selectedAgentSupportsRepositorySelection)
                 .help("agent.workspace.repositoryPicker.title")
 
-                agentModelMenu
+                if dependencies.distributionGate.isAvailable(.externalAgentRuntime) {
+                    runtimeBackendMenu
+                }
+
+                agentRuntimeModelControls
 
                 if !viewModel.selectedRepoContexts.isEmpty,
                    case .weeklyHotspots = viewModel.selectedAgent?.workflow.repositoryContext {
@@ -1153,7 +1501,7 @@ struct AgentWorkspaceView: View {
 
     private var agentModelMenu: some View {
         Menu {
-            ForEach(viewModel.availableModels) { model in
+            ForEach(builtinModelsForSelectedProvider) { model in
                 Button {
                     viewModel.selectedModelID = model.id
                 } label: {
@@ -1173,6 +1521,304 @@ struct AgentWorkspaceView: View {
         .fixedSize()
         .disabled(viewModel.isRunning || viewModel.availableModels.isEmpty)
         .help("rag.workspace.composer.model")
+    }
+
+    private var builtinModelsForSelectedProvider: [AIModelDescriptor] {
+        guard let providerID = selectedBuiltinProviderProfile?.id else { return viewModel.availableModels }
+        return viewModel.availableModels.filter { $0.providerID == providerID }
+    }
+
+    private var builtinProviderMenu: some View {
+        Menu {
+            ForEach(dependencies.settings.aiProviderProfiles.filter(\.isVerifiedConfiguration)) { profile in
+                let firstModel = viewModel.availableModels.first(where: { $0.providerID == profile.id })
+                Button {
+                    if let firstModel { viewModel.selectedModelID = firstModel.id }
+                } label: {
+                    if profile.id == selectedBuiltinProviderProfile?.id {
+                        Label(profile.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(profile.displayName)
+                    }
+                }
+                .disabled(firstModel == nil)
+            }
+        } label: {
+            Label(selectedBuiltinProviderProfile?.displayName ?? "Provider", systemImage: "server.rack")
+                .font(agentFont(.caption, weight: .semibold))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning)
+        .help(String.l10n("agent.workspace.runtime.provider"))
+    }
+
+    /// Runtime 选择是 Direct 工作台的正式产品状态，和 Provider / Model 分开呈现。
+    /// App Store 不显示该入口，并由 DistributionGate 在路由层再次强制使用内置 Loop。
+    private var runtimeBackendMenu: some View {
+        Menu {
+            ForEach(availableRuntimeBackends, id: \.self) { backend in
+                Button {
+                    externalRuntimeBackendRawValue = backend.rawValue
+                } label: {
+                    if backend == activeRuntimeBackend {
+                        Label(backend.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(backend.displayName)
+                    }
+                }
+            }
+        } label: {
+            Label(activeRuntimeBackend.displayName, systemImage: "point.3.connected.trianglepath.dotted")
+                .font(agentFont(.caption, weight: .semibold))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning)
+        .help(String.l10n("agent.workspace.runtime.backend"))
+    }
+
+    @ViewBuilder
+    private var agentRuntimeModelControls: some View {
+        switch activeRuntimeBackend {
+        case .codexAppServer:
+            codexProviderMenu
+            if isLoadingCodexModelCatalog, codexModelCatalog.models.isEmpty {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            codexModelMenu
+            if let selectedModel = selectedCodexModelOption,
+               !selectedModel.supportedReasoningEfforts.isEmpty {
+                codexReasoningEffortMenu(selectedModel)
+            }
+        case .deepSeekHarness:
+            deepSeekProviderMenu
+            deepSeekModelMenu
+            if let model = selectedDeepSeekSelection?.model,
+               !model.supportedReasoningEfforts.isEmpty {
+                deepSeekReasoningEffortMenu(model)
+            }
+        case .builtinLoop:
+            builtinProviderMenu
+            agentModelMenu
+        }
+    }
+
+    private var codexProviderMenu: some View {
+        Menu {
+            ForEach(codexProviderCatalog.providers) { provider in
+                Button {
+                    preferredCodexProviderID = provider.id
+                } label: {
+                    if provider.id == selectedCodexProviderID {
+                        Label(provider.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(provider.displayName)
+                    }
+                }
+                .disabled(!isCodexProviderMenuSelectable(provider))
+                .help(
+                    provider.credentialEnvironmentKey.map { key in
+                        String(
+                            format: String.l10n("agent.workspace.runtime.codexCredentialBlocked"),
+                            locale: locale,
+                            key
+                        )
+                    } ?? (codexProviderEndpointState(for: provider) == .unavailable
+                        ? codexEndpointUnavailableMessage(for: provider)
+                        : provider.displayName)
+                )
+            }
+        } label: {
+            Label(
+                selectedCodexProviderOption?.displayName ?? selectedCodexProviderID,
+                systemImage: selectedCodexProviderOption.map(isCodexProviderAvailable) == false
+                    ? "exclamationmark.triangle"
+                    : "server.rack"
+            )
+                .font(agentFont(.caption, weight: .semibold))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning)
+        .help(String.l10n("agent.workspace.runtime.codexProviderHelp"))
+    }
+
+    private var deepSeekProviderMenu: some View {
+        Menu {
+            if deepSeekProviderOptions.isEmpty {
+                Text("agent.workspace.runtime.noVerifiedProvider")
+            } else {
+                ForEach(deepSeekProviderOptions) { provider in
+                    Button {
+                        preferredDeepSeekProviderID = provider.id
+                        preferredDeepSeekModel = provider.models.first?.name ?? ""
+                        preferredDeepSeekReasoningEffort = ""
+                    } label: {
+                        if provider.id == selectedDeepSeekSelection?.provider.id {
+                            Label(provider.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(provider.displayName)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                selectedDeepSeekSelection?.provider.displayName ?? String.l10n("agent.workspace.runtime.provider"),
+                systemImage: "server.rack"
+            )
+            .font(agentFont(.caption, weight: .semibold))
+            .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning || deepSeekProviderOptions.isEmpty)
+        .help(String.l10n("agent.workspace.runtime.deepSeekProviderHelp"))
+    }
+
+    private var deepSeekModelMenu: some View {
+        Menu {
+            ForEach(selectedDeepSeekSelection?.provider.models ?? []) { model in
+                Button {
+                    preferredDeepSeekModel = model.name
+                    preferredDeepSeekReasoningEffort = ""
+                } label: {
+                    if model.name == selectedDeepSeekSelection?.model.name {
+                        Label(model.name, systemImage: "checkmark")
+                    } else {
+                        Text(model.name)
+                    }
+                }
+            }
+        } label: {
+            Label(selectedDeepSeekSelection?.model.name ?? "—", systemImage: "sparkles")
+                .font(agentFont(.caption, weight: .semibold))
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning || selectedDeepSeekSelection == nil)
+        .help(String.l10n("rag.workspace.composer.model"))
+    }
+
+    private func deepSeekReasoningEffortMenu(_ model: DeepSeekRuntimeModelOption) -> some View {
+        Menu {
+            Button {
+                preferredDeepSeekReasoningEffort = ""
+            } label: {
+                if preferredDeepSeekReasoningEffort.isEmpty {
+                    Label("agent.workspace.runtime.default", systemImage: "checkmark")
+                } else {
+                    Text("agent.workspace.runtime.default")
+                }
+            }
+            Divider()
+            ForEach(model.supportedReasoningEfforts, id: \.self) { effort in
+                Button {
+                    preferredDeepSeekReasoningEffort = effort
+                } label: {
+                    if effort == preferredDeepSeekReasoningEffort {
+                        Label(reasoningEffortDisplayName(effort), systemImage: "checkmark")
+                    } else {
+                        Text(reasoningEffortDisplayName(effort))
+                    }
+                }
+            }
+        } label: {
+            Label(
+                preferredDeepSeekReasoningEffort.isEmpty
+                    ? String.l10n("agent.workspace.runtime.default")
+                    : reasoningEffortDisplayName(preferredDeepSeekReasoningEffort),
+                systemImage: "brain"
+            )
+            .font(agentFont(.caption, weight: .semibold))
+            .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning)
+    }
+
+    private var selectedCodexModelOption: CodexModelOption? {
+        guard let selection = selectedCodexModelSelection else { return nil }
+        return codexModelCatalog.models.first(where: { $0.id == selection.modelID })
+    }
+
+    private var codexModelMenu: some View {
+        Menu {
+            if codexModelCatalog.models.isEmpty {
+                Button("action.retry") {
+                    Task { await loadCodexModelCatalogIfNeeded() }
+                }
+                .disabled(isLoadingCodexModelCatalog)
+            } else {
+                ForEach(codexModelCatalog.models) { model in
+                    Button {
+                        preferredCodexModelID = model.id
+                        let selection = codexModelCatalog.resolvedSelection(
+                            preferredModelID: model.id,
+                            preferredReasoningEffort: preferredCodexReasoningEffort
+                        )
+                        preferredCodexReasoningEffort = selection?.reasoningEffort ?? ""
+                    } label: {
+                        if model.id == selectedCodexModelSelection?.modelID {
+                            Label(model.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(model.displayName)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                selectedCodexModelSelection?.displayName ?? "Codex",
+                systemImage: codexModelCatalogError == nil ? "sparkles" : "exclamationmark.triangle"
+            )
+            .font(agentFont(.caption, weight: .semibold))
+            .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning)
+        .help(codexModelCatalogError ?? String.l10n("rag.workspace.composer.model"))
+    }
+
+    private func codexReasoningEffortMenu(_ model: CodexModelOption) -> some View {
+        Menu {
+            ForEach(model.supportedReasoningEfforts) { effort in
+                Button {
+                    preferredCodexReasoningEffort = effort.reasoningEffort
+                } label: {
+                    if effort.reasoningEffort == selectedCodexModelSelection?.reasoningEffort {
+                        Label(reasoningEffortDisplayName(effort.reasoningEffort), systemImage: "checkmark")
+                    } else {
+                        Text(reasoningEffortDisplayName(effort.reasoningEffort))
+                    }
+                }
+            }
+        } label: {
+            Label(
+                reasoningEffortDisplayName(selectedCodexModelSelection?.reasoningEffort ?? ""),
+                systemImage: "brain"
+            )
+            .font(agentFont(.caption, weight: .semibold))
+            .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(viewModel.isRunning)
+    }
+
+    private func reasoningEffortDisplayName(_ effort: String) -> String {
+        switch effort.lowercased() {
+        case "xhigh": "X-High"
+        default: effort.capitalized
+        }
     }
 
     private var explicitModeMenu: some View {

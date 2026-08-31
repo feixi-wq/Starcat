@@ -8,16 +8,17 @@
 #   ./clone-all.sh --help   显示帮助
 #
 # 支撑项目统一放在 supports/ 目录下:
-#   - 6 个 Go API 服务(starcat-*-api)
+#   - 6 个可聚合 Go API + 独立 collection/license API
 #   - starcat-pro / starcat-license-api / starcat-localization
 #   - starcat-skill / starcat-cli / starcat-alfred-workflow / starcat-utools-plugin
 #   - starcat-raycast-extension
+#   - starcat-recsys-trainer (🔒 私有)
 #   - homebrew-starcat-cli
 #   - homebrew-starcat
-#   - .github / starcat-docs / starcat-site
+#   - .github / starcat-docs / starcat-site / starcat-admin-console
 #   - extensions/ 下 2 个浏览器插件
 #
-# 前置条件: git 可用; starcat-license-api 是私有仓库,需要 gh CLI 或 SSH key 已配置
+# 前置条件: git 可用; 私有仓库需要 gh CLI 或 SSH key 已配置
 # =============================================================================
 
 set -euo pipefail
@@ -62,11 +63,12 @@ if $SHOW_HELP; then
   echo "  --help, -h  显示此帮助"
   echo ""
   echo "支撑项目列表:"
-  echo "  6 个 Go API 服务  (starcat-*-api)"
+  echo "  6 个可聚合 Go API 服务  (starcat-*-api)"
   echo "  starcat-api-kit    Go API 共享工具包"
   echo "  starcat-api        六业务 API 聚合服务 (🔒 私有)"
   echo "  starcat-pro        公开支持与发布说明"
   echo "  starcat-license-api  Direct 分发授权 API (🔒 私有)"
+  echo "  starcat-collection-api  公开 Star 快照收集 API (🔒 私有)"
   echo "  starcat-localization  本地化资源"
   echo "  homebrew-starcat    Starcat App Homebrew Cask tap"
   echo "  starcat-skill       Starcat AI Agent Skill"
@@ -74,10 +76,12 @@ if $SHOW_HELP; then
   echo "  starcat-alfred-workflow  Alfred 仓库搜索 Workflow"
   echo "  starcat-utools-plugin  uTools 仓库搜索插件"
   echo "  starcat-raycast-extension  Raycast 仓库搜索扩展"
+  echo "  starcat-recsys-trainer  推荐数据与离线训练管道 (🔒 私有)"
   echo "  homebrew-starcat-cli  Starcat CLI Homebrew Formula tap"
   echo "  .github             组织主页与共享社区健康文件"
   echo "  starcat-docs        Starcat 官方文档"
   echo "  starcat-site        Starcat 官方网站源码"
+  echo "  starcat-admin-console  Starcat 本地管理控制台"
   echo "  starcat-chrome-plugin     Chrome 浏览器插件"
   echo "  starcat-safari-plugin     Safari 浏览器插件"
   exit 0
@@ -99,7 +103,9 @@ PROJECTS=(
   ".github|https://github.com/starcat-app/.github.git|组织主页与共享社区健康文件"
   "starcat-docs|https://github.com/starcat-app/starcat-docs.git|Starcat 官方文档"
   "starcat-site|https://github.com/starcat-app/starcat-site.git|Starcat 官方网站源码"
+  "starcat-admin-console|https://github.com/starcat-app/starcat-admin-console.git|Starcat 本地管理控制台"
   "starcat-license-api|https://github.com/starcat-app/starcat-license-api.git|Direct 分发授权 API 🔒"
+  "starcat-collection-api|https://github.com/starcat-app/starcat-collection-api.git|公开 Star 快照收集 API 🔒"
   "starcat-localization|https://github.com/starcat-app/starcat-localization.git|本地化资源"
   "homebrew-starcat|https://github.com/starcat-app/homebrew-starcat.git|Starcat App Homebrew Cask tap"
   "starcat-skill|https://github.com/starcat-app/starcat-skill.git|Starcat AI Agent Skill"
@@ -107,6 +113,7 @@ PROJECTS=(
   "starcat-alfred-workflow|https://github.com/starcat-app/starcat-alfred-workflow.git|Alfred 仓库搜索 Workflow"
   "starcat-utools-plugin|https://github.com/starcat-app/starcat-utools-plugin.git|uTools 仓库搜索插件"
   "starcat-raycast-extension|https://github.com/starcat-app/starcat-raycast-extension.git|Raycast 仓库搜索扩展"
+  "starcat-recsys-trainer|https://github.com/starcat-app/starcat-recsys-trainer.git|推荐数据与离线训练管道 🔒"
   "homebrew-starcat-cli|https://github.com/starcat-app/homebrew-starcat-cli.git|Starcat CLI Homebrew Formula tap"
   "extensions/starcat-chrome-plugin|https://github.com/starcat-app/starcat-chrome-plugin.git|Chrome 浏览器插件"
   "extensions/starcat-safari-plugin|https://github.com/starcat-app/starcat-safari-plugin.git|Safari 浏览器插件"
@@ -176,7 +183,7 @@ for entry in "${PROJECTS[@]}"; do
         ((SUCCESS++))
       else
         echo -e "    ${RED}✗ clone 失败,请检查网络或仓库权限${NC}"
-        echo -e "    ${YELLOW}  提示: starcat-license-api 是私有仓库,需 gh auth login 或配置 SSH key${NC}"
+        echo -e "    ${YELLOW}  提示: 私有仓库需 gh auth login 或配置 SSH key${NC}"
         ((FAILED++))
       fi
     fi
@@ -195,7 +202,7 @@ print_separator
 
 if [[ $FAILED -gt 0 ]]; then
   echo ""
-  echo -e "${YELLOW}提示: 有项目拉取失败。对于私有仓库 (starcat-license-api),确保:${NC}"
+  echo -e "${YELLOW}提示: 有项目拉取失败。对于私有仓库,确保:${NC}"
   echo -e "  1. gh CLI 已安装并登录: ${CYAN}gh auth login${NC}"
   echo -e "  2. 或已配置 SSH key:   ${CYAN}ssh -T git@github.com${NC}"
 fi

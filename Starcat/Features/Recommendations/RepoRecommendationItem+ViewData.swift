@@ -36,7 +36,7 @@ extension RepoRecommendationItem {
             avatarURL: nil,
             description: description,
             language: language,
-            starsCount: stars,
+            starsCount: registry.displayedStarsCount(base: stars, ghRepoId: repoID),
             forksCount: forks,
             isArchived: archived,
             isFork: false,
@@ -59,7 +59,10 @@ extension RepoRecommendationItem {
     /// 直接调用 `SemanticScoreBadge(score:reason:)` 的扩展 init 即可（它内部会合成 hit），
     /// 这里是中间步骤保留：如果未来推荐需要在卡片上直接拿 hit 做排序 / 过滤，扩展点更直观。
     func asSemanticSearchHit() -> SemanticSearchHit {
-        let clampedScore = max(0, min(1, score))
+        // 自研模型的 raw score 是带 support shrinkage 的排序分，不能与 SimRepo
+        // 向量相似度直接比较。新 Bundle 返回模型全局百分位；旧 Bundle / v1 则
+        // 回退原分，保证客户端对增量字段前向兼容。
+        let clampedScore = max(0, min(1, displayScore ?? score))
         let tier: Int
         switch clampedScore {
         case 0.85...: tier = 4
@@ -81,14 +84,16 @@ extension RepoRecommendationItem {
             score: score,
             displayScore: clampedScore,
             tier: tier,
-            reason: reasonText
+            // 百分比是模型内校准后的相对强度而非统计置信度；tooltip 先给稳定的
+            // 本地化语义，再附加服务端的模型理由供诊断。
+            reason: String.l10n("repo.recommendations.empty.info") + " · " + reasonText
         )
     }
 
     /// hover tooltip 文案：取 reasons[0]（后端给的最强推荐理由），为空则用通用文案。
     var reasonText: String {
         if let first = reasons.first, !first.isEmpty { return first }
-        return "repo.recommendations.open"
+        return String.l10n("repo.recommendations.open")
     }
 
     /// 拆分 `owner/repo` 格式的 fullName。

@@ -896,6 +896,14 @@ final class AppSettings {
         didSet { persistBool(key: Keys.openFirstDetailOnCategoryChange, value: openFirstDetailOnCategoryChange) }
     }
 
+    /// README 里的同仓 Markdown 链接是否在 App 内打开。
+    ///
+    /// 默认 false：保持「点击即进浏览器」的现有行为，避免用户在没看到开关前
+    /// 被突然改掉的导航吓到。打开后才拦截当前仓库的 `.md` / `.markdown` 链接。
+    var openRepositoryMarkdownInApp: Bool {
+        didSet { persistBool(key: Keys.openRepositoryMarkdownInApp, value: openRepositoryMarkdownInApp) }
+    }
+
     /// AI 服务商配置。API Key 不进 UserDefaults，单独走 KeychainManager 的加密文件。
     var aiProvider: AIServiceProvider {
         didSet { persist(key: Keys.aiProvider, value: aiProvider.rawValue) }
@@ -1169,6 +1177,18 @@ final class AppSettings {
         didSet { persistBool(key: Keys.hideDockIcon, value: hideDockIcon) }
     }
 
+    /// 是否允许 Starcat 把全部 starred repositories（含 private 与用户笔记）写入 Spotlight。
+    ///
+    /// 默认关闭，必须由用户在设置中明确授权。开关变化通过通知交给索引服务处理，
+    /// AppSettings 本身不直接触碰 Core Spotlight，避免偏好层承担系统副作用。
+    var spotlightSearchEnabled: Bool {
+        didSet {
+            persistBool(key: Keys.spotlightSearchEnabled, value: spotlightSearchEnabled)
+            guard oldValue != spotlightSearchEnabled else { return }
+            NotificationCenter.default.post(name: .spotlightSearchPreferenceDidChange, object: nil)
+        }
+    }
+
     /// 开启后 AI 多行输入必须按 Command+Return 才发送；普通 Return 始终换行。
     /// 这是输入行为偏好，不属于应用命令快捷键，不受下方总开关或逐项开关影响。
     var aiChatRequiresCommandReturn: Bool {
@@ -1189,13 +1209,22 @@ final class AppSettings {
         didSet { persistBool(key: Keys.globalSearchShortcutEnabled, value: globalSearchShortcutEnabled) }
     }
 
-    /// 列表 toolbar 常规搜索快捷键，默认 Command+F。展开 SmartSearchField 并聚焦输入框。
+    /// 列表 toolbar 常规搜索快捷键，默认 Shift+Command+F。展开 SmartSearchField 并聚焦输入框。
     var regularSearchShortcut: KeyboardShortcutConfiguration {
         didSet { persistJSON(key: Keys.regularSearchShortcut, value: regularSearchShortcut) }
     }
 
     var regularSearchShortcutEnabled: Bool {
         didSet { persistBool(key: Keys.regularSearchShortcutEnabled, value: regularSearchShortcutEnabled) }
+    }
+
+    /// README 页内查找快捷键，默认 Command+F。与列表常规搜索拆开，不再按焦点分流。
+    var readmeFindShortcut: KeyboardShortcutConfiguration {
+        didSet { persistJSON(key: Keys.readmeFindShortcut, value: readmeFindShortcut) }
+    }
+
+    var readmeFindShortcutEnabled: Bool {
+        didSet { persistBool(key: Keys.readmeFindShortcutEnabled, value: readmeFindShortcutEnabled) }
     }
 
     /// 刷新当前中栏列表或右栏详情的快捷键，默认 Command+R。
@@ -1260,6 +1289,13 @@ final class AppSettings {
     /// MCP Service 启动失败时通知。正常启动 / 停止不通知。
     var mcpIssueNotificationsEnabled: Bool {
         didSet { persistBool(key: Keys.mcpIssueNotificationsEnabled, value: mcpIssueNotificationsEnabled) }
+    }
+
+    // MARK: - 活动（2026-08-23）
+
+    /// 通知详情是否混入 GitHub Issue 事件。默认关闭，只显示评论。
+    var githubIssueEventTimelineEnabled: Bool {
+        didSet { persistBool(key: Keys.githubIssueEventTimelineEnabled, value: githubIssueEventTimelineEnabled) }
     }
 
     // MARK: - 诊断 / 匿名遥测（2026-06-30）
@@ -1477,6 +1513,17 @@ final class AppSettings {
         didSet { persistJSON(key: Keys.autoTidySettings, value: autoTidySettings) }
     }
 
+    /// GitHub Lists 后台自动分组偏好。它会触发 GitHub 远端写入，因此必须与仅写本地
+    /// 标签/摘要的 `autoTidySettings` 使用不同 key，避免一个 Toggle 改动另一项能力。
+    var githubStarListAutoGroupingSettings: GitHubStarListAutoGroupingSettings {
+        didSet {
+            persistJSON(
+                key: Keys.githubStarListAutoGroupingSettings,
+                value: githubStarListAutoGroupingSettings
+            )
+        }
+    }
+
     // MARK: - 第三方服务自定义 URL（2026-06-08 新增）
 
     /// 第三方后端服务（Trending / Weekly / Sharing / Wiki）的用户自定义 URL 字典。
@@ -1687,6 +1734,9 @@ final class AppSettings {
         self.openFirstDetailOnCategoryChange = defaults.object(
             forKey: Keys.openFirstDetailOnCategoryChange
         ) as? Bool ?? false
+        self.openRepositoryMarkdownInApp = defaults.object(
+            forKey: Keys.openRepositoryMarkdownInApp
+        ) as? Bool ?? false
 
         let aiProviderRaw = defaults.string(forKey: Keys.aiProvider)
         let resolvedAIProvider = aiProviderRaw.flatMap(AIServiceProvider.init(rawValue:)) ?? .openAICompatible
@@ -1860,10 +1910,12 @@ final class AppSettings {
         // 缺失值时默认 false(动画全开),老用户首启不受影响。
         self.disableAnimations = defaults.object(forKey: Keys.disableAnimations) as? Bool ?? false
         self.hideDockIcon = defaults.object(forKey: Keys.hideDockIcon) as? Bool ?? false
+        self.spotlightSearchEnabled = defaults.object(forKey: Keys.spotlightSearchEnabled) as? Bool ?? false
         self.aiChatRequiresCommandReturn = defaults.object(forKey: Keys.aiChatRequiresCommandReturn) as? Bool ?? false
         self.keyboardShortcutsEnabled = defaults.object(forKey: Keys.keyboardShortcutsEnabled) as? Bool ?? true
         self.globalSearchShortcutEnabled = defaults.object(forKey: Keys.globalSearchShortcutEnabled) as? Bool ?? true
         self.regularSearchShortcutEnabled = defaults.object(forKey: Keys.regularSearchShortcutEnabled) as? Bool ?? true
+        self.readmeFindShortcutEnabled = defaults.object(forKey: Keys.readmeFindShortcutEnabled) as? Bool ?? true
         self.refreshCurrentContentShortcutEnabled = defaults.object(
             forKey: Keys.refreshCurrentContentShortcutEnabled
         ) as? Bool ?? true
@@ -1878,6 +1930,11 @@ final class AppSettings {
         let storedRegularSearchShortcut = Self.decodeJSON(
             KeyboardShortcutConfiguration.self,
             key: Keys.regularSearchShortcut,
+            defaults: defaults
+        )
+        let storedReadmeFindShortcut = Self.decodeJSON(
+            KeyboardShortcutConfiguration.self,
+            key: Keys.readmeFindShortcut,
             defaults: defaults
         )
         let storedRefreshShortcut = Self.decodeJSON(
@@ -1899,9 +1956,20 @@ final class AppSettings {
         let resolvedSearchShortcut = storedSearchShortcut.flatMap {
             $0.validationError == nil ? $0 : nil
         } ?? .globalSearchDefault
-        let resolvedRegularSearchShortcut = storedRegularSearchShortcut.flatMap {
+        let resolvedRegularSearchShortcut: KeyboardShortcutConfiguration = {
+            guard let stored = storedRegularSearchShortcut, stored.validationError == nil else {
+                return .regularSearchDefault
+            }
+            // 旧默认是 ⌘F。拆出 README 搜索后列表搜索改成 ⌘⇧F；仍存着旧默认的用户视为未自定义，
+            // 否则会和新的 README ⌘F 撞车，把六项一起重置。
+            if stored == KeyboardShortcutConfiguration.legacyRegularSearchDefault {
+                return .regularSearchDefault
+            }
+            return stored
+        }()
+        let resolvedReadmeFindShortcut = storedReadmeFindShortcut.flatMap {
             $0.validationError == nil ? $0 : nil
-        } ?? .regularSearchDefault
+        } ?? StarcatShortcutCatalog.readmeFindDefault
         let resolvedRefreshShortcut = storedRefreshShortcut.flatMap {
             $0.validationError == nil ? $0 : nil
         } ?? StarcatShortcutCatalog.refreshCurrentContentDefault
@@ -1915,23 +1983,26 @@ final class AppSettings {
         let resolvedShortcuts = [
             resolvedSearchShortcut,
             resolvedRegularSearchShortcut,
+            resolvedReadmeFindShortcut,
             resolvedRefreshShortcut,
             resolvedKnowledgeRAGShortcut,
             resolvedSelectedRepoAIShortcut
         ]
 
-        // 五项应用命令始终保持唯一，即使某项暂时关闭也不能占用另一项键位。
+        // 六项应用命令始终保持唯一，即使某项暂时关闭也不能占用另一项键位。
         // 这样重新开启时不会突然产生两个命令竞争；遇到手工篡改或旧版本重复值时，
-        // 五项一起恢复默认，比静默偏袒其中一个动作更可预测。
+        // 六项一起恢复默认，比静默偏袒其中一个动作更可预测。
         if Set(resolvedShortcuts).count != resolvedShortcuts.count {
             self.globalSearchShortcut = .globalSearchDefault
             self.regularSearchShortcut = .regularSearchDefault
+            self.readmeFindShortcut = StarcatShortcutCatalog.readmeFindDefault
             self.refreshCurrentContentShortcut = StarcatShortcutCatalog.refreshCurrentContentDefault
             self.knowledgeRAGShortcut = StarcatShortcutCatalog.openKnowledgeRAGDefault
             self.selectedRepoAIShortcut = StarcatShortcutCatalog.openSelectedRepoAIDefault
         } else {
             self.globalSearchShortcut = resolvedSearchShortcut
             self.regularSearchShortcut = resolvedRegularSearchShortcut
+            self.readmeFindShortcut = resolvedReadmeFindShortcut
             self.refreshCurrentContentShortcut = resolvedRefreshShortcut
             self.knowledgeRAGShortcut = resolvedKnowledgeRAGShortcut
             self.selectedRepoAIShortcut = resolvedSelectedRepoAIShortcut
@@ -1942,6 +2013,7 @@ final class AppSettings {
         self.batchAINotificationsEnabled = defaults.object(forKey: Keys.batchAINotificationsEnabled) as? Bool ?? true
         self.syncIssueNotificationsEnabled = defaults.object(forKey: Keys.syncIssueNotificationsEnabled) as? Bool ?? true
         self.mcpIssueNotificationsEnabled = defaults.object(forKey: Keys.mcpIssueNotificationsEnabled) as? Bool ?? true
+        self.githubIssueEventTimelineEnabled = defaults.object(forKey: Keys.githubIssueEventTimelineEnabled) as? Bool ?? false
         self.telemetryEnabled = defaults.object(forKey: Keys.telemetryEnabled) as? Bool ?? false
         self.mcpServiceEnabled = defaults.object(forKey: Keys.mcpServiceEnabled) as? Bool ?? false
         let storedMCPPort = defaults.object(forKey: Keys.mcpServicePort) as? Int ?? Self.defaultMCPServicePort
@@ -1955,6 +2027,23 @@ final class AppSettings {
         // HOM-126：自动整理偏好。缺失时回落到 `AutoTidySettings.default`（总开关关 +
         // 启动/同步触发 + 50 个 + 最近 star + 仅标签 + 90% 阈值），与任务描述一致。
         self.autoTidySettings = Self.decodeJSON(AutoTidySettings.self, key: Keys.autoTidySettings, defaults: defaults) ?? .default
+        let storedGroupingSettings = Self.decodeJSON(
+            GitHubStarListAutoGroupingSettings.self,
+            key: Keys.githubStarListAutoGroupingSettings,
+            defaults: defaults
+        )
+        let migratedGroupingSettings = GitHubStarListAutoGroupingSettings.migratedFromLegacyAutoTidyJSON(
+            defaults.string(forKey: Keys.autoTidySettings)
+        )
+        let resolvedGroupingSettings = storedGroupingSettings
+            ?? migratedGroupingSettings
+            ?? .default
+        self.githubStarListAutoGroupingSettings = resolvedGroupingSettings
+        // 迁移只写新 key，不回写旧 AutoTidy JSON；新类型解码本来就会忽略遗留字段。
+        if storedGroupingSettings == nil,
+           let data = try? JSONEncoder().encode(resolvedGroupingSettings) {
+            defaults.set(String(decoding: data, as: UTF8.self), forKey: Keys.githubStarListAutoGroupingSettings)
+        }
 
         // AI 向量索引（2026-06-12）：截断长度 / 阈值预设 / 主体阈值 / 笔记阈值 / 自动预拉。
         // 缺失值兜底：截断 12000、预设 .standard、body 10%、notes 20%、自动预拉 false。
@@ -2055,6 +2144,7 @@ final class AppSettings {
         lastActivityCategoryRaw = ""
         listPreferenceValues = [:]
         openFirstDetailOnCategoryChange = false
+        openRepositoryMarkdownInApp = false
 
         let provider = AIServiceProvider.openAICompatible
         let baseURL = provider.defaultBaseURL
@@ -2103,12 +2193,15 @@ final class AppSettings {
         readmeTranslationMode = .segmented
         disableAnimations = false
         hideDockIcon = false
+        spotlightSearchEnabled = false
         aiChatRequiresCommandReturn = false
         keyboardShortcutsEnabled = true
         globalSearchShortcut = .globalSearchDefault
         globalSearchShortcutEnabled = true
         regularSearchShortcut = .regularSearchDefault
         regularSearchShortcutEnabled = true
+        readmeFindShortcut = StarcatShortcutCatalog.readmeFindDefault
+        readmeFindShortcutEnabled = true
         refreshCurrentContentShortcut = StarcatShortcutCatalog.refreshCurrentContentDefault
         refreshCurrentContentShortcutEnabled = true
         knowledgeRAGShortcut = StarcatShortcutCatalog.openKnowledgeRAGDefault
@@ -2121,6 +2214,7 @@ final class AppSettings {
         batchAINotificationsEnabled = true
         syncIssueNotificationsEnabled = true
         mcpIssueNotificationsEnabled = true
+        githubIssueEventTimelineEnabled = false
         telemetryEnabled = false
         mcpServiceEnabled = false
         mcpServicePort = Self.defaultMCPServicePort
@@ -2131,6 +2225,7 @@ final class AppSettings {
         mcpAllowDestructiveWrites = false
         isProUser = false
         autoTidySettings = .default
+        githubStarListAutoGroupingSettings = .default
         aiReadmeTruncateLength = ReadmePreprocessor.defaultMaxLength
         applyAIIndexPreset(.standard)
         aiIndexAutoPrefetchEnabled = false
@@ -2500,6 +2595,7 @@ final class AppSettings {
         static let lastActivityCategory = "settings.lastActivityCategory"
         static let listPreferenceValues = "settings.listPreferences.values.v1"
         static let openFirstDetailOnCategoryChange = "settings.detail.openFirstOnCategoryChange.v1"
+        static let openRepositoryMarkdownInApp = "settings.readme.openRepositoryMarkdownInApp.v1"
         static let aiProvider = "settings.ai.provider"
         static let aiBaseURL = "settings.ai.baseURL"
         static let aiChatModel = "settings.ai.chatModel"
@@ -2534,12 +2630,15 @@ final class AppSettings {
         static let isProUser = "settings.pro.isProUser"  // HOM-151
         static let disableAnimations = "settings.general.disableAnimations.v1"  // 2026-06-15
         static let hideDockIcon = "settings.general.hideDockIcon.v1"  // 2026-07-02
+        static let spotlightSearchEnabled = "settings.general.spotlightSearch.enabled.v1"
         static let aiChatRequiresCommandReturn = "settings.general.shortcuts.aiCommandReturn.v1"
         static let keyboardShortcutsEnabled = "settings.general.shortcuts.enabled.v1"
         static let globalSearchShortcut = "settings.general.shortcuts.globalSearch.v1"
         static let globalSearchShortcutEnabled = "settings.general.shortcuts.globalSearch.enabled.v1"
         static let regularSearchShortcut = "settings.general.shortcuts.regularSearch.v1"
         static let regularSearchShortcutEnabled = "settings.general.shortcuts.regularSearch.enabled.v1"
+        static let readmeFindShortcut = "settings.general.shortcuts.readmeFind.v1"
+        static let readmeFindShortcutEnabled = "settings.general.shortcuts.readmeFind.enabled.v1"
         static let refreshCurrentContentShortcut = "settings.general.shortcuts.refreshCurrentContent.v1"
         static let refreshCurrentContentShortcutEnabled = "settings.general.shortcuts.refreshCurrentContent.enabled.v1"
         static let knowledgeRAGShortcut = "settings.general.shortcuts.knowledgeRAG.v1"
@@ -2552,6 +2651,7 @@ final class AppSettings {
         static let batchAINotificationsEnabled = "settings.notifications.batchAI.enabled.v1"
         static let syncIssueNotificationsEnabled = "settings.notifications.syncIssues.enabled.v1"
         static let mcpIssueNotificationsEnabled = "settings.notifications.mcpIssues.enabled.v1"
+        static let githubIssueEventTimelineEnabled = "settings.activity.issueEvents.enabled.v1"
         static let telemetryEnabled = "settings.telemetry.enabled.v1"
         static let mcpServiceEnabled = "settings.mcp.enabled.v1"
         static let mcpServicePort = "settings.mcp.port.v1"
@@ -2561,6 +2661,7 @@ final class AppSettings {
         static let mcpAllowBatchWrites = "settings.mcp.allowBatchWrites.v1"
         static let mcpAllowDestructiveWrites = "settings.mcp.allowDestructiveWrites.v1"
         static let autoTidySettings = "settings.ai.autoTidy.v1"  // HOM-126
+        static let githubStarListAutoGroupingSettings = "settings.ai.githubStarListAutoGrouping.v1"
         static let customServiceURLs = "settings.services.customURLs.v1"  // 2026-06-08
         // R-01 v1.2 2026-06-09 引入；2026-06-10 迁 Keychain。
         // 本 key 仅作「启动期一次性迁移识别」用，迁移完成后会被 init 内的 removeObject 清空。
@@ -2602,6 +2703,7 @@ final class AppSettings {
             lastActivityCategory,
             listPreferenceValues,
             openFirstDetailOnCategoryChange,
+            openRepositoryMarkdownInApp,
             aiProvider,
             aiBaseURL,
             aiChatModel,
@@ -2641,6 +2743,8 @@ final class AppSettings {
             globalSearchShortcutEnabled,
             regularSearchShortcut,
             regularSearchShortcutEnabled,
+            readmeFindShortcut,
+            readmeFindShortcutEnabled,
             refreshCurrentContentShortcut,
             refreshCurrentContentShortcutEnabled,
             knowledgeRAGShortcut,
@@ -2653,6 +2757,7 @@ final class AppSettings {
             batchAINotificationsEnabled,
             syncIssueNotificationsEnabled,
             mcpIssueNotificationsEnabled,
+            githubIssueEventTimelineEnabled,
             telemetryEnabled,
             mcpServiceEnabled,
             mcpServicePort,
@@ -2662,6 +2767,7 @@ final class AppSettings {
             mcpAllowBatchWrites,
             mcpAllowDestructiveWrites,
             autoTidySettings,
+            githubStarListAutoGroupingSettings,
             customServiceURLs,
             customServiceAPIKeys,
             aiReadmeTruncateLength,

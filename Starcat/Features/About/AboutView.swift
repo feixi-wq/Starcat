@@ -321,8 +321,14 @@ private struct SupportPage: View {
                     title: "about.support.issues.title",
                     detail: "about.support.issues.detail",
                     systemImage: "exclamationmark.bubble",
-                    // 源码仓库保持私有，用户反馈统一进入公开的支持仓库。
+                    // 用户反馈仍统一进入支持仓库，避免把产品支持请求混入源码 Issue。
                     url: URL(string: "https://github.com/starcat-app/starcat-pro/issues")
+                )
+                SupportRow(
+                    title: "about.support.openSource.title",
+                    detail: "about.support.openSource.detail",
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    url: AppWebsiteLinks.sourceRepository
                 )
                 SupportRow(
                     title: "about.support.website.title",
@@ -910,6 +916,12 @@ private struct AboutDependency: Identifiable {
             url: URL(string: "https://github.com/gonzalezreal/swift-markdown-ui")
         ),
         AboutDependency(
+            name: "swift-markdown",
+            license: "Apache-2.0 with Runtime Library Exception",
+            copyright: "Copyright (c) 2021 Apple Inc. and the Swift project authors",
+            url: URL(string: "https://github.com/swiftlang/swift-markdown")
+        ),
+        AboutDependency(
             name: "OpenAI",
             license: "MIT",
             copyright: "Copyright (c) 2023 MacPaw Inc.",
@@ -994,6 +1006,12 @@ private struct AboutDependency: Identifiable {
             license: "MIT",
             copyright: "Copyright 2024 Kazuki Yamada",
             url: URL(string: "https://github.com/yamadashy/repomix")
+        ),
+        AboutDependency(
+            name: "LiteLLM Model Pricing",
+            license: "MIT",
+            copyright: "Copyright (c) 2023 Berri AI",
+            url: URL(string: "https://github.com/BerriAI/litellm")
         ),
         AboutDependency(
             name: "OpenSSF",

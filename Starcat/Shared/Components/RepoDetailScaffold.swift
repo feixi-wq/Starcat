@@ -224,6 +224,9 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
     /// 推荐列表 popover 展示状态。只有 `recommendationVM.items` 非空时才允许打开。
     @State private var showsRecommendations = false
 
+    /// Manage 详情 README / 洞察切换行高度。其它场景保持 0，AI 浮层用原来的 16pt 顶距。
+    @State private var aiOverlayTopChromeInset: CGFloat = 0
+
     /// 当前 repo 的真实知识库状态。
     ///
     /// 状态从 `repo_notes.library_state` 读取；点击成功写库后才更新，避免把 ❤️ 做成
@@ -350,11 +353,18 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                 }
                 metadataPanelViewport(availableHeight: viewportSize.height)
                 body_(updateScrollReport)
+                    .onPreferenceChange(RepoDetailAIOverlayTopInsetPreference.self) { newValue in
+                        guard aiOverlayTopChromeInset != newValue else { return }
+                        aiOverlayTopChromeInset = newValue
+                    }
                     .overlay(alignment: .bottom) {
                         if isRepositoryAIAvailable {
                             // 所有 repo-backed 详情共用同一个底部 AI 主入口；独立窗口
                             // 仍只能从该面板内部的“在独立窗口中打开”派生。
-                            RepoAIFloatingOverlay(repo: repo)
+                            RepoAIFloatingOverlay(
+                                repo: repo,
+                                topChromeInset: aiOverlayTopChromeInset
+                            )
                         }
                     }
             }
@@ -395,7 +405,11 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         .onReceive(NotificationCenter.default.publisher(for: .wikiCacheDidReset)) { notification in
             reloadWikiLinksIfReset(notification, for: repo)
         }
-        .task(id: repo.id) {
+        .task(id: repo.id, priority: .utility) {
+            // 先让出一次执行权，确保详情 Hero / README 首帧提交后再启动旁路推荐。
+            // 真正的磁盘 I/O 已在 cache actor 中执行，这里只负责最终 UI 状态赋值。
+            await Task.yield()
+            guard !Task.isCancelled else { return }
             guard ProjectPrivacyPolicy.allowsDiscoveryLookup(for: repo) else {
                 recommendationVM.clear()
                 return

@@ -538,6 +538,47 @@ struct RepositoryInsightsRemoteProviderTests {
         ])
     }
 
+    @Test("Community Profile 漏报目录型 Issue Forms 时补齐并修复 304 旧缓存")
+    func issueFormsDirectoryRepairsCommunityProfileFalseNegative() async throws {
+        let database = try InMemoryDatabaseManager()
+        try await database.insertRepoFixture(id: 24, owner: "octo", name: "forms")
+        let httpClient = CommunityIssueFormsHTTPClient()
+        let provider = DefaultRepositoryRemoteInsightsProvider(
+            metricsClient: DefaultGitHubRepositoryMetricsClient(
+                httpClient: httpClient,
+                token: "token",
+                baseURL: URL(string: "https://api.example.test")!
+            ),
+            cache: GRDBRepositoryInsightsCache(database: database),
+            now: { Date(timeIntervalSince1970: 2_100) }
+        )
+        let repository = RepoIdentity(ghRepoID: 24, owner: "octo", name: "forms")
+
+        let initial = try await provider.refreshCommunityProfile(repository: repository)
+        let cachedBeforeRepair = try #require(
+            try await provider.cachedCommunityProfile(repoID: 24)
+        )
+        let repaired = try await provider.refreshCommunityProfile(
+            repository: repository,
+            ifNoneMatch: cachedBeforeRepair.responseETag
+        )
+        let cachedAfterRepair = try #require(
+            try await provider.cachedCommunityProfile(repoID: 24)
+        )
+
+        #expect(!initial.hasIssueTemplate)
+        #expect(cachedBeforeRepair.responseETag == "\"forms-v1\"")
+        #expect(repaired.hasIssueTemplate)
+        #expect(repaired.issueTemplateHTMLURL == nil)
+        #expect(cachedAfterRepair.value == repaired)
+        #expect(await httpClient.paths() == [
+            "/repos/octo/forms/community/profile",
+            "/repos/octo/forms/contents/.github/ISSUE_TEMPLATE",
+            "/repos/octo/forms/community/profile",
+            "/repos/octo/forms/contents/.github/ISSUE_TEMPLATE"
+        ])
+    }
+
     @Test("贡献者集中度忽略负数并在没有有效提交时保持未知")
     func contributorConcentrationRequiresPositiveContributionTotal() {
         let insight = RepositoryContributorsInsight(
@@ -630,6 +671,75 @@ struct RepositoryInsightsRemoteProviderTests {
         #expect(!cached.isStale)
     }
 
+    @Test("远端发布节奏把最新 Release 附件带回洞察，但不写入订阅表")
+    func releaseCadenceMapsLatestAssetsWithoutPersistingSubscription() async throws {
+        let database = try InMemoryDatabaseManager()
+        try await database.insertRepoFixture(id: 29, owner: "octo", name: "assets")
+        let httpClient = ReleaseCadenceHTTPClient(
+            body: """
+            [
+              {
+                "tag_name":"v4",
+                "name":"Version 4",
+                "body":null,
+                "html_url":"https://github.com/octo/assets/releases/tag/v4",
+                "published_at":"2026-07-20T00:00:00Z",
+                "assets":[
+                  {
+                    "id":901,
+                    "name":"app-arm64.dmg",
+                    "content_type":"application/octet-stream",
+                    "size":1800,
+                    "url":"https://api.example.test/assets/901",
+                    "browser_download_url":"https://example.test/app-arm64.dmg",
+                    "download_count":4,
+                    "created_at":"2026-07-20T00:00:00Z"
+                  },
+                  {
+                    "id":902,
+                    "name":"app.zip",
+                    "content_type":"application/zip",
+                    "size":1700,
+                    "url":"https://api.example.test/assets/902",
+                    "browser_download_url":"https://example.test/app.zip",
+                    "download_count":2,
+                    "created_at":"2026-07-20T00:00:00Z"
+                  }
+                ]
+              }
+            ]
+            """
+        )
+        let provider = DefaultRepositoryRemoteInsightsProvider(
+            metricsClient: DefaultGitHubRepositoryMetricsClient(
+                httpClient: httpClient,
+                token: "token",
+                baseURL: URL(string: "https://api.example.test")!
+            ),
+            cache: GRDBRepositoryInsightsCache(database: database),
+            now: { Date(timeIntervalSince1970: 4_000) }
+        )
+
+        let snapshot = try await provider.refreshReleaseCadence(
+            repository: RepoIdentity(ghRepoID: 29, owner: "octo", name: "assets")
+        )
+        let latest = try #require(snapshot.latest)
+        let storedReleases = try await GRDBReleaseRepository(database: database)
+            .fetch(forRepo: 29, limit: 12)
+
+        #expect(latest.tagName == "v4")
+        #expect(latest.assets.count == 2)
+        #expect(latest.assets[0].name == "app-arm64.dmg")
+        #expect(latest.assets[0].browserDownloadUrl == "https://example.test/app-arm64.dmg")
+        #expect(latest.assets[0].apiUrl == "https://api.example.test/assets/901")
+        #expect(latest.assets[1].name == "app.zip")
+        #expect(storedReleases.isEmpty)
+
+        let cached = try #require(try await provider.cachedReleaseCadence(repoID: 29))
+        #expect(cached.latest?.tagName == "v4")
+        #expect(cached.latest?.assets == latest.assets)
+    }
+
     @Test("仓库确认没有 Release 时缓存空结果避免重复请求")
     func releaseCadencePersistsConfirmedEmptyResult() async throws {
         let database = try InMemoryDatabaseManager()
@@ -678,16 +788,23 @@ struct RepositoryInsightsRemoteProviderTests {
         )
         let cached = try #require(try await provider.cachedSecurityAdvisories(repoID: 25))
         let request = try #require(await httpClient.request())
-        let perPage = URLComponents(
+        let queryItems = URLComponents(
             url: try #require(request.url),
             resolvingAgainstBaseURL: false
-        )?.queryItems?.first(where: { $0.name == "per_page" })?.value
+        )?.queryItems ?? []
+        let query = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
 
         #expect(request.url?.path == "/repos/octo/secure/security-advisories")
-        #expect(perPage == "100")
+        #expect(query["per_page"] == "100")
+        #expect(query["state"] == "published")
+        #expect(query["sort"] == "published")
+        #expect(query["direction"] == "desc")
         #expect(refreshed.advisories.map(\.id) == ["GHSA-latest", "GHSA-older"])
         #expect(refreshed.advisories.map(\.severity) == ["low", "critical"])
         #expect(refreshed.advisories.last?.cveID == "CVE-2026-1")
+        #expect(refreshed.advisories.first?.publisherLogin == "security-bot")
         #expect(
             refreshed.advisories.first?.htmlURL?.absoluteString
                 == "https://github.com/octo/secure/security/advisories/GHSA-latest"
@@ -1027,6 +1144,7 @@ private actor FullLoadMetricsHTTPClient: RAGHTTPClientProtocol {
                 "code_of_conduct":null,
                 "code_of_conduct_file":null,
                 "contributing":null,
+                "issue_template":{"html_url":"https://github.com/octo/budget/tree/main/.github/ISSUE_TEMPLATE"},
                 "license":null,
                 "readme":null
               }
@@ -1185,6 +1303,75 @@ private actor ContributorsCommunityHTTPClient: RAGHTTPClientProtocol {
     }
 }
 
+private actor CommunityIssueFormsHTTPClient: RAGHTTPClientProtocol {
+    private var recordedPaths: [String] = []
+    private var directoryRequestCount = 0
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let path = request.url!.path
+        recordedPaths.append(path)
+        let body: String
+        let statusCode: Int
+        switch path {
+        case "/repos/octo/forms/community/profile":
+            if request.value(forHTTPHeaderField: "If-None-Match") == "\"forms-v1\"" {
+                body = ""
+                statusCode = 304
+            } else {
+                body = """
+                {
+                  "health_percentage":87,
+                  "files":{
+                    "readme":{"html_url":"https://github.com/octo/forms#readme"},
+                    "code_of_conduct":null,
+                    "code_of_conduct_file":null,
+                    "contributing":null,
+                    "issue_template":null,
+                    "pull_request_template":null,
+                    "license":null
+                  }
+                }
+                """
+                statusCode = 200
+            }
+        case "/repos/octo/forms/contents/.github/ISSUE_TEMPLATE":
+            directoryRequestCount += 1
+            if directoryRequestCount == 1 {
+                body = """
+                [
+                  {"name":"config.yml","type":"file"},
+                  {"name":"examples","type":"dir"}
+                ]
+                """
+            } else {
+                body = """
+                [
+                  {"name":"config.yml","type":"file"},
+                  {"name":"bug_report.yml","type":"file"},
+                  {"name":"examples","type":"dir"}
+                ]
+                """
+            }
+            statusCode = 200
+        default:
+            throw URLError(.badURL)
+        }
+        return (
+            Data(body.utf8),
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["ETag": "\"forms-v1\""]
+            )!
+        )
+    }
+
+    func paths() -> [String] {
+        recordedPaths
+    }
+}
+
 private actor SecurityAdvisoriesHTTPClient: RAGHTTPClientProtocol {
     private var recordedRequest: URLRequest?
 
@@ -1206,6 +1393,7 @@ private actor SecurityAdvisoriesHTTPClient: RAGHTTPClientProtocol {
             "summary":"Low issue",
             "severity":"low",
             "html_url":"https://github.com/octo/secure/security/advisories/GHSA-latest",
+            "publisher":{"login":"security-bot"},
             "published_at":"2026-07-25T00:00:00Z"
           }
         ]

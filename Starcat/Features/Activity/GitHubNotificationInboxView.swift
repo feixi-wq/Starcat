@@ -59,6 +59,17 @@ struct GitHubNotificationInboxView: View {
         .onReceive(NotificationCenter.default.publisher(for: .starcatOpenGitHubNotification)) { _ in
             consumePendingOpenIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .repoLibraryStateDidChange)) { note in
+            // 入库 / 移出只改 `repo_notes.library_state`。重拉首页会丢掉已翻页，
+            // 选中项不在前 40 条时 `reloadFirstPage` 会把 selectedItem 清成 nil，右栏变空白。
+            guard let repoId = note.userInfo?["repoId"] as? Int64,
+                  let raw = note.userInfo?["libraryState"] as? String else { return }
+            rows = GitHubNotificationTimelineLibraryState.apply(
+                rows: rows,
+                repoId: repoId,
+                state: LibraryState.parse(raw)
+            )
+        }
         // dwell 活在 InboxService 上。中栏 SwiftUI 重建 / 切走时不要 cancelAllDwells，
         // 否则 pending 会被恢复成未读，点开看过的条目会反复亮蓝点。
         .starcatRefreshCommand(
@@ -223,17 +234,15 @@ struct GitHubNotificationInboxView: View {
                                 Task { await select(row) }
                             }
                         )
-                        .onAppear {
-                            // LazyVStack 只在行进入可视区附近才 onAppear。
-                            // 索引在时间线构建时一次生成，避免每行出现都线性扫描 rows。
-                            if GitHubNotificationTimelinePaging.shouldPrefetchNextPage(
-                                rowIndex: rowIndex,
-                                rowCount: rows.count,
-                                hasMore: hasMore,
-                                isLoading: isLoadingPage
-                            ) {
-                                Task { await loadNextPageIfNeeded() }
-                            }
+                        .automaticListPagination(
+                            appearingIndex: rowIndex,
+                            visibleItemCount: rows.count,
+                            loadedItemCount: rows.count,
+                            hasMore: hasMore,
+                            isLoading: isLoadingPage,
+                            identity: "notification-\(String(describing: segment))-\(pagingGeneration)"
+                        ) {
+                            await loadNextPageIfNeeded()
                         }
                     }
                 }
@@ -320,6 +329,11 @@ struct GitHubNotificationInboxView: View {
         hasMore = page.hasMore
         cursor = page.rows.last?.cursor
         lastFetchedAt = fetchedAt
+        Task { await inbox.prefetchMissingIssueStates(from: page.rows) }
+        // 状态筛选必须先出本地结果。补缺放到后台，且同一会话只启动一轮。
+        if inbox.listSegment.issueStateFilter != nil {
+            Task { await inbox.startMissingIssueStateBackfillIfNeeded() }
+        }
         if inbox.pendingOpenThreadId != nil {
             consumePendingOpenIfNeeded()
             return
@@ -354,8 +368,10 @@ struct GitHubNotificationInboxView: View {
             currentCursor: self.cursor
         ) else { return }
         let existing = Set(rows.map(\.id))
-        rows.append(contentsOf: page.rows.filter { !existing.contains($0.id) })
+        let appended = page.rows.filter { !existing.contains($0.id) }
+        rows.append(contentsOf: appended)
         hasMore = page.hasMore
+        Task { await inbox.prefetchMissingIssueStates(from: appended) }
         if let last = page.rows.last {
             self.cursor = last.cursor
         }
@@ -445,7 +461,12 @@ struct GitHubNotificationInboxView: View {
                 comments: GitHubNotificationMapper.decodeComments(record.commentsJson),
                 people: GitHubNotificationMapper.relatedPeople(for: record),
                 repositoryId: record.repositoryId,
-                canMarkDone: record.remoteNotificationThreadID != nil
+                canMarkDone: record.remoteNotificationThreadID != nil,
+                issueState: inbox.resolvedIssueState(
+                    threadId: record.id,
+                    persisted: record.issueState
+                ),
+                labels: GitHubNotificationMapper.decodeLabels(record.labelsJson)
             )
         )
     }
@@ -496,7 +517,12 @@ struct GitHubNotificationInboxView: View {
                 snippet: GitHubNotificationMapper.listSnippet(record.excerpt),
                 subjectType: record.subjectType,
                 subjectNumber: record.subjectNumber,
-                language: language
+                language: language,
+                issueState: inbox.resolvedIssueState(
+                    threadId: record.id,
+                    persisted: record.issueState
+                ),
+                libraryState: nil
             )
         case .activity(let item):
             let login = authSession.state.user?.login
@@ -516,7 +542,9 @@ struct GitHubNotificationInboxView: View {
                 snippet: item.snippet,
                 subjectType: "",
                 subjectNumber: nil,
-                language: item.language
+                language: item.language,
+                issueState: nil,
+                libraryState: item.libraryState
             )
         }
     }
@@ -549,6 +577,8 @@ private struct GitHubNotificationTimelineDisplay: Equatable {
     let subjectType: String
     let subjectNumber: Int?
     let language: String?
+    let issueState: String?
+    let libraryState: LibraryState?
 
     /// 选中条 / 轴点：有语言走 GitHub 语言色，否则通知分类蓝。
     var accentColor: Color {
@@ -561,8 +591,8 @@ private struct GitHubNotificationTimelineDisplay: Equatable {
 
 /// 时间线翻页触发点。抽出谓词是为了单测「快到底部」而不是「碰到最后一行」。
 enum GitHubNotificationTimelinePaging {
-    /// 行高约 56pt，8 行大约一屏。本地 SQLite 分页便宜，提前量可以比 Weekly 网络分页的 3 行更大。
-    static let prefetchRowCount = 8
+    /// 与其它自动分页列表共享 10 行提前量；本地 SQLite keyset 分页足够轻量。
+    static let prefetchRowCount = ListPaginationPolicy.prefetchDistance
 
     static func shouldPrefetchNextPage(
         rowIndex: Int,
@@ -570,14 +600,11 @@ enum GitHubNotificationTimelinePaging {
         hasMore: Bool,
         isLoading: Bool
     ) -> Bool {
-        guard hasMore,
-              !isLoading,
-              rowCount > 0,
-              rowIndex >= 0,
-              rowIndex < rowCount else {
-            return false
-        }
-        return rowIndex >= max(rowCount - prefetchRowCount, 0)
+        !isLoading && ListPaginationPolicy.shouldPrefetch(
+            appearingIndex: rowIndex,
+            itemCount: rowCount,
+            hasMore: hasMore
+        )
     }
 
     /// `await` 返回时再次核对请求上下文。只靠 `isLoading` 不能阻止筛选切换或首页重载期间
@@ -596,9 +623,37 @@ enum GitHubNotificationTimelinePaging {
     }
 }
 
+/// 时间线听 `.repoLibraryStateDidChange` 时只改账本行徽章。
+///
+/// 为什么不重拉首页：徽章来自 hydrate 时的 `libraryState`，行 id / 排序 / 分页都没变。
+/// `reloadFirstPage` 会把已加载页换成前 40 条，选中项不在首页就清空右栏。
+enum GitHubNotificationTimelineLibraryState {
+    static func apply(
+        rows: [GitHubInboxTimelineRow],
+        repoId: Int64,
+        state: LibraryState
+    ) -> [GitHubInboxTimelineRow] {
+        rows.map { row in
+            guard case .activity(let item) = row, item.record.repoId == repoId else {
+                return row
+            }
+            guard item.libraryState != state else { return row }
+            return .activity(
+                UserRepoActivityListItem(
+                    record: item.record,
+                    snippet: item.snippet,
+                    ownerLogin: item.ownerLogin,
+                    language: item.language,
+                    libraryState: state
+                )
+            )
+        }
+    }
+}
+
 private enum GitHubNotificationTimelineMetrics {
-    /// 只排 `HH:mm`，日期在分组标题里。
-    static let stampWidth: CGFloat = 40
+    /// `HH:mm` 下一行还要排 Open / Closed / Merged，40pt 会裁 `Closed`。
+    static let stampWidth: CGFloat = 52
     static let railWidth: CGFloat = 12
     static let leadingPadding: CGFloat = 10
     static let stampSpacing: CGFloat = 8
@@ -652,7 +707,7 @@ private struct GitHubNotificationSegmentMenu: View {
             .accessibilityValue(selection.displayTitle(locale: locale))
         }
         .fixedSize()
-        .help(GitHubNotificationMapper.copy(locale, zh: "按类型筛选通知", en: "Filter notifications by type"))
+        .help(GitHubNotificationMapper.copy(locale, zh: "按类型或状态筛选", en: "Filter by type or status"))
     }
 }
 
@@ -695,7 +750,7 @@ private struct GitHubNotificationTimelineHeader: View {
     }
 }
 
-/// 时间线行：`HH:mm` + 轴线 + 头像 + 事件句 + 仓库次行 + 可选摘录。
+/// 时间线行：`HH:mm` + 可选 Open/Closed/Merged + 轴线 + 头像 + 事件句 + 仓库次行 + 可选摘录。
 /// 选中跟 repo 卡片同一套语言色浅底 / 描边 / 左侧 3pt 竖条；不整行拉满，也不挪时间轴。
 private struct GitHubNotificationTimelineRow: View {
     let display: GitHubNotificationTimelineDisplay
@@ -710,11 +765,22 @@ private struct GitHubNotificationTimelineRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(alignment: .top, spacing: GitHubNotificationTimelineMetrics.stampSpacing) {
-                Text(verbatim: stamp)
-                    .font(.caption.weight(.medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: GitHubNotificationTimelineMetrics.stampWidth, alignment: .trailing)
-                    .padding(.top, 3)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(verbatim: stamp)
+                        .font(.caption.weight(.medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    if let issueState = display.issueState {
+                        GitHubNotificationIssueStateBadge(
+                            state: issueState,
+                            isPullRequest: display.subjectType == "PullRequest",
+                            style: .stamp
+                        )
+                    } else if let libraryState = display.libraryState {
+                        GitHubNotificationLibraryStateBadge(state: libraryState)
+                    }
+                }
+                .frame(width: GitHubNotificationTimelineMetrics.stampWidth, alignment: .trailing)
+                .padding(.top, 3)
 
                 Color.clear
                     .frame(width: GitHubNotificationTimelineMetrics.railWidth)
@@ -931,6 +997,76 @@ struct GitHubNotificationReasonChip: View {
         case .release, .discussion, .comment, .mention, .review, .assign:
             // Release / Discussion / 其它剩余 chip 用安静灰，不靠彩虹色抢扫描。
             return Color.secondary
+        }
+    }
+}
+
+/// Issue / PR 工作状态。时间线用无底文字挤进时间列；详情顶栏用和类型 chip 同形态的胶囊。
+struct GitHubNotificationIssueStateBadge: View {
+    enum Style {
+        case stamp
+        case chip
+    }
+
+    let state: String
+    var isPullRequest: Bool = false
+    var style: Style = .chip
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        Text(verbatim: GitHubNotificationMapper.issueStateTitle(state: state, locale: locale))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .padding(.horizontal, style == .chip ? 8 : 0)
+            .padding(.vertical, style == .chip ? 3 : 0)
+            .background {
+                if style == .chip {
+                    Capsule().fill(tint.opacity(0.14))
+                }
+            }
+            .accessibilityLabel(Text(verbatim: GitHubNotificationMapper.issueStateTitle(state: state, locale: locale)))
+    }
+
+    /// Open 绿、Merged 紫、未合并关闭的 PR 红、Issue 关闭紫。对齐 GitHub 网页语义，不是装饰灰。
+    private var tint: Color {
+        switch GitHubNotificationMapper.normalizedIssueState(state) {
+        case "open":
+            return Color(hex: "#1a7f37") ?? .green
+        case "merged":
+            return Color(hex: "#8250df") ?? .purple
+        case "closed":
+            if isPullRequest {
+                return Color(hex: "#cf222e") ?? .red
+            }
+            return Color(hex: "#8250df") ?? .purple
+        default:
+            return .secondary
+        }
+    }
+}
+
+/// Star / Unstar / Fork 时间列：已入库绿、未入库灰。文案短，避免撑破 52pt。
+struct GitHubNotificationLibraryStateBadge: View {
+    let state: LibraryState
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        Text(verbatim: GitHubNotificationMapper.libraryStateStampTitle(state: state, locale: locale))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .accessibilityLabel(Text(verbatim: GitHubNotificationMapper.libraryStateFilterTitle(state: state, locale: locale)))
+    }
+
+    private var tint: Color {
+        switch state {
+        case .inLibrary:
+            return Color(hex: "#1a7f37") ?? .green
+        case .outsideLibrary:
+            return .secondary
         }
     }
 }

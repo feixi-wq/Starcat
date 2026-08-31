@@ -115,7 +115,7 @@ struct AutoTidySettings: Codable, Equatable, Sendable {
 
     // MARK: - 1. 总开关 + 触发时机
 
-    /// 总开关。关闭时 `AutoTidyScheduler` 完全静默（不安装监听、不响应任何触发）。
+    /// 标签 / 摘要自动整理的总开关。
     var enabled: Bool
 
     /// 开启后：App 启动延迟 60s 自动整理一次。关闭后：启动时不触发（不是立刻执行）。
@@ -207,7 +207,8 @@ struct AutoTidySettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case enabled, triggerOnLaunch, triggerOnSync, triggerScheduled, scheduledIntervalHours
         case maxPerRun, sortOrder
-        case generateSummary, generateTags, useConfidenceThreshold, confidenceThreshold
+        case generateSummary, generateTags
+        case useConfidenceThreshold, confidenceThreshold
         case lastRunAt, lastRunStats
     }
 
@@ -273,9 +274,11 @@ struct AutoTidySettings: Codable, Equatable, Sendable {
 
     // MARK: - 派生
 
-    /// 至少要选一个子操作（摘要 / 标签）才能形成一次有效执行。
-    /// UI 在 `generateSummary == false && generateTags == false` 时禁用「立刻手动触发」按钮。
+    /// 标签分类自动整理下至少要选一个子操作，供该 Section 的手动触发按钮判断。
     var hasAnyAction: Bool { generateSummary || generateTags }
+
+    /// 标签 / 摘要后台调度器是否存在真正启用的工作。
+    var hasEnabledBackgroundAction: Bool { enabled && hasAnyAction }
 
     /// 把自动整理偏好映射成底层 `BatchAIQueueOptions`。
     ///
@@ -285,15 +288,16 @@ struct AutoTidySettings: Codable, Equatable, Sendable {
     /// - confidenceThreshold：`useConfidenceThreshold == false` 时降级为 0（等价于"不过滤"，
     ///   所有 AI 建议都会被自动应用）；为 true 时透传用户值；
     /// - maxRetries：复用底层默认 3，自动模式不暴露给用户。
-    func makeBatchOptions() -> BatchAIQueueOptions {
+    func makeBatchOptions(standardActionRepoIDs: Set<Int64>? = nil) -> BatchAIQueueOptions {
         var actions: Set<BatchAIAction> = []
-        if generateSummary { actions.insert(.summary) }
-        if generateTags { actions.insert(.tags) }
+        if enabled, generateSummary { actions.insert(.summary) }
+        if enabled, generateTags { actions.insert(.tags) }
         return BatchAIQueueOptions(
             actions: actions,
-            autoApplyTags: generateTags,  // 标签开 → 自动应用；标签关时 autoApply 字段无意义
+            autoApplyTags: enabled && generateTags,
             confidenceThreshold: useConfidenceThreshold ? confidenceThreshold : 0,
-            maxRetries: 3
+            maxRetries: 3,
+            standardActionRepoIDs: standardActionRepoIDs
         )
     }
 }

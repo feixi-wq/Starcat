@@ -26,8 +26,36 @@ struct RepoRecommendationItem: Codable, Identifiable, Sendable, Equatable {
     let forks: Int
     let archived: Bool
     let score: Double
+    /// 模型内全局百分位，仅自研单仓推荐返回；原始 score 继续用于排序和诊断。
+    let displayScore: Double?
     let source: String
     let reasons: [String]
+
+    init(
+        repoID: Int64,
+        fullName: String,
+        description: String?,
+        language: String?,
+        stars: Int,
+        forks: Int,
+        archived: Bool,
+        score: Double,
+        displayScore: Double? = nil,
+        source: String,
+        reasons: [String]
+    ) {
+        self.repoID = repoID
+        self.fullName = fullName
+        self.description = description
+        self.language = language
+        self.stars = stars
+        self.forks = forks
+        self.archived = archived
+        self.score = score
+        self.displayScore = displayScore
+        self.source = source
+        self.reasons = reasons
+    }
 
     var id: Int64 { repoID }
 
@@ -44,6 +72,7 @@ struct RepoRecommendationItem: Codable, Identifiable, Sendable, Equatable {
         case forks
         case archived
         case score
+        case displayScore = "display_score"
         case source
         case reasons
     }
@@ -54,6 +83,8 @@ struct RepoRecommendationPage: Decodable, Sendable, Equatable {
     let source: String
     let fallback: Bool
     let repoID: Int64
+    /// v1 SimRepo 不返回该字段；v2 用它标识当前原子激活的 ServingBundle。
+    let modelVersion: String?
     let items: [RepoRecommendationItem]
     let hasMore: Bool
     let nextOffset: Int?
@@ -62,6 +93,7 @@ struct RepoRecommendationPage: Decodable, Sendable, Equatable {
         case source
         case fallback
         case repoID = "repo_id"
+        case modelVersion = "model_version"
         case items
         case hasMore = "has_more"
         case nextOffset = "next_offset"

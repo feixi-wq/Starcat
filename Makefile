@@ -9,8 +9,8 @@
 #   shell 行内必须用双引号包变量；定义处不带引号（否则引号会被当成路径字符）。
 # - 默认 target 设为 help，单独 `make` 时不会误触 destructive 操作。
 #
-# 跑测 / 单测命令仍按 AGENTS.md「如何跑单测」一节用 xcodebuild，
-# 因为 IDE/CLI 抢 testmanagerd 的提示需要场景化判断，不适合做成一键。
+# 跑测统一走 scripts/run-tests.sh：脚本会检查 Xcode IDE 是否退出，并使用固定的
+# build/DerivedData-Tests，避免测试缓存污染 App Store / Direct 的 Debug 目录。
 
 # --- 路径常量 ---
 
@@ -26,9 +26,11 @@ DEBUG_APP_SUPPORT := $(HOME)/Library/Application Support/com.starcat.app
 #   make build-dmg VERSION=0.1.0
 #   make release VERSION=v0.1.0 RELEASE_FLAGS="--dry-run"
 #   make linguist LINGUIST_ARGS="--local /tmp/languages.yml"
+#   make test TEST_ARGS="-only-testing:StarcatTests/TagRepositoryTests"
 VERSION ?= 0.0.1
 RELEASE_FLAGS ?=
 LINGUIST_ARGS ?=
+TEST_ARGS ?=
 APPSTORE_TEAM ?= 8WCUMGCWMB
 NOTARY_PROFILE ?= starcat-notary
 SUBMISSION_ID ?=
@@ -39,14 +41,18 @@ APPSTORE_ARCHIVE := $(CURDIR)/dist/appstore/Starcat-AppStore.xcarchive
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-appstore run-direct test reset-db reset-anysearch-cache reset-chat-cache reset-all show-data clean start-supports build-dmg release-store release-dry-run package-appstore open-appstore-archive package-direct package-direct-notarized release-direct release-direct-retry release-direct-unnotarized pr-helper bump-version linguist sync-fly-secrets setup-production-api-keys deploy-pages deploy-pages-test
+.PHONY: help build-appstore build-direct run-appstore run-direct test test-build-scripts reset-db reset-anysearch-cache reset-chat-cache reset-all show-data clean start-supports build-dmg release-store release-dry-run package-appstore open-appstore-archive package-direct package-direct-notarized release-direct release-direct-retry release-direct-unnotarized pr-helper bump-version linguist sync-fly-secrets setup-production-api-keys deploy-pages deploy-pages-test
 
 help: ## 列出所有可用命令
 	@echo "Starcat 常用命令："
 	@echo ""
+	@echo "  make build-appstore         构建并校验 App Store / 沙盒 Debug，不启动"
+	@echo "  make build-direct           构建并校验 Direct / 非 App Store Debug，不启动"
 	@echo "  make run-appstore           执行 scripts/run-debug-appstore.sh（App Store / 沙盒 Debug）"
 	@echo "  make run-direct             执行 scripts/run-debug-direct.sh（Direct / 非 App Store Debug）"
-	@echo "  make test                   跑全量单测（xcodegen + xcodebuild test）"
+	@echo "  make test                   使用稳定版 Xcode 和 build/DerivedData-Tests 跑全量单测"
+	@echo "  make test TEST_ARGS=\"...\"   向 xcodebuild 追加参数，例如 -only-testing:StarcatTests/Foo"
+	@echo "  make test-build-scripts     验证 Debug 构建缓存的工具链隔离逻辑"
 	@echo ""
 	@echo "App Store："
 	@echo "  make package-appstore       生成 App Store archive，不上传"
@@ -74,10 +80,16 @@ help: ## 列出所有可用命令
 	@echo "  make clean                  删除 build/ 目录（清掉 xcodebuild 的 DerivedData 与产物）"
 	@echo "  make start-supports         启动 supports/ 目录下的所有后端服务（trending / wiki / weekly / sharing / recommend / discovery）"
 	@echo "  make sync-fly-secrets              从 supports 各 API .env 并行同步 secrets 到 Fly.io"
-	@echo "  make setup-production-api-keys    从 starcat-api/.env 共用 Key 写入 Secrets.xcconfig（六槽同值）"
+	@echo "  make setup-production-api-keys    从 starcat-api/.env 共用 Key 写入 Secrets.xcconfig（七槽同值）"
 	@echo "  make deploy-pages                部署生产 nginx + 静态页到 https://starcat.ink"
 	@echo "  make deploy-pages-test           部署测试 nginx + 静态页到 https://test.starcat.ink"
 	@echo ""
+
+build-appstore: ## 构建并校验 App Store / 沙盒 Debug，不启动
+	@bash scripts/run-debug-appstore.sh --build-only
+
+build-direct: ## 构建并校验 Direct / 非 App Store Debug，不启动
+	@bash scripts/run-debug-direct.sh --build-only
 
 run-appstore: ## App Store / 沙盒 Debug
 	@bash scripts/run-debug-appstore.sh
@@ -85,12 +97,11 @@ run-appstore: ## App Store / 沙盒 Debug
 run-direct: ## Direct / 非 App Store Debug
 	@bash scripts/run-debug-direct.sh
 
-test: ## 跑全量单测（先 xcodegen 同步项目，再 xcodebuild test）
-	@echo "⚠️  提醒：跑测前请先关闭 Xcode IDE（Cmd+Q），否则会与 xcodebuild 抢 testmanagerd 导致挂起。"
-	@echo "    详见 AGENTS.md「如何跑单测」一节。"
-	@echo ""
-	xcodegen generate
-	xcodebuild -scheme Starcat -destination 'platform=macOS,arch=arm64' test
+test-build-scripts: ## 验证 Debug 构建缓存的工具链隔离逻辑
+	@bash scripts/tests/test-debug-build-environment.sh
+
+test: ## 使用稳定版 Xcode 和固定测试缓存跑单测（可用 TEST_ARGS 过滤 Suite）
+	@bash scripts/run-tests.sh $(TEST_ARGS)
 
 ## 打包 Release DMG（VERSION=0.1.0）
 build-dmg: 
@@ -233,7 +244,7 @@ reset-all: reset-db reset-anysearch-cache reset-chat-cache ## 聚合 reset-db + 
 clean: ## 删除 build/ 目录（清掉 xcodebuild 的 DerivedData 与产物）
 	@echo "即将删除：$(CURDIR)/build"
 	@rm -rf build
-	@echo "已删除 build/，下次 make run-appstore 或 make run-direct 会重新跑 xcodegen + 全量构建。"
+	@echo "已删除 build/，下次 make run-appstore、make run-direct 或 make test 会重新跑 xcodegen + 全量构建。"
 
 ## 启动 supports/ 目录下的后端服务总入口
 start-supports: ## 启动 supports/ 目录下的后端服务总入口
@@ -247,7 +258,7 @@ stop-supports: ## 停止 supports/ 目录下的后端服务总入口
 sync-fly-secrets: ## 从 supports 各 API .env 同步 fly secrets
 	@$(MAKE) -C supports fly-secrets-all
 
-setup-production-api-keys: ## 从 starcat-api/.env 共用 Key 写入 Secrets.xcconfig（六槽同值）
+setup-production-api-keys: ## 从 starcat-api/.env 共用 Key 写入 Secrets.xcconfig（七槽同值）
 	@bash scripts/sync-production-api-keys-from-env.sh
 
 deploy-pages: ## 部署生产 nginx + 静态页到 https://starcat.ink

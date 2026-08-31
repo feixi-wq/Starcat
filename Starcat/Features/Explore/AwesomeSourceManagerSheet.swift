@@ -1,0 +1,382 @@
+//
+//  AwesomeSourceManagerSheet.swift
+//  Starcat
+//
+//  首次选择与后续管理共用的卡片式 Awesome 来源 Sheet。
+//
+//  精选来源勾选只保存在本地 draft；只有“完成”会写入 Repository。自定义来源的“添加”
+//  是独立的明确提交动作，校验成功后立即写入并启用，但 URL、README 和解析结果始终只
+//  停留在当前账户数据库。
+//
+
+import SwiftUI
+
+struct AwesomeSourceManagerSheet: View {
+    private enum FocusedInput: Hashable {
+        case search
+        case customSource
+    }
+
+    let store: AwesomeStore
+
+    @Environment(\.locale) private var locale
+    @State private var enabledIDs: Set<String> = []
+    @State private var customSourceInput = ""
+    @State private var searchQuery = ""
+    @State private var customSourceError: String?
+    @State private var actionError: String?
+    @State private var isSaving = false
+    @State private var isAddingCustomSource = false
+    @State private var initialized = false
+    @State private var acceptsInputFocus = false
+    @State private var pendingConfirmation: AwesomeSourceConfirmation?
+    @FocusState private var focusedInput: FocusedInput?
+
+    /// 来源选择是桌面宽 Sheet，固定三列比 adaptive 更能保持卡片位置和视觉节奏。
+    private let columns = Array(
+        repeating: GridItem(.flexible(minimum: 280), spacing: 14, alignment: .top),
+        count: 3
+    )
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    errorBanner
+                    sourceGrid
+                    customSourceSection
+                }
+                .padding(20)
+            }
+            Divider()
+            footer
+        }
+        // 卡片约 252pt；Sheet 保持能看见两行三列，不必为旧的 356pt 卡片加高。
+        .frame(minWidth: 1_000, idealWidth: 1_100, minHeight: 640, idealHeight: 740)
+        .task {
+            guard !initialized else { return }
+            initialized = true
+            enabledIDs = Set(store.sources.filter(\.isEnabled).map(\.id))
+            // 首帧先不让输入框参与焦点链，避免系统自动聚焦后再清除造成蓝框闪烁。
+            // 挂载完成后恢复正常焦点能力，用户点击和键盘导航仍使用系统 Focus Ring。
+            await Task.yield()
+            acceptsInputFocus = true
+        }
+        // 进 Sheet 就预拉当前目录里全部 OG，不只是可见格子。URL 签名变了再拉一轮：
+        // 新来源或 UTC 小时键变了才会出现新 URL；Kingfisher 对已缓存的 URL 直接 skip。
+        .task(id: ogPrefetchSignature) {
+            await store.prefetchOpenGraphImages()
+        }
+        .confirmationDialog(
+            confirmationTitle,
+            isPresented: Binding(
+                get: { pendingConfirmation != nil },
+                set: { if !$0 { pendingConfirmation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            confirmationActions
+        } message: {
+            confirmationMessage
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                Image("AwesomeBrandLogo")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .padding(3)
+                    .frame(width: 32, height: 32)
+                    // 透明品牌图；圆角打在容器上。不要再用 `.background` 实心块，浅色会变回白方。
+                    .background(
+                        Color.primary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+                    }
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("awesome.sources.title")
+                        .font(.title3.weight(.semibold))
+                    Text("awesome.sources.subtitle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                SyncIconButton(
+                    isRefreshing: store.isCatalogRefreshing,
+                    disabled: store.isCatalogRefreshing || isSaving || isAddingCustomSource,
+                    tooltip: String.l10n("explore.refresh.tooltip")
+                ) {
+                    Task { await store.refreshSourceCatalog() }
+                }
+                SheetCloseButton { store.dismissSourceManager() }
+            }
+
+            TextField("awesome.search.placeholder", text: $searchQuery)
+                .textFieldStyle(.roundedBorder)
+                .focusable(acceptsInputFocus)
+                .focused($focusedInput, equals: .search)
+        }
+        .padding(20)
+    }
+
+    @ViewBuilder
+    private var errorBanner: some View {
+        if let message = actionError ?? store.errorMessage {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private var sourceGrid: some View {
+        if store.sources.isEmpty, store.isLoading || store.isRefreshing {
+            ProgressView("awesome.sources.loading")
+                .frame(maxWidth: .infinity, minHeight: 180)
+        } else if selectableSources.isEmpty {
+            emptySourceState
+        } else if filteredSources.isEmpty {
+            ContentUnavailableView.search(text: searchQuery)
+                .frame(maxWidth: .infinity, minHeight: 180)
+        } else {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                ForEach(filteredSources) { source in
+                    AwesomeSourceCard(
+                        source: source,
+                        isSelected: enabledIDs.contains(source.id),
+                        hasRefreshError: store.sourceRefreshErrors[source.id] != nil,
+                        parseState: store.customSourceParseStates[source.id],
+                        ogRetryToken: store.ogPrefetchGeneration,
+                        ogRevealSession: store.sourceManagerPresentationGeneration,
+                        onToggle: { toggleSource(source) },
+                        onRetry: source.kind == .custom
+                            ? { store.retryCustomSourceParsing(sourceID: source.id) }
+                            : nil,
+                        onDelete: source.kind == .custom
+                            ? { pendingConfirmation = .delete(source) }
+                            : nil
+                    )
+                }
+            }
+        }
+    }
+
+    /// 用全部来源的 OG URL 当预拉签名，搜索过滤不能缩小预拉范围。
+    private var ogPrefetchSignature: String {
+        AwesomeSourceOpenGraph.imageURLs(for: store.sources)
+            .map(\.absoluteString)
+            .joined(separator: "\n")
+    }
+
+    private var selectableSources: [AwesomeSource] {
+        Self.filterSources(store.sources, query: "", languageCode: nil)
+    }
+
+    private var filteredSources: [AwesomeSource] {
+        Self.filterSources(
+            store.sources,
+            query: searchQuery,
+            languageCode: locale.language.languageCode?.identifier
+        )
+    }
+
+    /// 零仓库来源仍保留在 Discovery 目录中供后续重新同步，但不进入客户端可选卡片列表。
+    /// 过滤必须先于搜索执行，避免用户通过关键词再次搜出不可用的零项目来源。
+    static func filterSources(
+        _ sources: [AwesomeSource],
+        query: String,
+        languageCode: String?
+    ) -> [AwesomeSource] {
+        let selectableSources = sources.filter { $0.githubRepoCount > 0 }
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { return selectableSources }
+
+        return selectableSources.filter { source in
+            [
+                source.displayName,
+                source.repoFullName,
+                source.repoDescription,
+                source.localizedSummary(languageCode: languageCode)
+            ]
+            .compactMap { $0 }
+            .contains { $0.localizedCaseInsensitiveContains(normalizedQuery) }
+        }
+    }
+
+    private var emptySourceState: some View {
+        // ContentUnavailableView 在 Sheet 的 ScrollView 中会用自带的大块留白撑开内容，
+        // 这里使用紧凑空态，让用户仍能在同一视野内看到自定义来源入口。
+        VStack(spacing: 8) {
+            Image(systemName: "sparkles.rectangle.stack")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("awesome.sources.empty.title")
+                .font(.headline)
+            Text("awesome.sources.empty.subtitle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("action.retry") {
+                Task { await store.presentSourceManager() }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 24)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func toggleSource(_ source: AwesomeSource) {
+        guard source.isAvailable else { return }
+        if enabledIDs.contains(source.id) {
+            enabledIDs.remove(source.id)
+        } else {
+            enabledIDs.insert(source.id)
+        }
+    }
+
+    private var customSourceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("awesome.sources.custom.title")
+                .font(.headline)
+            HStack(spacing: 8) {
+                TextField("awesome.sources.custom.placeholder", text: $customSourceInput)
+                    .textFieldStyle(.roundedBorder)
+                    .focusable(acceptsInputFocus)
+                    .focused($focusedInput, equals: .customSource)
+                    .onSubmit(addCustomSource)
+                    .disabled(isAddingCustomSource)
+                Button(action: addCustomSource) {
+                    if isAddingCustomSource {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel(Text("awesome.sources.custom.add"))
+                    } else {
+                        Text("awesome.sources.custom.add")
+                    }
+                }
+                .disabled(customSourceInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving || isAddingCustomSource)
+            }
+            if let customSourceError {
+                Label(customSourceError, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Button("common.cancel") { store.dismissSourceManager() }
+                .keyboardShortcut(.cancelAction)
+            Button("awesome.sources.done") { saveSelection() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isSaving)
+        }
+        .padding(20)
+    }
+
+    private func addCustomSource() {
+        let value = customSourceInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        isAddingCustomSource = true
+        customSourceError = nil
+        Task {
+            defer { isAddingCustomSource = false }
+            do {
+                let source = try await store.addCustomSource(input: value)
+                enabledIDs.insert(source.id)
+                customSourceInput = ""
+            } catch {
+                customSourceError = error.localizedDescription
+            }
+        }
+    }
+
+    private func removeCustomSource(_ source: AwesomeSource) {
+        isSaving = true
+        actionError = nil
+        pendingConfirmation = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                try await store.removeCustomSource(id: source.id)
+                enabledIDs.remove(source.id)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func saveSelection() {
+        isSaving = true
+        actionError = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                if store.hasCompletedSourceSetup {
+                    try await store.updateSourceSelection(enabledIDs)
+                } else {
+                    try await store.completeSourceSelection(enabledIDs)
+                }
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private var confirmationTitle: String {
+        switch pendingConfirmation {
+        case .delete(let source):
+            String(
+                format: String.l10n("awesome.sources.custom.delete.titleFormat"),
+                source.displayName
+            )
+        case nil:
+            ""
+        }
+    }
+
+    @ViewBuilder
+    private var confirmationActions: some View {
+        switch pendingConfirmation {
+        case .delete(let source):
+            Button("awesome.sources.custom.delete.confirm", role: .destructive) {
+                removeCustomSource(source)
+            }
+            Button("common.cancel", role: .cancel) { pendingConfirmation = nil }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var confirmationMessage: some View {
+        switch pendingConfirmation {
+        case .delete:
+            Text("awesome.sources.custom.delete.message")
+        case nil:
+            EmptyView()
+        }
+    }
+}
+
+private enum AwesomeSourceConfirmation {
+    case delete(AwesomeSource)
+}

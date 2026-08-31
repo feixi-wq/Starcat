@@ -48,5 +48,22 @@ protocol GitHubStarListRepositoryProtocol: Sendable {
 
     /// 一次性返回所有 starred repo 的 GitHub List 关联。
     func fetchAllListAssignments() async throws -> [Int64: [GitHubStarList]]
-}
 
+    // MARK: - Starcat AI 分组规则
+
+    /// 保存 Starcat 本地规则。该数据不会进入 GitHub List mutation。
+    func upsertAIRule(_ rule: GitHubStarListAIRule) async throws
+
+    func findAIRule(listId: String) async throws -> GitHubStarListAIRule?
+
+    func fetchAllAIRules() async throws -> [GitHubStarListAIRule]
+
+    // MARK: - Starcat AI 自动忽略
+
+    /// 只返回仍为 starred 且未分组的仓库；其它历史行不应污染下一轮预检统计。
+    func fetchAIAutoIgnoredRepos() async throws -> [GitHubStarListAIAutoIgnoredRepo]
+
+    func upsertAIAutoIgnoredRepo(_ record: GitHubStarListAIAutoIgnoredRepo) async throws
+
+    func deleteAIAutoIgnoredRepo(repoId: Int64) async throws
+}

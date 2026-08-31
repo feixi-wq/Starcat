@@ -303,11 +303,13 @@ final class ActivityViewModel {
         hasMoreItems = filteredItems.count > items.count
     }
 
-    /// 倒数第 3 行触发加载更多（对齐 Weekly）。
+    /// 使用全局统一的 10 行预取窗口判断是否加载更多。
     func shouldTriggerLoadMore(at index: Int) -> Bool {
-        guard hasMoreItems, !isLoading else { return false }
-        let threshold = max(items.count - 3, 0)
-        return index >= threshold
+        !isLoading && !isApplyingCategoryFilter && ListPaginationPolicy.shouldPrefetch(
+            appearingIndex: index,
+            itemCount: items.count,
+            hasMore: hasMoreItems
+        )
     }
 
     /// `ForEach(items)` 路径下的 loadMore 触发（按 item 查下标）。
@@ -411,6 +413,16 @@ final class ActivityViewModel {
     /// 进入页面入口（保留给测试 / 外部直调）：等同 `ensureLoaded`。
     func load(category: ActivityCategory) async {
         await ensureLoaded(category: category)
+    }
+
+    /// 时间线 / Undo Star 进页时不再走 `ensureLoaded(.all)`，侧栏其它分类会一直没数字。
+    /// 只读本地四路缓存并发布计数，不打网络、不改中栏时间线。
+    func primeSidebarCategoryCountsIfNeeded() async {
+        if isAggregateLoaded {
+            publishCategoryCounts(from: allItems)
+            return
+        }
+        await primeCategoryCacheIfAvailable(for: .all)
     }
 
     /// 用户主动刷新（toolbar 按钮）：强制走当前分类相关网络 + Release 巡检。

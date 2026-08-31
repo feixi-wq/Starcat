@@ -199,6 +199,8 @@ Accent color 只用于可操作状态和当前选择，不用于大面积铺底�
 
 浅色模式应该接近 `NSColor.windowBackgroundColor` / `controlBackgroundColor` 的层级；深色模式应该依赖系统背景和材质，不要强行做纯黑科技风。选中态通常是 `Color.accentColor.opacity(0.12)` 加轻量描边，而不是高饱和填充。
 
+Sheet / 浮层里如果用卡片分区，相邻表面必须有可见明度差，不要靠大阴影。窗口底用 `surface-*`，卡片用 `panel-*`：浅色白卡 `#FFFFFF` 叠在 `#F5F5F7` 上；深色 `#2C2C2E` 叠在 `#1C1C1E` 上。macOS 深色里 `controlBackgroundColor` 几乎等于窗口底，再铺一层卡片会消失。内层卡片或 chip 再抬一档，深色用 `separator-dark` `#3A3A3C` 或略提亮的 fill，描边用 `separator-*`。
+
 ## Typography
 
 字体跟随 Apple 系统字体。SwiftUI 中优先使用 `.title3`、`.headline`、`.subheadline`、`.callout`、`.caption`、`.caption2` 等动态层级，并通过 `starcatInterfaceScale` 接入已验证页面的字号倍率。
@@ -260,6 +262,8 @@ Agent 工作台遵循覆盖式 run layout：
 Starcat 通过系统背景、`Divider`、轻量材质和选中态表达层级。不要用大阴影、发光、渐变光斑、玻璃球、bokeh、营销页背景或深色科技感装饰。
 
 `.thinMaterial` 只用于局部按钮、状态块、轻量浮层和已存在的玻璃态交互，不要把每个 section 都做成浮动卡片。主页面 section 应该像 macOS 原生应用一样贴合窗口和分栏，不要卡片套卡片。
+
+必须分区时，嵌套表面按 Colors 里的 `surface` → `panel` → 内层 fill 抬升；深色主题尤其禁止把同色 `controlBackgroundColor` 叠两层。
 
 ## Shapes
 
@@ -360,6 +364,12 @@ Settings 是配置表单，不是功能展示页。section 标题简短，说明
 
 Sheet / popover 应只承载一个明确任务。Sheet header 右上角关闭使用 `SheetCloseButton`；轻量上下文使用 popover；阻塞式任务或复杂表单使用 sheet。不要在 sheet 内再放一组浮动大卡片。
 
+### Sheet 尺寸与承载策略
+
+Sheet 必须先明确尺寸所有权：内容短小、单列且自然高度稳定时，使用 SwiftUI 自动 `.sheet`；产品已经定义固定工作区尺寸，或页面包含双栏、多滚动区、大列表、多个 `.infinity` 时，使用固定 AppKit sheet。
+
+仅在 SwiftUI 根视图上设置固定 `.frame(width:height:)`，不能阻止 presentation bridge 反复执行 fitting-size 计算。固定工作区必须由 `NSWindow` 持有明确尺寸，并设置 `NSHostingController.sizingOptions = []`；首帧轻量快照应在创建 hosting tree 前一次性准备。完整选型、实现约束和验收清单见 [`docs/5-规范/UI-Sheet-尺寸与承载规范.md`](docs/5-规范/UI-Sheet-尺寸与承载规范.md)。
+
 API Key、provider、模型、缓存、导出等设置 UI 需要统一：输入控件宽度稳定，测试结果提示收敛为单条，成功/失败状态不改变布局高度。
 
 ## Do's and Don'ts
@@ -393,6 +403,7 @@ Don't:
 - 是否使用 `.primary` / `.secondary`，没有把 `.tertiary` 用作普通文字或图标？
 - 使用 `.buttonStyle(.plain)` 的按钮是否紧跟 `.focusEffectDisabled()`？
 - Sheet 关闭是否使用 `SheetCloseButton`？
+- Sheet 是否按 [`UI-Sheet-尺寸与承载规范`](docs/5-规范/UI-Sheet-尺寸与承载规范.md) 明确选择自动尺寸或固定 AppKit 承载？
 - icon-only 刷新是否使用 `SyncIconButton` / `StarsSyncButton`？
 - 是否避免了 `Stepper`、随机渐变、大圆角卡片、卡片套卡片和网页式 hero？
 - 明暗主题下文字、图标、状态 pill 是否可读？

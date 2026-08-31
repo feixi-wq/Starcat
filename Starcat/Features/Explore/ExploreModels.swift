@@ -6,7 +6,7 @@
 //
 //  设计约束：
 //  - `SidebarRootPage.trending` 暂时保留为内部路由，避免一次性改动历史入口和持久化；
-//  - ExploreMode 表达用户可见的二级模块：发现 / 趋势 / 热门 / 新发布 / 周刊；
+//  - ExploreMode 表达用户可见的二级模块：发现 / 趋势 / 热门 / 新发布 / 周刊 / Awesome；
 //  - sort 选项按模块收敛在这里，保证中栏筛选栏和 API query 不分叉。
 //
 
@@ -19,6 +19,7 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
     case popular
     case newReleases
     case weekly
+    case awesome
 
     var id: String { rawValue }
 
@@ -29,6 +30,7 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .popular: return "explore.mode.popular"
         case .newReleases: return "explore.mode.newReleases"
         case .weekly: return "explore.mode.weekly"
+        case .awesome: return "explore.mode.awesome"
         }
     }
 
@@ -39,6 +41,7 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .popular: return String.l10n("explore.mode.popular")
         case .newReleases: return String.l10n("explore.mode.newReleases")
         case .weekly: return String.l10n("explore.mode.weekly")
+        case .awesome: return String.l10n("explore.mode.awesome")
         }
     }
 
@@ -49,11 +52,15 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .popular: return "flame"
         case .newReleases: return "shippingbox"
         case .weekly: return "newspaper"
+        // eyeglasses：Awesome 是「精选清单」阅读入口，和发现的 safari 区分开。
+        case .awesome: return "eyeglasses"
         }
     }
 
     /// Explore 顶层模式的轻量语义色。下钻后的 topics / platforms 没有后端颜色字段，
     /// 不在这里强行扩展，避免探索侧栏变成装饰性彩色列表。
+    ///
+    /// Awesome 不用 `.purple`：发现已经占用紫色，侧栏两行叠在一起会读成同一入口。
     var sidebarIconColor: Color {
         switch self {
         case .discover:    return .purple
@@ -61,14 +68,18 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .popular:     return .orange
         case .newReleases: return .cyan
         case .weekly:      return .green
+        case .awesome:     return .pink
         }
     }
+
+    /// 「全部 Awesome」聚合行：和顶层 Awesome 同属精选清单，但不能复用分类色 / 发现色。
+    static var awesomeAllSourcesIconColor: Color { .teal }
 
     var usesDiscoveryAPI: Bool {
         switch self {
         case .discover, .popular, .newReleases:
             return true
-        case .trending, .weekly:
+        case .trending, .weekly, .awesome:
             return false
         }
     }
@@ -82,6 +93,7 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .popular: return .popular
         case .newReleases: return .newReleases
         case .weekly: return nil
+        case .awesome: return nil
         }
     }
 }
@@ -101,6 +113,7 @@ struct ExploreNavigationPresentation: Equatable {
         discoveryTopic: String?,
         discoveryPlatform: String?,
         weeklyLanguage: String?,
+        awesomeSourceName: String? = nil,
         topics: [DiscoveryTopicDTO],
         platforms: [DiscoveryPlatformDTO]
     ) -> ExploreNavigationPresentation {
@@ -138,6 +151,11 @@ struct ExploreNavigationPresentation: Equatable {
             return ExploreNavigationPresentation(
                 thirdLevelTitle: language.localizedDisplayName,
                 isFiltered: !language.rawValue.isEmpty
+            )
+        case .awesome:
+            return ExploreNavigationPresentation(
+                thirdLevelTitle: awesomeSourceName ?? String.l10n("awesome.sidebar.all"),
+                isFiltered: awesomeSourceName != nil
             )
         }
     }
@@ -269,7 +287,7 @@ enum ExploreSortOption: String, CaseIterable, Identifiable, Hashable, Sendable {
             return commonOptions(defaultOption: .popular)
         case .newReleases:
             return commonOptions(defaultOption: .release)
-        case .trending, .weekly:
+        case .trending, .weekly, .awesome:
             return []
         }
     }

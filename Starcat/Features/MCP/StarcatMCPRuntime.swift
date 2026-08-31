@@ -14,21 +14,36 @@
 import Foundation
 import MCP
 
+/// Loopback HTTP 层只依赖这三个生命周期方法。业务 Agent 的临时 MCP Runtime 与
+/// 长期 Starcat MCP Service 共用同一个 HTTP adapter，但不会共享 session 或权限。
 @MainActor
-final class StarcatMCPRuntime {
+protocol StarcatMCPHTTPRuntime: AnyObject, Sendable {
+    func start() async throws
+    func shutdown() async
+    func handle(_ request: HTTPRequest) async -> HTTPResponse
+}
+
+@MainActor
+final class StarcatMCPRuntime: StarcatMCPHTTPRuntime {
     private let facade: StarcatMCPFacade
     private let writeFacade: StarcatMCPWriteFacade
     private let originValidator: OriginValidator
+    private let allowedToolNames: Set<String>?
+    private let exposesResources: Bool
     private var session: Session?
 
     init(
         facade: StarcatMCPFacade,
         writeFacade: StarcatMCPWriteFacade,
-        originValidator: OriginValidator = .localhost()
+        originValidator: OriginValidator = .localhost(),
+        allowedToolNames: Set<String>? = nil,
+        exposesResources: Bool = true
     ) {
         self.facade = facade
         self.writeFacade = writeFacade
         self.originValidator = originValidator
+        self.allowedToolNames = allowedToolNames
+        self.exposesResources = exposesResources
     }
 
     func start() async throws {
@@ -79,7 +94,12 @@ final class StarcatMCPRuntime {
                 tools: .init(listChanged: false)
             )
         )
-        let registry = StarcatMCPToolRegistry(facade: facade, writeFacade: writeFacade)
+        let registry = StarcatMCPToolRegistry(
+            facade: facade,
+            writeFacade: writeFacade,
+            allowedToolNames: allowedToolNames,
+            exposesResources: exposesResources
+        )
 
         // `Server.withMethodHandler` 会长期保存 handler 闭包。registry 必须由
         // Session 强持有到 server 停止，否则 handler 内的弱引用会变 nil，

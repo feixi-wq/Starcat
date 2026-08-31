@@ -61,7 +61,7 @@
 >
 > ⚠️ **dong4j 在 2026-07-16 明确要求**：未确认前禁止改 `功能实现总览.md`（含变更日志）；见铁律 #4。
 >
-> 不要凭 CLAUDE.md / AGENTS.md 自行推测进度。**`功能实现总览.md` 才是单一信任源**。
+> 不要凭 `AGENTS.md` 自行推测进度。**`功能实现总览.md` 才是单一信任源**。
 
 ### 状态符号（与功能实现总览.md 同步）
 
@@ -98,6 +98,27 @@
 
 ---
 
+## 🛠️ 本地构建与启动（强制）
+
+本项目同时维护 App Store / Direct 两套 scheme，并允许本机安装多个 Xcode。Agent 不得根据全局 `xcode-select` 临时拼接构建命令，统一使用 Makefile：
+
+```bash
+# 只构建并校验产物，不停止或启动 App
+make build-appstore
+make build-direct
+
+# 构建、校验并启动对应渠道
+make run-appstore
+make run-direct
+```
+
+- 上述入口固定使用 `/Applications/Xcode.app`；如稳定版 Xcode 安装在其他位置，显式设置 `STARCAT_STABLE_XCODE_DEVELOPER_DIR`。
+- `build/DerivedData-Sandbox` 只属于 App Store Debug，`build/DerivedData-NoSandbox` 只属于 Direct Debug，`build/DerivedData-Tests` 只属于命令行单测。脚本会记录 Xcode / SDK / scheme 所有权指纹，环境变化时仅重建对应的可再生缓存。
+- **禁止**裸 `xcodebuild build` 写入这三个固定目录，也禁止把其他 scheme、Xcode Beta 或一次性诊断构建指向它们。
+- 需要新增构建场景时，先补 Makefile / 脚本标准入口；一次性裸 `xcodebuild` 必须使用独立的 `/tmp` DerivedData，不能借用项目固定缓存。
+
+---
+
 ## 🧪 如何跑单测（必读，2026-05-31 起生效）
 
 **当前最低要求**：跑测前**关闭 Xcode IDE**（Cmd+Q），否则 `xcodebuild test` 与 IDE 抢占同一 `testmanagerd` 实例，可能挂起。
@@ -105,20 +126,14 @@
 ### A. 命令行（CI 友好，推荐 AI Agent 用）
 
 ```bash
-# 1) 把 xcodegen 生成的 project 同步到最新（每次新增 / 删除 swift 文件后必跑）
-xcodegen generate
+# 跑全部单测；入口会执行 xcodegen、固定稳定版 Xcode，并复用 build/DerivedData-Tests
+make test
 
-# 2) 跑全部单测
-xcodebuild -scheme Starcat -destination 'platform=macOS,arch=arm64' test
+# 只跑某个 Suite（迭代时省时间；同样走测试专用缓存，禁止 mktemp）
+make test TEST_ARGS="-only-testing:StarcatTests/TagRepositoryTests"
 
-# 2.1) 只跑某个 Suite（迭代时省时间）
-xcodebuild -scheme Starcat -destination 'platform=macOS,arch=arm64' \
-  -only-testing:StarcatTests/TagRepositoryTests test
-
-# 2.2) 同时跑多个 Suite
-xcodebuild -scheme Starcat -destination 'platform=macOS,arch=arm64' \
-  -only-testing:StarcatTests/TagRepositoryTests \
-  -only-testing:StarcatTests/RepoTagRepositoryTests test
+# 同时跑多个 Suite
+make test TEST_ARGS="-only-testing:StarcatTests/TagRepositoryTests -only-testing:StarcatTests/RepoTagRepositoryTests"
 ```
 
 预期输出形如：
@@ -216,8 +231,8 @@ Starcat/
 
 | 文档 | 用途 |
 |------|------|
+| **`AGENTS.md`** | **跨 Agent 协作唯一维护源（本文档）** |
 | **`docs/功能实现总览.md`** | **【主进度索引】所有功能 checkbox + 重构债务，开工前必读** |
-| `CLAUDE.md` | 单次会话指导，快速了解项目 |
 | `docs/0-总览/README.md` | 文档总入口 / 目录结构 |
 | `docs/1-立项/概要设计.md` | 技术选型、阶段规划 |
 | `docs/1-立项/功能清单.md` | 功能优先级原表（P0/P1/P2 详细描述） |
@@ -229,7 +244,7 @@ Starcat/
 | `docs/5-规范/Changelog-更新规范.md` | Changelog 询问时机、授权边界、日常文件范围与发版生成规则 |
 | `docs/6-发版与上架/SOP-发版流程.md` | 发版 SOP（git tag 自动驱动版本号） |
 
-> **阅读顺序建议**：先读 `CLAUDE.md` 了解概览，再根据任务需要查阅对应文档。
+> **阅读顺序建议**：先读 `AGENTS.md` 了解概览，再根据任务需要查阅对应文档。
 
 ---
 
@@ -378,6 +393,11 @@ Section {
 > 单一信任源：[`docs/5-规范/UI-刷新图标-规范.md`](docs/5-规范/UI-刷新图标-规范.md)
 > 所有 icon-only 刷新触发器走 `SyncIconButton`,`arrow.triangle.2.circlepath`,静止 `.secondary` / 刷新中 `.accentColor` + 旋转。
 
+### UI 规范：列表分页加载（强制，2026-08-28 起生效）
+
+> 单一信任源：[`docs/5-规范/UI-列表分页加载规范.md`](docs/5-规范/UI-列表分页加载规范.md)
+> 所有滚动驱动的增量列表统一使用 `ListPaginationPolicy` 与 `automaticListPagination`；剩余 10 个可见项时预取，快速滚动期间不得丢失加载需求，筛选、排序或来源变化时必须重置分页身份。
+
 ### UI 规范：复制按钮反馈（强制，2026-07-12 起生效）
 
 > 单一信任源：[`docs/5-规范/UI-复制按钮-规范.md`](docs/5-规范/UI-复制按钮-规范.md)
@@ -397,7 +417,7 @@ Section {
 ### 国际化规范（i18n，强制）
 
 > 单一信任源：[`docs/5-规范/国际化-规范.md`](docs/5-规范/国际化-规范.md) + [`docs/5-规范/i18n-军规.md`](docs/5-规范/i18n-军规.md)
-> 关键 7 条：`String.l10n` / `Text("key")` / `.appLocaleEnvironment()` / locale 注入 / `Localizable.xcstrings` 命名 `{section}.{subsection}.{component}` / 目录编辑必须保持 `"key" : value` 并禁止整文件格式化 / **禁止脚本读写 Catalog，只允许相邻 key 关键词局部匹配；diff 出现上万行删除必须停手，禁止抢救脚本**。
+> 关键 7 条：`String.l10n` / `Text("key")` / `.appLocaleEnvironment()` / locale 注入 / `Localizable.xcstrings` 命名 `{section}.{subsection}.{component}` / 目录编辑必须保持 `"key" : value` 并禁止整文件格式化 / **Catalog 禁止 StrReplace/ApplyPatch 与 JSON 重排写回；只允许 Xcode 或经验证的按行插入（diff 只能新增）**。
 > 自检：提交前 `rg "String\(localized:"` 与 `rg "NSLocalizedString"` 应只命中注释。
 
 ### 问题处理

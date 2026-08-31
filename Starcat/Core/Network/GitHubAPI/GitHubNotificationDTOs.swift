@@ -58,8 +58,17 @@ struct GitHubNotificationSubjectHydration: Equatable, Sendable {
     let actorLogin: String?
     let excerpt: String?
     let createdAt: String?
-    /// Issue / PR 的 `open` / `closed`。Release 等没有。
+    /// Issue / PR 的 `open` / `closed` / `merged`。Release 等没有。
+    /// PR 已合并时 hydrate 会把 GitHub 的 `closed + merged` 收成 `merged`。
     let state: String?
+    /// GitHub Issue / PR 标签，按 API 顺序。Release / Discussion 为空。
+    var labels: [GitHubNotificationIssueLabel] = []
+}
+
+/// GitHub 标签。`colorHex` 是 Issues API 的 6 位色值，不含 `#`。
+struct GitHubNotificationIssueLabel: Equatable, Codable, Hashable, Sendable {
+    let name: String
+    let colorHex: String
 }
 
 /// Issue / PR 下的一条评论。详情页按 GitHub 会话顺序渲染 Markdown。
@@ -69,4 +78,15 @@ struct GitHubNotificationComment: Equatable, Codable, Sendable, Identifiable {
     let body: String
     let htmlURL: String?
     let createdAt: String?
+
+    /// 本地编辑成功后只换正文，id / 链接 / 作者保持原值。
+    func withBody(_ body: String) -> GitHubNotificationComment {
+        GitHubNotificationComment(
+            id: id,
+            login: login,
+            body: body,
+            htmlURL: htmlURL,
+            createdAt: createdAt
+        )
+    }
 }

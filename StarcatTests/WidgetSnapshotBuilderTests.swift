@@ -2,8 +2,8 @@
 //  WidgetSnapshotBuilderTests.swift
 //  StarcatTests
 //
-//  Widget 数据库投影测试：覆盖 Focus、今日重逢和 Release Watch 的隐私、
-//  排序、数量上限与确定性选择规则。
+//  Widget 投影测试：覆盖 Focus、今日重逢、Release Watch 与贡献数据的隐私、
+//  排序、数量上限、确定性选择和跨进程聚合规则。
 //
 //  测试使用真实 GRDB 内存库，确保断言的是生产 SQL，而不是测试侧重复实现的 mock。
 //
@@ -130,7 +130,7 @@ struct WidgetSnapshotBuilderTests {
         )
     }
 
-    @Test("收藏趋势补齐十二周并排除私有和不可访问仓库")
+    @Test("收藏趋势补齐十二周和二十六周日历并排除私有及不可访问仓库")
     func buildsCollectionTrendProjection() async throws {
         let database = try InMemoryDatabaseManager(userId: 42)
         let dates = [
@@ -177,9 +177,96 @@ struct WidgetSnapshotBuilderTests {
         #expect(trend.weeklyPoints.count == 12)
         #expect(trend.weeklyPoints.map(\.count).reduce(0, +) == 4)
         #expect(trend.weeklyPoints.last?.count == 2)
+        let dailyPoints = try #require(trend.dailyPoints)
+        #expect(dailyPoints.count == 26 * 7)
+        #expect(dailyPoints.map(\.count).reduce(0, +) == 4)
+        #expect(
+            dailyPoints.first?.date
+                == ISO8601DateFormatter().date(from: "2026-02-02T00:00:00Z")
+        )
+        #expect(
+            dailyPoints.last?.date
+                == ISO8601DateFormatter().date(from: "2026-08-02T00:00:00Z")
+        )
+        let countsByDay = Dictionary(uniqueKeysWithValues: dailyPoints.map {
+            (String(ISO8601DateFormatter.shared.string(from: $0.date).prefix(10)), $0.count)
+        })
+        #expect(countsByDay["2026-07-30"] == 1)
+        #expect(countsByDay["2026-07-29"] == 0)
+        #expect(countsByDay["2026-08-02"] == 0)
         #expect(trend.statusBreakdown.unreadCount == 1)
         #expect(trend.statusBreakdown.readCount == 2)
         #expect(trend.statusBreakdown.usingCount == 1)
+    }
+
+    @Test("贡献投影保留周边界并计算今日与峰值")
+    func buildsContributionProjection() async throws {
+        let database = try InMemoryDatabaseManager(userId: 42)
+        let generatedAt = ISO8601DateFormatter().date(
+            from: "2026-08-29T12:00:00Z"
+        )!
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let payload = ContributionCalendarPayload(
+            totalContributions: 1_088,
+            weeks: [
+                ContributionWeek(contributionDays: [
+                    ContributionDay(
+                        date: "2026-08-28",
+                        contributionCount: 57,
+                        contributionLevel: .fourthQuartile,
+                        weekday: 5
+                    ),
+                    ContributionDay(
+                        date: "2026-08-29",
+                        contributionCount: 5,
+                        contributionLevel: .secondQuartile,
+                        weekday: 6
+                    )
+                ])
+            ],
+            activityStats: ContributionActivityStats(
+                commits: 900,
+                issues: 78,
+                pullRequests: 103,
+                reviews: 120,
+                repositories: 7
+            )
+        )
+
+        let snapshot = try await WidgetSnapshotBuilder(database: database).build(
+            generatedAt: generatedAt,
+            calendar: calendar,
+            contributionCalendar: payload
+        )
+        let activity = try #require(snapshot.contributionActivity)
+
+        #expect(activity.totalContributions == 1_088)
+        #expect(activity.todayContributions == 5)
+        #expect(activity.bestDayContributions == 57)
+        #expect(activity.weeks.count == 1)
+        #expect(activity.weeks[0].days.map(\.weekday) == [5, 6])
+        #expect(activity.stats.commits == 900)
+        #expect(activity.stats.pullRequests == 103)
+        #expect(activity.stats.repositories == 7)
+    }
+
+    @Test("旧贡献缓存缺少五维统计时安全回落为零")
+    func decodesLegacyContributionPayload() throws {
+        let rawJSON = """
+        {
+          "totalContributions": 12,
+          "weeks": []
+        }
+        """
+
+        let payload = try JSONDecoder().decode(
+            ContributionCalendarPayload.self,
+            from: Data(rawJSON.utf8)
+        )
+
+        #expect(payload.totalContributions == 12)
+        #expect(payload.activityStats == .empty)
     }
 
     @Test("Release Watch 只投影订阅未读公开记录并保持排序与总数口径")
