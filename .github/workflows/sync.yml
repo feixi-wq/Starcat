@@ -3,7 +3,7 @@ name: Sync Upstream
 on:
   schedule:
     - cron: '0 2,14 * * *'
-  workflow_dispatch:     
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,11 +14,19 @@ jobs:
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
-
-      - name: Sync upstream changes
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
         with:
-          upstream_sync_repo: starcat-app/Starcat
-          upstream_sync_branch: main
-          target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync and Merge
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          git remote add upstream https://github.com/starcat-app/Starcat.git
+          git fetch upstream main
+          
+          git merge upstream/main -m "chore: sync with upstream" --allow-unrelated-histories
+          
+          # 推送
+          git push origin main
