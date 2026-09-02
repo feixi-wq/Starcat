@@ -48,6 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static let incomingURLNotification = Notification.Name("starcat.incomingURL")
     static var openMainWindowFallback: (() -> Void)?
+    /// AppKit 菜单栏与独立窗口无法直接读取 SwiftUI `OpenWindowAction`，因此由主
+    /// Scene 在出现时注册一个很薄的桥接。目标 Tab 仍由 Settings feature 自己路由。
+    static var openSettingsWindowFallback: (() -> Void)?
+    /// RAG 配置也由 SwiftUI 单例 Window 承载；工作台的 AppKit titlebar 只调用此桥接。
+    static var openRAGWorkspaceSettingsWindowFallback: (() -> Void)?
+    /// 首次创建 Settings Window 时，跳转通知可能先于 View 的订阅安装。
+    /// 暂存最后一个目标，SettingsView 在 onAppear 兜底消费，避免靠固定延迟碰运气。
+    private static var pendingSettingsTarget: String?
     private static weak var dependencies: AppDependencies?
 
     static func configure(dependencies: AppDependencies) {
@@ -216,6 +224,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+    }
+
+    /// 打开唯一的设置窗口，并可选定位到指定设置页或区块。
+    ///
+    /// 这里不自行创建 `NSWindow`：窗口生命周期仍由 SwiftUI `Window` scene 管理，
+    /// 才能保留系统交通灯、工具栏、状态恢复与 `openWindow(id:)` 的单例语义。
+    static func openSettingsWindow(target: String? = nil) {
+        NSApp.activate(ignoringOtherApps: true)
+        if let target {
+            pendingSettingsTarget = target
+            // 已存在的设置窗口可立即消费；尚未创建时由 onAppear 读取 pending。
+            NotificationCenter.default.post(name: .starcatJumpToSettingsTab, object: target)
+        }
+        openSettingsWindowFallback?()
+    }
+
+    /// SettingsView 首次出现时消费尚未被通知订阅处理的深链目标。
+    static func consumePendingSettingsTarget() -> String? {
+        defer { pendingSettingsTarget = nil }
+        return pendingSettingsTarget
+    }
+
+    /// 已打开的 SettingsView 收到通知后确认消费，避免窗口下次重建时重复跳转。
+    static func acknowledgeSettingsTarget(_ target: String) {
+        guard pendingSettingsTarget == target else { return }
+        pendingSettingsTarget = nil
+    }
+
+    /// 打开唯一的 RAG 工作台设置窗口。
+    static func openRAGWorkspaceSettingsWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openRAGWorkspaceSettingsWindowFallback?()
     }
 
     private static func mainWindowCandidate() -> NSWindow? {
