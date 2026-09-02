@@ -22,9 +22,11 @@ import SwiftUI
 struct BatchAIQueuePanel: View {
 
     @Bindable var service: BatchAIQueueService
+    let onFilterChange: (BatchAIResultFilter) -> Void
     @State private var expandedRepoID: Int64?
     @State private var presentation = BatchAIQueuePresentationStore()
     @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,6 +42,9 @@ struct BatchAIQueuePanel: View {
         }
         .onChange(of: service.presentationRevision) { _, _ in
             presentation.scheduleSynchronize(from: service)
+        }
+        .onChange(of: presentation.filter) { _, newValue in
+            onFilterChange(newValue)
         }
     }
 
@@ -116,7 +121,8 @@ struct BatchAIQueuePanel: View {
     }
 
     private func filterLabel(_ key: LocalizedStringKey, count: Int) -> some View {
-        Text(key) + Text(verbatim: " \(count)")
+        (Text(key) + Text(verbatim: " \(count.formatted(.number.locale(locale)))"))
+            .monospacedDigit()
     }
 
     private var jobList: some View {

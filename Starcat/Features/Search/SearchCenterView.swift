@@ -411,11 +411,19 @@ struct SearchCenterView: View {
     /// Web / AnySearch 筛选抽屉 section。保持原有筛选值与 apply 行为，只改变布局容器。
     private var anySearchFilterSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("search.web.filterTitle", systemImage: "globe")
-                    .font(interfaceScale.font(.captionStrong, weight: .semibold))
-                Spacer()
+            HStack(spacing: 6) {
+                // 图标 alone 看不出当前服务；标题后追加 brand 名（AnySearch / Tavily 等不翻译）
+                Image(systemName: "globe")
+                    .accessibilityHidden(true)
+                Text("search.web.filterTitle")
+                Text(verbatim: "·")
+                    .foregroundStyle(.secondary)
+                Text(verbatim: viewModel.webSearchProvider.displayName)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
+            .font(interfaceScale.font(.captionStrong, weight: .semibold))
+            .accessibilityElement(children: .combine)
 
             providerPicker
 
@@ -425,7 +433,8 @@ struct SearchCenterView: View {
                 .lineLimit(2)
 
             SearchFilterNumericField(
-                titleKey: "search.web.maxResults",
+                // Web / AnySearch 共用结果数文案；Catalog 已有 search.anysearch.maxResults（含 18 语）
+                titleKey: "search.anysearch.maxResults",
                 placeholder: "10",
                 hintKey: "search.anysearch.maxResults.hint",
                 draft: $maxResultsDraft,
@@ -492,7 +501,7 @@ struct SearchCenterView: View {
     private func isExternalSearchProviderUsable(_ provider: ExternalSearchProviderID) -> Bool {
         let providerSettings = AppSettings.shared.externalSearchSettings(for: provider)
         guard providerSettings.isEnabled else { return false }
-        if provider == .anySearch, providerSettings.anonymousMode { return true }
+        if provider.supportsAnonymous, providerSettings.anonymousMode { return true }
         return providerSettings.hasVerifiedCredential && AppSettings.shared.externalSearchAPIKey(for: provider)?.isEmpty == false
     }
 
@@ -516,12 +525,12 @@ struct SearchCenterView: View {
             } description: {
                 Text("search.web.provider.requiresConfigurationDescription")
             } actions: {
-                if viewModel.webSearchProvider == .anySearch,
-                   AppSettings.shared.externalSearchSettings(for: .anySearch).anonymousMode {
+                if viewModel.webSearchProvider.supportsAnonymous,
+                   AppSettings.shared.externalSearchSettings(for: viewModel.webSearchProvider).anonymousMode {
                     Button("search.empty.anySearchDisabled.action") {
-                        var providerSettings = AppSettings.shared.externalSearchSettings(for: .anySearch)
+                        var providerSettings = AppSettings.shared.externalSearchSettings(for: viewModel.webSearchProvider)
                         providerSettings.isEnabled = true
-                        AppSettings.shared.setExternalSearchSettings(providerSettings, for: .anySearch)
+                        AppSettings.shared.setExternalSearchSettings(providerSettings, for: viewModel.webSearchProvider)
                         Task { await viewModel.submit() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -964,6 +973,9 @@ struct SearchCenterView: View {
             case .braveLLMContext:
                 Image(systemName: "shield.fill")
                     .font(.system(size: size, weight: .semibold))
+            case .firecrawl:
+                Image(systemName: "flame.fill")
+                    .font(.system(size: size, weight: .semibold))
             }
         }
 
@@ -977,6 +989,8 @@ struct SearchCenterView: View {
                 return .purple
             case .braveLLMContext:
                 return .orange
+            case .firecrawl:
+                return .red
             }
         }
     }

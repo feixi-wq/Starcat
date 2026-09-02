@@ -63,6 +63,19 @@ enum BatchAITagReviewState: Equatable, Sendable {
     case failed(BatchAIFailure)
 }
 
+/// AI 建议标签相对于本轮批次启动时标签库的来源状态。
+///
+/// 来源只属于当前审核会话，不写数据库：用户需要知道本轮是复用、待创建还是已经创建，
+/// 但标签一旦落库，长期数据模型不应携带“由哪一轮批量任务创建”的临时 UI 状态。
+enum BatchAITagSuggestionAvailability: Equatable, Sendable {
+    /// 批次启动前已经存在，确认后只需建立仓库关联。
+    case existing
+    /// 批次启动前不存在，尚未完成创建。
+    case missing
+    /// 批次启动前不存在，已经在本轮自动或手动创建并应用。
+    case created
+}
+
 // MARK: - BatchAIFailure
 
 /// 批量任务失败的结构化语义。
@@ -163,6 +176,10 @@ struct BatchAIJob: Identifiable, Equatable, Sendable {
     /// 当前人工选择的候选标签 ID。默认包含全部建议，用户可在展开区逐项取消。
     var selectedSuggestedTagIDs: Set<String> = []
 
+    /// 候选标签在本轮中的来源状态，key 为 `AITagSuggestion.id`。
+    /// 数据库读取失败时不写入对应 key，UI 会隐藏来源标识，避免把未知状态误报为“需新建”。
+    var suggestedTagAvailability: [String: BatchAITagSuggestionAvailability] = [:]
+
     /// 与 AI 生成终态分离的人工审核状态。
     var tagReviewState: BatchAITagReviewState = .notRequired
 
@@ -202,6 +219,7 @@ struct BatchAIJob: Identifiable, Equatable, Sendable {
               lhs.appliedTagNames == rhs.appliedTagNames,
               lhs.suggestedTags == rhs.suggestedTags,
               lhs.selectedSuggestedTagIDs == rhs.selectedSuggestedTagIDs,
+              lhs.suggestedTagAvailability == rhs.suggestedTagAvailability,
               lhs.tagReviewState == rhs.tagReviewState,
               lhs.finishedAt == rhs.finishedAt,
               lhs.didGenerateSummary == rhs.didGenerateSummary,
@@ -248,6 +266,11 @@ struct BatchAIQueueOptions: Equatable, Sendable {
     /// 设计取舍：默认 false。这是"破坏性 + 不可逆"的批量写入，
     /// 用户首次大批量整理时主动开启，平时小批量保持手动确认更安全。
     var autoApplyTags: Bool = false
+
+    /// 自动应用时，是否同时创建标签库中尚不存在的标签。
+    ///
+    /// 默认关闭，且只在 `autoApplyTags == true` 时生效；关闭时，新标签继续进入当前窗口待确认。
+    var autoCreateMissingTags: Bool = false
 
     /// 本次摘要生成是否启用代码上下文。
     ///

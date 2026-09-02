@@ -78310,6 +78310,22 @@
         }
       }
     },
+    "batchAI.options.autoCreateMissingTags" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create new tags"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许新增标签"
+          }
+        }
+      }
+    },
     "batchAI.options.autoApply" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -78328,7 +78344,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Auto-apply recommended tags"
+            "value" : "Auto-apply"
           }
         },
         "es" : {
@@ -81362,6 +81378,18 @@
         }
       }
     },
+    "batchAI.panel.review.clearRepositorySelection" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deselect all" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消选中" } }
+      }
+    },
+    "batchAI.panel.review.selectAllRepositories" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Select all" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "选中全部" } }
+      }
+    },
     "batchAI.panel.review.clear" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -81443,6 +81471,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已生成 %lld 个标签 · 待确认"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.pendingNewTag" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New tags · Pending review"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "含新增标签 · 待确认"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.tagOrigin.created" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Created"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本次新建"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.tagOrigin.existing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Existing"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已有"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.tagOrigin.missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需新建"
           }
         }
       }
@@ -272272,6 +272368,125 @@
         }
       }
     },
+    "repo.owner.card.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View owner"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看所有者"
+          }
+        }
+      }
+    },
+    "repo.owner.follow" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Follow"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关注"
+          }
+        }
+      }
+    },
+    "repo.owner.followers" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Followers"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关注者"
+          }
+        }
+      }
+    },
+    "repo.owner.following" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Following"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关注中"
+          }
+        }
+      }
+    },
+    "repo.owner.followingBadge" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Following"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已关注"
+          }
+        }
+      }
+    },
+    "repo.owner.stat.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View on GitHub"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 GitHub 查看"
+          }
+        }
+      }
+    },
+    "repo.owner.unfollow" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unfollow"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消关注"
+          }
+        }
+      }
+    },
     "repo.private" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -325531,6 +325746,23 @@
         }
       }
     },
+    "settings.externalSearch.firecrawl.fullText" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fetch full-page markdown"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取全文 markdown"
+          }
+        }
+      }
+    },
     "settings.externalSearch.includeWebInAll" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -329403,6 +329635,134 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "macOS 整合"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.notifications" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read and manage GitHub notifications."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取和管理 GitHub 通知。"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.organizationHelp" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Organization owners may restrict third-party OAuth app access. These scopes do not bypass an organization authorization policy."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "组织所有者可能限制第三方 OAuth App 访问；这些权限无法绕过组织授权策略。"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.publicRepo" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read and manage public repository data."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取和管理公开仓库数据。"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.readUser" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read GitHub profile data."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 GitHub 个人资料。"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.section" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub OAuth Permissions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub OAuth 权限"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.summary" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat requests the following OAuth scopes during GitHub sign-in."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat 登录 GitHub 时会申请以下 OAuth 权限。"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.unknown" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Requested by the current app version."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由当前 App 版本申请。"
+          }
+        }
+      }
+    },
+    "settings.general.oauthScopes.user" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read and update GitHub user account data."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取和更新 GitHub 用户账户数据。"
           }
         }
       }

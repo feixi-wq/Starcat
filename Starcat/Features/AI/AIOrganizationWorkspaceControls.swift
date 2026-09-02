@@ -74,6 +74,12 @@ struct AIOrganizationReviewFooter: View {
     let selectionSummary: String
     let canApply: Bool
     let isApplying: Bool
+    var showsApplyActions = true
+    var showsSelectionControls = false
+    var canSelectAll = false
+    var canClearSelection = false
+    var onSelectAll: () -> Void = {}
+    var onClearSelection: () -> Void = {}
     let onDiscard: () -> Void
     let onApply: () -> Void
 
@@ -85,16 +91,25 @@ struct AIOrganizationReviewFooter: View {
                 Button(discardTitle, role: .destructive, action: onDiscard)
             }
 
+            if showsApplyActions, showsSelectionControls {
+                Button("batchAI.panel.review.selectAllRepositories", action: onSelectAll)
+                    .disabled(!canSelectAll || isApplying)
+                Button("batchAI.panel.review.clearRepositorySelection", action: onClearSelection)
+                    .disabled(!canClearSelection || isApplying)
+            }
+
             Spacer()
 
-            Text(verbatim: selectionSummary)
-                .font(interfaceScale.font(.caption))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+            if showsApplyActions {
+                Text(verbatim: selectionSummary)
+                    .font(interfaceScale.font(.caption))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
 
-            Button("githubStarLists.aiGrouping.applySelected", action: onApply)
-                .buttonStyle(.borderedProminent)
-                .disabled(!canApply || isApplying)
+                Button("githubStarLists.aiGrouping.applySelected", action: onApply)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canApply || isApplying)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)

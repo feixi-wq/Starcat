@@ -184,7 +184,7 @@ struct BatchAITagReviewRow: View {
         }
     }
 
-    /// 与 GitHub Lists 推荐分组保持同一套紧凑芯片视觉，只保留选择状态、名称和置信度。
+    /// 与 GitHub Lists 推荐分组保持同一套紧凑芯片视觉，并补充标签来源供用户判断是否会新建。
     private var tagChips: some View {
         BatchAITagFlowLayout(spacing: 8) {
             ForEach(job.suggestedTags) { suggestion in
@@ -220,6 +220,11 @@ struct BatchAITagReviewRow: View {
                 )
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+                if let availabilityKey = availabilityTitleKey(for: suggestion) {
+                    Text(availabilityKey)
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                }
             }
             .font(interfaceScale.font(.captionStrong))
             .padding(.horizontal, 8)
@@ -232,6 +237,19 @@ struct BatchAITagReviewRow: View {
         .disabled(!canEditSelection)
         .help(suggestion.name)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// 来源读取失败时不显示标识，避免把未知状态误报为“需新建”。
+    private func availabilityTitleKey(for suggestion: AITagSuggestion) -> LocalizedStringKey? {
+        guard let availability = job.suggestedTagAvailability[suggestion.id] else { return nil }
+        switch availability {
+        case .existing:
+            return "batchAI.panel.review.tagOrigin.existing"
+        case .missing:
+            return "batchAI.panel.review.tagOrigin.missing"
+        case .created:
+            return "batchAI.panel.review.tagOrigin.created"
+        }
     }
 
     @ViewBuilder
@@ -378,6 +396,15 @@ struct BatchAITagReviewRow: View {
     private var completedDetailText: String {
         switch job.tagReviewState {
         case .pending:
+            // 待确认原因有两类：新增标签（用户关掉自动创建导致）或低于阈值。
+            // 优先提示新增——它是更根本的原因（关掉自动创建后，新增标签无论置信度高低都需确认），
+            // 且芯片已展示置信度百分比，无需在提示里重复「低于阈值」。
+            let hasNewTag = job.suggestedTags.contains { suggestion in
+                job.suggestedTagAvailability[suggestion.id] == .missing
+            }
+            if hasNewTag {
+                return String.l10n("batchAI.panel.review.pendingNewTag")
+            }
             if !job.belowThresholdTags.isEmpty {
                 return String.l10n("githubStarLists.aiGrouping.status.suggested")
             }
@@ -398,7 +425,7 @@ struct BatchAITagReviewRow: View {
             if !job.appliedTagNames.isEmpty { return appliedTagsText }
             return job.didGenerateSummary
                 ? String.l10n("batchAI.panel.row.summaryOnly")
-                : String.l10n("batchAI.panel.row.completedNoTags")
+                : String.l10n("batchAI.panel.finished")
         }
     }
 
