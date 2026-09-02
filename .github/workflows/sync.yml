@@ -2,28 +2,23 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '0 0 * * *' # 每天自动同步一次
-  workflow_dispatch:      # 支持手动一键触发
+    - cron: '0 2,14 * * *'
+  workflow_dispatch:     
+
+permissions:
+  contents: write
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main branch
+      - name: Checkout target repo
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
 
-      - name: Sync upstream main branch
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
-          # 添加上游仓库源
-          git remote add upstream https://github.com/starcat-app/Starcat.git
-          git fetch upstream main
-          
-          # 合并上游 main 分支并推送到你自己的仓库
-          git merge upstream/main --ff-only || git merge upstream/main -m "chore: sync with upstream"
-          git push origin main
+      - name: Sync upstream changes
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+        with:
+          upstream_sync_repo: starcat-app/Starcat
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
