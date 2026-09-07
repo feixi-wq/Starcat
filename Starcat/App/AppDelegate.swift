@@ -51,8 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// AppKit 菜单栏与独立窗口无法直接读取 SwiftUI `OpenWindowAction`，因此由主
     /// Scene 在出现时注册一个很薄的桥接。目标 Tab 仍由 Settings feature 自己路由。
     static var openSettingsWindowFallback: (() -> Void)?
-    /// RAG 配置也由 SwiftUI 单例 Window 承载；工作台的 AppKit titlebar 只调用此桥接。
-    static var openRAGWorkspaceSettingsWindowFallback: (() -> Void)?
     /// 首次创建 Settings Window 时，跳转通知可能先于 View 的订阅安装。
     /// 暂存最后一个目标，SettingsView 在 onAppear 兜底消费，避免靠固定延迟碰运气。
     private static var pendingSettingsTarget: String?
@@ -84,10 +82,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard flag else {
+            // 冷启动状态恢复可能报告“有持久化状态”，却没有真正恢复任何窗口。
+            // 此时主 Scene 尚未出现，openWindow fallback 也还未注册；返回 true
+            // 让 SwiftUI 按 `.defaultLaunchBehavior(.presented)` 创建唯一的 main Window，
+            // 避免 AppDelegate 与主窗口 onAppear 互相等待而陷入零窗口状态。
+            return true
+        }
+
         Self.activateMainWindowIfPossible()
         // 返回 false 表示 Dock reopen 已由 Starcat 自己接管；如果返回 true，
-        // AppKit/SwiftUI 会继续执行默认 WindowGroup reopen，和 openWindow fallback
-        // 叠加后会一次打开两个主窗口。
+        // AppKit/SwiftUI 会继续执行默认 reopen，和已有窗口激活叠加。
         return false
     }
 
@@ -231,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 这里不自行创建 `NSWindow`：窗口生命周期仍由 SwiftUI `Window` scene 管理，
     /// 才能保留系统交通灯、工具栏、状态恢复与 `openWindow(id:)` 的单例语义。
     static func openSettingsWindow(target: String? = nil) {
+        PerformanceTracer.shared.mark(.settingsWindowRequested)
         NSApp.activate(ignoringOtherApps: true)
         if let target {
             pendingSettingsTarget = target
@@ -250,12 +256,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static func acknowledgeSettingsTarget(_ target: String) {
         guard pendingSettingsTarget == target else { return }
         pendingSettingsTarget = nil
-    }
-
-    /// 打开唯一的 RAG 工作台设置窗口。
-    static func openRAGWorkspaceSettingsWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        openRAGWorkspaceSettingsWindowFallback?()
     }
 
     private static func mainWindowCandidate() -> NSWindow? {

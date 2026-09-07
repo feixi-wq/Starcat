@@ -622,23 +622,8 @@ struct HomeView: View {
         .onChange(of: selectedTrendingRepoID) { _, newID in
             handleTrendingRepoIDChange(newID)
         }
-        // HOM-68：README 加载完成后把源 HTML 喂给翻译 VM，用于刷新 cacheIsStale。
-        // 探索 / 活动 / 周刊由 ReadmeStateView 自己 bind；这里只补 Manage 全局 readmeVM。
-        .onChange(of: readmeStateSignature) { _, _ in
-            refreshTranslationSourceIfNeeded()
-        }
-        // 用户在详情页切换目标语言 → 重新预载缓存并复位显示。
-        .onChange(of: settings.readmeTranslationLanguage) { _, newLanguage in
-            handleReadmeTranslationLanguageChange(newLanguage)
-        }
-        .onChange(of: locale.identifier) { _, _ in
-            guard settings.readmeTranslationLanguage == .auto else { return }
-            handleReadmeTranslationLanguageChange(.auto)
-        }
-        // 翻译方式切换后恢复原文，并重新检查该模式自己的缓存。
-        .onChange(of: settings.readmeTranslationMode) { _, newMode in
-            handleReadmeTranslationModeChange(newMode)
-        }
+        // README 与翻译状态由当前 `ReadmeStateView` 单点绑定。不要在 HomeView 再监听
+        // 同一份状态，否则每次切卡片都会重复 prepare 和磁盘缓存查询。
         )
     }
 
@@ -708,6 +693,12 @@ struct HomeView: View {
         .onChange(of: settings.aiSemanticSearchScoreThreshold) { _, newValue in
             if viewModel.semanticScoreThreshold != newValue {
                 viewModel.semanticScoreThreshold = newValue
+            }
+        }
+        // 感兴趣语言变化 → 左侧语言分类重分组 + `.other` 过滤结果刷新（viewModel.didSet 处理）。
+        .onChange(of: settings.interestedLanguages) { _, newValue in
+            if viewModel.interestedLanguages != newValue {
+                viewModel.interestedLanguages = newValue
             }
         }
         // Manage ↔ Trending 切换时，记住各自的上次选择，切换回来时恢复
@@ -958,19 +949,23 @@ struct HomeView: View {
 
     /// Search Center、Browser Plugin 和侧栏后台任务共用的本地仓库跳转入口。
     /// Browser Plugin 的 “Open in Starcat” 只对本地已 starred repo 开放。
-    /// 这里统一切到 Manage / All Stars，清空搜索，
-    /// 强制 reload 后选中目标 repo，让中栏滚动和右栏详情都由 HomeViewModel 单一维护。
+    /// 这里统一切到 Manage / All Stars，清空搜索，强制 reload 后选中目标 repo，
+    /// 让中栏定位和右栏详情都由 HomeViewModel 单一维护：
+    /// - 目标已在已加载列表内 → 滚动定位到对应行；
+    /// - 目标尚未加载（数据量大时）→ 不加载前缀，临时置顶到列表顶部；
+    /// - `pinInList == false` 的非本地项目（transient repo）→ 只选中，不进列表。
     ///
     /// 侧栏后台摘要任务也会走这里。关键点：
     /// 1. 立刻写 `externalSelectedRepo`，避免切到 All Stars 后「自动打开第一条」
     ///    抢选中，导致详情停在别的仓、开面板通知被丢弃。
-    /// 2. reload + `ensureRepoVisible` 后再发开面板通知，并略微延迟，等
+    /// 2. reload + 定位完成后再发开面板通知，并略微延迟，等
     ///    `RepoAIFloatingOverlay` 按新 `repo.id` 挂载完成。
     private func openCompanionRepository(
         _ repo: Repo,
         generateSummary: Bool = false,
         openSummaryPanel: Bool = false,
-        aiPanelSource: String? = nil
+        aiPanelSource: String? = nil,
+        pinInList: Bool = true
     ) {
         selectedSidebarPage = .manage
         viewModel.selection = .allStars
@@ -985,9 +980,24 @@ struct HomeView: View {
 
         Task {
             await viewModel.reloadItems(forceRefresh: true, reason: .externalMutation)
-            await viewModel.ensureRepoLoadedForExternalNavigation(repoId: repo.id)
-            viewModel.selectedRepoID = repo.id
-            viewModel.requestSelectedRepoScroll()
+            if pinInList, viewModel.items.contains(where: { $0.id == repo.id }) {
+                // 目标已在已加载列表内：滚动定位到对应行（数据量小，scrollTo 可靠）。
+                viewModel.selectedRepoID = repo.id
+                viewModel.requestSelectedRepoScroll()
+            } else if pinInList {
+                // 目标尚未加载（数据量大时常见）：不再把目标页之前的前缀全量加载，
+                // 直接把该 repo 临时置顶到列表顶部定位。
+                viewModel.pinTemporaryRepo(repo)
+                viewModel.selectedRepoID = repo.id
+                // 置顶后详情数据源改由 temporaryPinnedRepo 提供；清掉 external 避免它
+                // 长期霸占 selectedRepo（否则用户再点列表其他卡片，详情仍停留在置顶仓）。
+                viewModel.externalSelectedRepo = nil
+                // 置顶卡片位于列表最顶部：发出滚动请求，让列表滚回顶部显示它。
+                viewModel.requestSelectedRepoScroll()
+            } else {
+                // 非本地项目（如 Universal Link 未命中的 transient repo）：只选中，不进列表。
+                viewModel.selectedRepoID = repo.id
+            }
             // 列表已能解析该 id 时，交还给 filteredSorted 真源，避免外部选中残留。
             if viewModel.filteredSorted.contains(where: { $0.id == repo.id }) {
                 viewModel.externalSelectedRepo = nil
@@ -1331,8 +1341,6 @@ struct HomeView: View {
                         selectSidebarRootPage(.insights)
                     }
                 )
-                .id(selectedSidebarPage)
-                .detailContentTransition()
             }
             .transition(insightsBoundaryTransition)
         }
@@ -1342,10 +1350,9 @@ struct HomeView: View {
     private var detailColumn: some View {
         ZStack(alignment: .topLeading) {
             detailColumnBody
-                .id(selectedSidebarPage)
-                .detailContentTransition()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .modifier(RepoShareHost())
         .animation(reduceMotion ? nil : .easeOut(duration: 0.4), value: selectedSidebarPage)
     }
 
@@ -1425,16 +1432,19 @@ struct HomeView: View {
         viewModel.invalidateRepoPinsForDatabaseChange()
         dependencies.awesomeStore.resetForAccountChange()
 
-        if authSession.state.isAuthenticated,
-           selectedSidebarPage == .trending,
+        guard authSession.state.isAuthenticated else { return }
+
+        if selectedSidebarPage == .trending,
            selectedExploreMode == .awesome {
             await dependencies.awesomeStore.loadAwesome()
             return
         }
 
-        guard authSession.state.isAuthenticated,
-              selectedSidebarPage == .manage
-        else { return }
+        // 账号切换时认证状态可能已经先于 View 生命周期稳定；数据库 revision 才是
+        // 新账户 SQLite 可读的确定边沿，因此这里也补一次轻量来源摘要恢复。
+        await dependencies.awesomeStore.restoreCachedSidebarSources()
+
+        guard selectedSidebarPage == .manage else { return }
 
         await viewModel.reloadItems(forceRefresh: true, reason: .externalMutation)
         applyManageDetailSelectionPolicy()
@@ -1454,15 +1464,6 @@ struct HomeView: View {
         }
         if let repo = viewModel.selectedRepo {
             readmeVM.load(repo: repo, isLoggedIn: authSession.state.isAuthenticated)
-            // HOM-68：repo 变化时重置翻译态。源 HTML 尚未拿到，这里只重置 UI
-            // 占位；下方监听 `readmeVM.state` 会在 .loaded 时再补一次 prepare
-            // 让 cacheIsStale 计算到位。
-            translationVM.prepare(
-                repo: repo,
-                sourceHtml: nil,
-                targetLanguage: settings.effectiveReadmeTranslationLanguage,
-                mode: settings.readmeTranslationMode
-            )
         } else {
             readmeVM.reset()
             translationVM.prepare(
@@ -1498,46 +1499,6 @@ struct HomeView: View {
                 mode: settings.readmeTranslationMode
             )
         }
-    }
-
-    private func refreshTranslationSourceIfNeeded() {
-        guard let repo = viewModel.selectedRepo else { return }
-        if case .loaded(let html, _) = readmeVM.state {
-            translationVM.prepare(
-                repo: repo,
-                sourceHtml: html,
-                targetLanguage: settings.effectiveReadmeTranslationLanguage,
-                mode: settings.readmeTranslationMode
-            )
-        }
-    }
-
-    private func handleReadmeTranslationLanguageChange(_ newLanguage: ReadmeTranslationLanguage) {
-        guard let repo = viewModel.selectedRepo else { return }
-        let html: String? = {
-            if case .loaded(let value, _) = readmeVM.state { return value }
-            return nil
-        }()
-        translationVM.changeLanguage(
-            to: newLanguage.resolved(),
-            repo: repo,
-            sourceHtml: html,
-            mode: settings.readmeTranslationMode
-        )
-    }
-
-    private func handleReadmeTranslationModeChange(_ newMode: ReadmeTranslationMode) {
-        guard let repo = viewModel.selectedRepo else { return }
-        let html: String? = {
-            if case .loaded(let value, _) = readmeVM.state { return value }
-            return nil
-        }()
-        translationVM.changeMode(
-            to: newMode,
-            repo: repo,
-            sourceHtml: html,
-            targetLanguage: settings.effectiveReadmeTranslationLanguage
-        )
     }
 
     private func handleAuthRoutingChange(oldState: AuthState, newState: AuthState) {
@@ -1588,7 +1549,7 @@ struct HomeView: View {
             return
         case .allLanguages:
             viewModel.selection = .allStars
-            viewModel.clearLanguageFiltersFromUser()
+            viewModel.clearSidebarLanguageFilter()
             return
         default:
             break
@@ -1790,7 +1751,7 @@ struct HomeView: View {
                 cachedAt: ISO8601DateFormatter.shared.string(from: Date()),
                 isStarred: false
             )
-            openCompanionRepository(transientRepo)
+            openCompanionRepository(transientRepo, pinInList: false)
         } catch {
             AppLog.ui.error(
                 "Repository deep link failed for \(target.owner, privacy: .public)/\(target.name, privacy: .public): \(error.localizedDescription, privacy: .public)"
@@ -2011,6 +1972,9 @@ struct HomeView: View {
         if viewModel.globalFilterLanguages != settings.globalFilterLanguages {
             viewModel.globalFilterLanguages = settings.globalFilterLanguages
         }
+        if viewModel.interestedLanguages != settings.interestedLanguages {
+            viewModel.interestedLanguages = settings.interestedLanguages
+        }
         if viewModel.wikiAvailabilityFilter != settings.wikiAvailabilityFilter {
             viewModel.wikiAvailabilityFilter = settings.wikiAvailabilityFilter
         }
@@ -2138,24 +2102,6 @@ struct HomeView: View {
             return WeeklyVisualStyle.accentColor
         }
         return selectedActivityItem?.accentColor
-    }
-
-    /// README 加载状态的纯文本签名，用于驱动 `.onChange` 在 .loaded 切换时刷新翻译 VM。
-    ///
-    /// 不直接 `.onChange(of: readmeVM.state)`：`LoadState.loaded(html, cachedAt)` 的
-    /// `html` 字段在 SWR 后台刷新 304 时会保留不变但 `cachedAt` 会变；用 html 的
-    /// 长度 + 状态 case 名做签名即可在「真正拿到新 HTML」时触发一次回调，避免
-    /// 304 时再做一遍 hash 比对。
-    private var readmeStateSignature: String {
-        switch readmeVM.state {
-        case .idle:           return "idle"
-        case .loading:        return "loading"
-        case .empty:          return "empty"
-        case .requiresLogin:  return "requires-login"
-        case .error:          return "error"
-        case .loaded(let html, _):
-            return "loaded:\(html.count)"
-        }
     }
 
     /// 未分组中栏横幅「开始整理」：先过 Pro 门控，再打开现有 GitHub Lists 审核 sheet。
@@ -2393,6 +2339,13 @@ struct HomeView: View {
         }
         viewModel.setActiveUserID(user.id)
         restoreListPreferences(login: user.login)
+
+        // Awesome 的来源选择属于账户数据库，不能混进公开 Explore 目录的启动任务。
+        // 登录态发布时数据库已经完成切换；这里只恢复 SQLite 来源摘要，让侧栏数量
+        // 无需等用户首次进入 Awesome 才出现，也不触发远端目录或 README 条目刷新。
+        Task { @MainActor in
+            await dependencies.awesomeStore.restoreCachedSidebarSources()
+        }
 
         let wasAlreadyOnManage = selectedSidebarPage == .manage
         selectedSidebarPage = .manage

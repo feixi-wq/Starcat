@@ -170,7 +170,7 @@ struct StarcatApp: App {
                 }
             }
 
-            SettingsWindowCommands()
+            SettingsWindowCommands(dependencies: dependencies)
 
             StarcatAppCommands(
                 dependencies: dependencies,
@@ -186,36 +186,47 @@ struct StarcatApp: App {
             #endif
         }
 
-        // 运营工具使用真正的独立 Window 而不是 sheet：提交后可与主窗口并行工作，
-        // Window id 保证重复点击入口只激活同一个实例。默认不随 App 启动自动展示。
-        Window("curatedPublisher.window.title", id: CuratedPublisherWindow.id) {
-            curatedPublisherSceneRoot
+        // 两个 AI 工作台必须和主窗口一样由 SwiftUI Window Scene 承载：只有这样
+        // NavigationSplitView 的原生 Sidebar 才能贯穿 toolbar 并包住交通灯。
+        Window("rag.workspace.window.title", id: KnowledgeRAGWorkspaceWindowController.sceneID) {
+            KnowledgeRAGWorkspaceSceneHost(coordinator: AIWorkspaceSceneCoordinator.shared)
         }
-        .defaultSize(width: 1_080, height: 720)
+        .defaultSize(
+            width: KnowledgeRAGWorkspaceWindowMetrics.defaultContentSize.width,
+            height: KnowledgeRAGWorkspaceWindowMetrics.defaultContentSize.height
+        )
+        .defaultLaunchBehavior(.suppressed)
+
+        Window("agent.workspace.window.title", id: AgentWorkspaceWindowController.sceneID) {
+            if let dependencies {
+                AgentWorkspaceSceneRoot(dependencies: dependencies)
+            } else {
+                StartupFailureView(error: startupError ?? UserFacingError.map(
+                    DatabaseError.applicationSupportNotFound,
+                    operation: String.l10n("diagnostics.operation.startup"),
+                    service: "Starcat"
+                ))
+            }
+        }
+        .defaultSize(
+            width: AgentWorkspaceWindowMetrics.defaultContentSize.width,
+            height: AgentWorkspaceWindowMetrics.defaultContentSize.height
+        )
         .defaultLaunchBehavior(.suppressed)
 
         // 使用普通单例 Window，而不是 SwiftUI `Settings` preference window：保留标准
-        // 交通灯、原生 Sidebar/Toolbar，同时按产品约束固定为当前验收尺寸。
+        // 交通灯与原生 Sidebar/Toolbar。固定尺寸由 SettingsView 内部的 AppKit 探针
+        // 在窗口挂载后设置，不能使用 `.windowResizability(.contentSize)`：后者会在菜单
+        // action 尚未返回时同步 sizeThatFits 整棵 NavigationSplitView，造成彩虹圈。
         Window("Starcat", id: "settings") {
             settingsSceneRoot
         }
-        .defaultSize(width: 920, height: 600)
+        .defaultSize(width: 720, height: 720)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
-        .windowResizability(.contentSize)
         .commands {
-            SettingsWindowCommands()
+            SettingsWindowCommands(dependencies: dependencies)
         }
-
-        // RAG 配置与主设置使用同一种 SwiftUI Window Scene，而不再作为工作台自绘 sheet。
-        // 固定 id 保证重复点击齿轮只激活同一个标准窗口；`.contentSize` 禁止用户缩放。
-        Window("rag.workspace.settings.title", id: RAGWorkspaceSettingsWindow.id) {
-            ragWorkspaceSettingsSceneRoot
-        }
-        .defaultSize(width: 920, height: 600)
-        .defaultLaunchBehavior(.suppressed)
-        .restorationBehavior(.disabled)
-        .windowResizability(.contentSize)
     }
 
     // MARK: - 内容根视图
@@ -305,52 +316,6 @@ struct StarcatApp: App {
                 .animation(dependencies.settings.disableAnimations ? nil : .easeInOut(duration: 0.3), value: dependencies.settings.appearanceMode)
         } else {
             StartupFailureView(error: startupError ?? UserFacingError.map(DatabaseError.applicationSupportNotFound, operation: String.l10n("diagnostics.operation.startup"), service: "Starcat"))
-        }
-    }
-
-    /// RAG 配置是独立 Scene，不能继承主窗口或 Settings Scene 的 environment。
-    /// 只注入它实际使用的设置、语言与动画环境，避免把工作台 ViewModel 生命周期带进来。
-    @ViewBuilder
-    private var ragWorkspaceSettingsSceneRoot: some View {
-        if let dependencies {
-            RAGWorkspaceSettingsView(settings: dependencies.settings)
-                .starcatAnimationOverride()
-                .environment(dependencies.settings)
-                .environment(\.locale, localeStore.selection.effectiveLocale)
-                .environment(\.layoutDirection, localeStore.selection.effectiveLayoutDirection)
-                .environment(\.starcatInterfaceScale, dependencies.settings.interfaceScale)
-                .id(localeStore.selection.rawValue)
-        } else {
-            StartupFailureView(error: startupError ?? UserFacingError.map(
-                DatabaseError.applicationSupportNotFound,
-                operation: String.l10n("diagnostics.operation.startup"),
-                service: "Starcat"
-            ))
-        }
-    }
-
-    @ViewBuilder
-    private var curatedPublisherSceneRoot: some View {
-        if let dependencies {
-            CuratedPublisherView(
-                identification: dependencies.curatedProjectIdentificationSession,
-                publisher: dependencies.curatedPublisherSession
-            )
-                .frame(minWidth: 900, minHeight: 620)
-                .starcatAnimationOverride()
-                .environment(dependencies)
-                .environment(dependencies.authSession)
-                .environment(dependencies.settings)
-                .environment(\.locale, localeStore.selection.effectiveLocale)
-                .environment(\.layoutDirection, localeStore.selection.effectiveLayoutDirection)
-                .environment(\.starcatInterfaceScale, dependencies.settings.interfaceScale)
-                .id(localeStore.selection.rawValue)
-        } else {
-            StartupFailureView(error: startupError ?? UserFacingError.map(
-                DatabaseError.applicationSupportNotFound,
-                operation: String.l10n("diagnostics.operation.startup"),
-                service: "Starcat"
-            ))
         }
     }
 
@@ -475,6 +440,10 @@ struct StarcatApp: App {
         // `Starcat/Core/Settings/LocalizedBundle.swift` 顶部注释。
         LocalizedBundle.install()
 
+        // Kingfisher 默认内存上限是物理内存的 1/4、磁盘无限；在大量仓库头像场景下
+        // 会用远超 UI 所需的常驻空间。这里保留较大的磁盘热缓存，同时约束内存峰值。
+        ImageCachePerformanceConfiguration.configureDefault()
+
         // 外部 Runtime 已从 Debug POC 转为 Direct 正式能力。必须在任何 @AppStorage
         // 初始化前迁移旧键，避免升级后看似自动回退内置 Loop、实际丢失用户选择。
         ExternalAgentRuntimePreferences.migrateLegacyDefaults()
@@ -510,6 +479,7 @@ struct StarcatApp: App {
 /// WindowGroup 重新创建窗口。这里保持桥接很薄，只注册固定 id 的主窗口打开动作。
 private struct MainWindowOpenFallbackRegistrar: ViewModifier {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     func body(content: Content) -> some View {
         content
@@ -520,9 +490,17 @@ private struct MainWindowOpenFallbackRegistrar: ViewModifier {
                 AppDelegate.openSettingsWindowFallback = {
                     openWindow(id: "settings")
                 }
-                AppDelegate.openRAGWorkspaceSettingsWindowFallback = {
-                    openWindow(id: RAGWorkspaceSettingsWindow.id)
-                }
+                AIWorkspaceSceneCoordinator.shared.registerWindowActions(
+                    openAgent: {
+                        openWindow(id: AgentWorkspaceWindowController.sceneID)
+                    },
+                    openKnowledgeRAG: {
+                        openWindow(id: KnowledgeRAGWorkspaceWindowController.sceneID)
+                    },
+                    dismissKnowledgeRAG: {
+                        dismissWindow(id: KnowledgeRAGWorkspaceWindowController.sceneID)
+                    }
+                )
                 AppLog.general.info("Main window scene appeared; reopen fallback registered")
             }
     }
@@ -539,12 +517,32 @@ private extension View {
 /// 用普通 `Window` 承接设置页后，显式恢复 macOS 标准的「设置…」菜单与 Cmd+,。
 /// 重复触发 `openWindow(id:)` 只会激活同一个设置窗口，不会创建多个实例。
 private struct SettingsWindowCommands: Commands {
+    // 检查更新与设置同属主菜单尾段，直接放进同一个 .appSettings 替换组，
+    // 保证「检查更新」始终紧跟「打开设置」；不额外用 CommandGroup(after:) 追加，
+    // SwiftUI 对 .appSettings 的跨结构追加合并在真机上不可靠。
+    let dependencies: AppDependencies?
+
     var body: some Commands {
         CommandGroup(replacing: .appSettings) {
             Button("menubar.openSettings") {
                 AppDelegate.openSettingsWindow()
             }
             .keyboardShortcut(",", modifiers: .command)
+
+            if dependencies?.directUpdateController.isDirectBuild == true {
+                Button("commands.actions.checkForUpdates") {
+                    dependencies?.directUpdateController.checkForUpdates()
+                }
+                .disabled(dependencies?.directUpdateController.canCheckForUpdates != true)
+            } else if let updateController = dependencies?.appStoreUpdateController,
+                      updateController.isAppStoreBuild {
+                Button("commands.actions.checkForUpdates") {
+                    Task {
+                        await updateController.checkManually()
+                    }
+                }
+                .disabled(!updateController.canCheckForUpdates)
+            }
         }
     }
 }
@@ -565,16 +563,6 @@ private struct StarcatAppCommands: Commands {
 
     var body: some Commands {
         CommandMenu("commands.actions.menu") {
-            Button("commands.actions.openGlobalSearch") {
-                commandRouter.openGlobalSearch()
-            }
-            .keyboardShortcut(
-                settings.keyboardShortcutsEnabled && settings.globalSearchShortcutEnabled
-                    ? settings.globalSearchShortcut.swiftUIShortcut
-                    : nil
-            )
-            .disabled(!commandRouter.canOpenGlobalSearch)
-
             Button("commands.actions.findInList") {
                 commandRouter.performListSearch(preferred: focusedListSearchAction)
             }
@@ -589,6 +577,36 @@ private struct StarcatAppCommands: Commands {
                 commandRouter.performReadmeFind(preferred: focusedReadmeFindAction)
             }
             .disabled(!commandRouter.isReadmeFindAvailable(preferred: focusedReadmeFindAction))
+
+            Divider()
+
+            Button("commands.actions.refreshCurrentContent") {
+                commandRouter.refreshCurrentContent(preferred: focusedRefreshAction)
+            }
+            .keyboardShortcut(
+                settings.keyboardShortcutsEnabled && settings.refreshCurrentContentShortcutEnabled
+                    ? settings.refreshCurrentContentShortcut.swiftUIShortcut
+                    : nil
+            )
+            .disabled(!commandRouter.isRefreshAvailable(preferred: focusedRefreshAction))
+
+            Button("diagnostics.export.button") {
+                exportDiagnostics()
+            }
+        }
+
+        // 「显示」菜单承接窗口 / 工作台类入口：全局搜索与各 AI 工作台都是
+        // "打开某个界面"的性质，和纯动作（查找 / 刷新）分开，降低操作菜单长度。
+        CommandGroup(after: .toolbar) {
+            Button("commands.actions.openGlobalSearch") {
+                commandRouter.openGlobalSearch()
+            }
+            .keyboardShortcut(
+                settings.keyboardShortcutsEnabled && settings.globalSearchShortcutEnabled
+                    ? settings.globalSearchShortcut.swiftUIShortcut
+                    : nil
+            )
+            .disabled(!commandRouter.canOpenGlobalSearch)
 
             Button("commands.actions.openKnowledgeRAGWorkspace") {
                 commandRouter.openKnowledgeRAGWorkspace()
@@ -621,43 +639,12 @@ private struct StarcatAppCommands: Commands {
 
             Divider()
 
-            Button("commands.actions.refreshCurrentContent") {
-                commandRouter.refreshCurrentContent(preferred: focusedRefreshAction)
-            }
-            .keyboardShortcut(
-                settings.keyboardShortcutsEnabled && settings.refreshCurrentContentShortcutEnabled
-                    ? settings.refreshCurrentContentShortcut.swiftUIShortcut
-                    : nil
-            )
-            .disabled(!commandRouter.isRefreshAvailable(preferred: focusedRefreshAction))
-
             Button("ai.usage.open") {
                 if let dependencies {
                     AIUsageWindowController.show(dependencies: dependencies)
                 }
             }
             .disabled(dependencies == nil)
-
-            Divider()
-
-            if dependencies?.directUpdateController.isDirectBuild == true {
-                Button("commands.actions.checkForUpdates") {
-                    dependencies?.directUpdateController.checkForUpdates()
-                }
-                .disabled(dependencies?.directUpdateController.canCheckForUpdates != true)
-            } else if let updateController = dependencies?.appStoreUpdateController,
-                      updateController.isAppStoreBuild {
-                Button("commands.actions.checkForUpdates") {
-                    Task {
-                        await updateController.checkManually()
-                    }
-                }
-                .disabled(!updateController.canCheckForUpdates)
-            }
-
-            Button("diagnostics.export.button") {
-                exportDiagnostics()
-            }
         }
 
         // 替换系统 Edit > Find，避免 ⌘F 被默认文本查找吃掉，而 README WebView 收不到。
@@ -853,6 +840,20 @@ struct DebugMenuCommands: Commands {
                 // 独立实验窗口：验收 BorderBeamKit line 搜索条，不改正式 SmartSearchField。
                 BorderBeamSearchLabWindowController.show()
             }
+
+            Button("ambient.menu.openRepos") {
+                if let dependencies {
+                    AmbientWindowController.show(dependencies: dependencies, scene: .repos)
+                }
+            }
+            .disabled(dependencies == nil)
+
+            Button("ambient.menu.openOwners") {
+                if let dependencies {
+                    AmbientWindowController.show(dependencies: dependencies, scene: .owners)
+                }
+            }
+            .disabled(dependencies == nil)
 
             Divider()
 

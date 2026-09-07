@@ -85,6 +85,7 @@ extension View {
     func detailContentTransition() -> some View {
         modifier(DetailContentTransitionModifier())
     }
+
 }
 
 /// 详情页 root 切换 transition 实现（私有,通过 `.detailContentTransition()`

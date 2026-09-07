@@ -5,7 +5,6 @@
 //  Agent / RAG 工作台独立窗口的 titlebar 右侧控制区。
 //
 //  这些按钮是窗口级操作,不属于具体业务 header:
-//  - 左栏折叠 / 展开
 //  - 右栏折叠 / 展开
 //  - 窗口置顶 / 取消置顶
 //  - RAG 专用：打开独立配置窗口（推理 + 提示词 + 检索）
@@ -15,13 +14,27 @@ import SwiftUI
 
 /// 独立 workspace window 与其 SwiftUI 内容共享的 chrome 状态。
 ///
-/// 由窗口 titlebar 按钮修改,由内容视图读取后决定左右栏是否显示。
+/// 左栏交给 `NavigationSplitView` 管理，右栏交给原生 SwiftUI Inspector 管理。
+/// 这里保留窗口级单一状态，确保 titlebar 按钮与系统分栏始终读取同一份可见性。
 @MainActor
 @Observable
 final class WorkspaceChromeState {
-    var isLeftColumnCollapsed: Bool = false
+    /// 两栏导航外壳只使用 `.all` / `.detailOnly`：前者显示原生 Sidebar，后者折叠它。
+    var leftColumnVisibility: NavigationSplitViewVisibility = .all
     var isRightColumnCollapsed: Bool = false
     var isPinned: Bool = false
+
+    var isLeftColumnCollapsed: Bool {
+        get { leftColumnVisibility == .detailOnly }
+        set { leftColumnVisibility = newValue ? .detailOnly : .all }
+    }
+
+    /// Inspector API 使用“是否展示”，titlebar 仍使用“是否折叠”表达按钮状态；
+    /// 用一个可写反向属性连接两套语义，避免在 View body 中手写易漂移的 Binding。
+    var isRightColumnPresented: Bool {
+        get { !isRightColumnCollapsed }
+        set { isRightColumnCollapsed = !newValue }
+    }
 }
 
 /// 放在 `NSTitlebarAccessoryViewController` 内的窗口级图标按钮组。
@@ -34,16 +47,6 @@ struct WorkspaceTitlebarControls: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            controlButton(
-                systemImage: "inset.filled.leftthird.rectangle",
-                isActive: chromeState.isLeftColumnCollapsed,
-                helpKey: chromeState.isLeftColumnCollapsed
-                    ? "workspace.chrome.showLeft"
-                    : "workspace.chrome.hideLeft"
-            ) {
-                chromeState.isLeftColumnCollapsed.toggle()
-            }
-
             controlButton(
                 systemImage: "inset.filled.rightthird.rectangle",
                 isActive: chromeState.isRightColumnCollapsed,

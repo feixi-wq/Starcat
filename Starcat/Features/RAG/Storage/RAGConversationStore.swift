@@ -85,6 +85,9 @@ struct RAGConversationStatistics: Equatable, Sendable {
 protocol RAGConversationStoring: Sendable {
     func createConversation(title: String?, groupID: UUID?) async throws -> RAGConversationSummary
     func listConversations() async throws -> [RAGConversationSummary]
+    /// 查找任意一条没有任何消息的「空会话」；不存在则返回 `nil`。
+    /// 「新增会话」去重用：已存在空会话时应复用，避免连点堆积空白会话。
+    func findEmptyConversation() async throws -> RAGConversationSummary?
     func loadConversation(id: UUID) async throws -> RAGConversationDetail?
     func saveContextSummary(
         conversationID: UUID,
@@ -160,10 +163,23 @@ struct GRDBRAGConversationStore: RAGConversationStoring {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, title, is_pinned, pinned_at, group_id, context_summary, context_summary_message_count, created_at, updated_at
                 FROM rag_conversations
-                -- 会话侧栏是稳定导航，不是最近活动 Feed；updated_at 继续记录真实活跃时间，但不参与位置计算。
-                ORDER BY is_pinned DESC, pinned_at DESC, created_at DESC
+                -- 侧栏按「最近活跃」排序（发消息 / 回答完成推进 updated_at）；置顶区仍按最后置顶时间。
+                ORDER BY is_pinned DESC, pinned_at DESC, updated_at DESC
                 """)
             return rows.compactMap(Self.summary(row:))
+        }
+    }
+
+    func findEmptyConversation() async throws -> RAGConversationSummary? {
+        try await database.writer.read { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT id, title, is_pinned, pinned_at, group_id, context_summary, context_summary_message_count, created_at, updated_at
+                FROM rag_conversations
+                WHERE NOT EXISTS (SELECT 1 FROM rag_messages WHERE conversation_id = rag_conversations.id)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """)
+            return row.flatMap(Self.summary(row:))
         }
     }
 

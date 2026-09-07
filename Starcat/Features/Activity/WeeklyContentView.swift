@@ -55,7 +55,6 @@ struct WeeklyContentView: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AuthSession.self) private var authSession
     @Environment(AppSettings.self) private var settings
-    @Environment(\.starcatReduceMotion) private var reduceMotion
 
     @Binding var selectedLanguage: String?
 
@@ -119,11 +118,9 @@ struct WeeklyContentView: View {
             weeklyCacheWarningBanner(viewModel)
 
             weeklyContentBody(viewModel)
-                .id(contentStateID(for: viewModel))
-                .transition(contentTransition)
-                .animation(contentAnimation, value: contentStateID(for: viewModel))
         }
         .task {
+            viewModel.interestedLanguages = settings.interestedLanguages
             await viewModel.loadLanguagesIfNeeded()
             syncBindingLanguage(from: viewModel)
             applyWeeklyDetailSelectionPolicy(from: viewModel.items)
@@ -134,6 +131,9 @@ struct WeeklyContentView: View {
         .onChange(of: settings.openFirstDetailOnCategoryChange) { _, enabled in
             guard enabled else { return }
             applyWeeklyDetailSelectionPolicy(from: viewModel.items)
+        }
+        .onChange(of: settings.interestedLanguages) { _, languages in
+            viewModel.interestedLanguages = languages
         }
         .task(id: settings.wikiAvailabilityFilter.rawValue) {
             await reloadWikiAvailabilityMap(for: viewModel.items)
@@ -180,30 +180,6 @@ struct WeeklyContentView: View {
         }
     }
 
-    private func contentStateID(for viewModel: WeeklyContentViewModel) -> String {
-        if viewModel.isLoading && viewModel.items.isEmpty {
-            return "weekly-loading"
-        }
-        if let error = viewModel.loadError, viewModel.items.isEmpty {
-            return "weekly-error-\(error)"
-        }
-        if viewModel.items.isEmpty {
-            return "weekly-empty"
-        }
-        return "weekly-content"
-    }
-
-    private var contentAnimation: Animation? {
-        reduceMotion ? nil : .easeOut(duration: 0.22)
-    }
-
-    private var contentTransition: AnyTransition {
-        reduceMotion ? .identity : .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: 8)),
-            removal: .opacity
-        )
-    }
-
     // MARK: - Filter Bar
 
     /// 顶部筛选栏：来源 / 收录强度 / 状态 / 热度 / 推送时间 / 排序。
@@ -224,6 +200,11 @@ struct WeeklyContentView: View {
             Spacer()
 
             refreshButton(viewModel)
+            MultiSelectButton(
+                isActive: dependencies.weeklyMultiSelectionStore.isActive,
+                action: { dependencies.weeklyMultiSelectionStore.toggle() },
+                isDisabled: !authSession.state.isAuthenticated
+            )
         }
     }
 
@@ -887,6 +868,15 @@ final class WeeklyContentViewModel {
     /// 排序当前值；setter 由 `changeSort(to:)` 控制以保证副作用统一。
     private(set) var selectedSort: WeeklyFeedSort = .defaultOrder
     private(set) var selectedLanguage: String = ""
+    /// 设置页「感兴趣语言」镜像。「其他」分类的本地过滤依赖它，由 View onChange 同步。
+    var interestedLanguages: [String] = [] {
+        didSet {
+            guard oldValue != interestedLanguages else { return }
+            // 只有「其他」分类的过滤结果依赖感兴趣语言，变化时才重新筛选。
+            guard selectedLanguage == TrendingLanguage.otherRawValue else { return }
+            reapplyFilters()
+        }
+    }
     /// bulk v2 返回并持久化的固定来源目录；UI 筛选不再枚举硬编码渠道。
     private(set) var sourceDescriptors: [WeeklySourceDescriptor] = []
 
@@ -943,6 +933,7 @@ final class WeeklyContentViewModel {
     private var validLanguageKeys: Set<String> {
         var set = Set<String>(languageStore.displayList.map(\.key))
         set.insert("")  // 「全部」哨兵
+        set.insert(TrendingLanguage.otherRawValue)  // 「其他」哨兵（本地过滤，非后端语言）
         return set
     }
 
@@ -951,6 +942,9 @@ final class WeeklyContentViewModel {
     /// `.local` 模式下持有的当前 source + sort + lang 筛选结果**全量**（未分页切片前）。
     /// 切 source / sort / lang 时只需重排重过滤这个数组再切片，零网络。
     private var filteredLocalItems: [WeeklyFeedItem] = []
+    /// 当前可见列表的 repo ID 索引。远端/SQLite 分页只对新页做 O(pageSize) 去重，
+    /// 避免每次触底都从累计 items 重建 Set；这是有界内存换滚动时间。
+    private var visibleItemIDs: Set<Int64> = []
     /// bulk 缓存的"原始全量"——`filteredLocalItems` 是它的过滤+排序产物。
     private var bulkAllItems: [WeeklyFeedItem] = []
     /// bulk 事实源每次整体替换都会推进；旧派生结果不能跨 revision 命中。
@@ -992,6 +986,8 @@ final class WeeklyContentViewModel {
         let language: String
         let sort: String
         let sourceRevision: Int
+        /// 「其他」分类的排除集合（排序拼接）；非「其他」时为空串。
+        let interestedLanguages: String
     }
 
     init(
@@ -1156,10 +1152,9 @@ final class WeeklyContentViewModel {
                 )
             )
             guard myGen == generation else { return }
-            // 同 id 项目可能因为后端排序变动并发出现重复，去一次重保险。
-            let existingIDs = Set(items.map(\.id))
-            let appended = result.items.filter { !existingIDs.contains($0.id) }
-            items.append(contentsOf: appended)
+            // 同 id 项目可能因为后端排序变动并发出现重复；复用增量索引去重，
+            // 不为每个远端页重新扫描完整历史前缀。
+            appendUniqueVisibleItems(result.items)
             page = result.page
             total = result.total
             hasMore = result.hasMore
@@ -1314,7 +1309,7 @@ final class WeeklyContentViewModel {
             )
             guard myGen == generation else { return }
             dataSource = .remote
-            items = result.items
+            replaceVisibleItems(with: result.items)
             total = result.total
             page = result.page
             hasMore = result.hasMore
@@ -1375,10 +1370,9 @@ final class WeeklyContentViewModel {
         total = snapshot.filteredTotal
         hasMore = page * Self.localPageSize < snapshot.filteredTotal
         if appending {
-            let existingIDs = Set(items.map(\.id))
-            items.append(contentsOf: snapshot.items.filter { !existingIDs.contains($0.id) })
+            appendUniqueVisibleItems(snapshot.items)
         } else {
-            items = snapshot.items
+            replaceVisibleItems(with: snapshot.items)
         }
         if bumpRevision {
             itemsRevision += 1
@@ -1433,7 +1427,7 @@ final class WeeklyContentViewModel {
 
         if showSkeletonOnMiss {
             isLoading = true
-            items = []
+            replaceVisibleItems(with: [])
             total = 0
             hasMore = false
         }
@@ -1446,6 +1440,7 @@ final class WeeklyContentViewModel {
         let starsFilter = selectedStarsFilter
         let pushedRecency = selectedPushedRecency
         let language = selectedLanguage
+        let interestedLanguages = Set(self.interestedLanguages.map { $0.lowercased() })
         let sort = selectedSort
         let now = Date()
         localDerivationCountForTesting &+= 1
@@ -1459,6 +1454,7 @@ final class WeeklyContentViewModel {
                 starsFilter: starsFilter,
                 pushedRecency: pushedRecency,
                 language: language,
+                interestedLanguages: interestedLanguages,
                 sort: sort,
                 now: now
             )
@@ -1485,7 +1481,7 @@ final class WeeklyContentViewModel {
         page = 1
         let pageSize = Self.localPageSize
         let slice = Array(filtered.prefix(pageSize))
-        items = slice
+        replaceVisibleItems(with: slice)
         hasMore = filtered.count > slice.count
         if bumpRevision {
             itemsRevision += 1
@@ -1500,6 +1496,10 @@ final class WeeklyContentViewModel {
         let recencyDay = selectedPushedRecency == .all
             ? 0
             : Int(now.timeIntervalSince1970 / 86_400)
+        // 「其他」分类的过滤结果依赖感兴趣语言，快照 key 必须纳入，否则改设置后命中脏快照。
+        let interestedKey = selectedLanguage == TrendingLanguage.otherRawValue
+            ? interestedLanguages.map { $0.lowercased() }.sorted().joined(separator: ",")
+            : ""
         return WeeklyPreparedSnapshotKey(
             source: selectedSource.rawValue,
             coverage: selectedCoverage.rawValue,
@@ -1510,7 +1510,8 @@ final class WeeklyContentViewModel {
             recencyDay: recencyDay,
             language: selectedLanguage.lowercased(),
             sort: selectedSort.rawValue,
-            sourceRevision: bulkSourceRevision
+            sourceRevision: bulkSourceRevision,
+            interestedLanguages: interestedKey
         )
     }
 
@@ -1550,6 +1551,7 @@ final class WeeklyContentViewModel {
         starsFilter: WeeklyStarsFilter,
         pushedRecency: WeeklyPushedRecencyFilter,
         language: String,
+        interestedLanguages: Set<String>,
         sort: WeeklyFeedSort,
         now: Date
     ) -> [WeeklyFeedItem] {
@@ -1565,6 +1567,10 @@ final class WeeklyContentViewModel {
             if !language.isEmpty {
                 if language == TrendingLanguage.uncategorizedKey {
                     guard (item.language ?? "").isEmpty else { continue }
+                } else if language == TrendingLanguage.otherRawValue {
+                    // 「其他」= 语言非空且不在「感兴趣语言」里。
+                    guard let lang = item.language, !lang.isEmpty,
+                          !interestedLanguages.contains(lang.lowercased()) else { continue }
                 } else {
                     guard item.language?.caseInsensitiveCompare(language) == .orderedSame else { continue }
                 }
@@ -1580,9 +1586,31 @@ final class WeeklyContentViewModel {
         let nextPage = page + 1
         let pageSize = Self.localPageSize
         let upper = min(nextPage * pageSize, filteredLocalItems.count)
-        items = Array(filteredLocalItems.prefix(upper))
+        let previousCount = items.count
+        if upper > previousCount {
+            let nextItems = filteredLocalItems[previousCount..<upper]
+            items.append(contentsOf: nextItems)
+            visibleItemIDs.formUnion(nextItems.map(\.id))
+        }
         page = nextPage
         hasMore = upper < filteredLocalItems.count
+    }
+
+    /// 原子替换可见 rows 与 ID 索引；筛选、刷新和首屏发布统一走这里，防止索引漂移。
+    private func replaceVisibleItems(with newItems: [WeeklyFeedItem]) {
+        items = newItems
+        visibleItemIDs = Set(newItems.map(\.id))
+    }
+
+    /// 使用常驻 ID 索引仅追加当前页的非重复 rows。
+    private func appendUniqueVisibleItems(_ candidates: [WeeklyFeedItem]) {
+        var appended: [WeeklyFeedItem] = []
+        appended.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            guard visibleItemIDs.insert(candidate.id).inserted else { continue }
+            appended.append(candidate)
+        }
+        items.append(contentsOf: appended)
     }
 
     private func makeCacheQuery(page: Int) -> WeeklyBulkCacheQuery {

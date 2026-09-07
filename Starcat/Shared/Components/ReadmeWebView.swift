@@ -87,6 +87,10 @@ struct ReadmeWebView: View {
     /// GitHub 返回的 HTML 片段（不含 <html>/<head>/<body>）。
     let htmlFragment: String
 
+    /// 调用方可提供的轻量文档身份。详情页用它避免 `updateNSView` 每次重算时比较整份 HTML；
+    /// 其它调用方省略后仍回退到内容本身，保持原有正确性。
+    var documentID: String? = nil
+
     /// 用于解析 HTML 内相对 URL 的基地址（链接 `<a href>` 等）。
     /// 通常传 repo.htmlUrl（https://github.com/owner/repo）。
     /// HOM-201 P1-2（2026-06-14）起，`<img>` 相对路径已在 IO 层（`ReadmeAPI`）
@@ -126,6 +130,12 @@ struct ReadmeWebView: View {
     /// 用户点击翻译后才会把当前模式对应的数据发给 AI。
     var onTranslationSourceChange: (ReadmeTranslationSourceSnapshot) -> Void = { _ in }
 
+    /// README 末尾 Star History 的受控 HTML。默认空状态让其它 README 调用方保持原行为。
+    var starHistoryRenderState: ReadmeStarHistoryRenderState = .empty
+
+    /// 文档距离底部不超过两个 viewport 时触发。Coordinator 对每份文档只回调一次。
+    var onApproachingBottom: () -> Void = {}
+
     @Environment(AppSettings.self) private var settings
     @State private var scrollToTopRequestID = 0
     @State private var isFindBarVisible = false
@@ -138,6 +148,7 @@ struct ReadmeWebView: View {
     var body: some View {
         ReadmeWebContentView(
             htmlFragment: htmlFragment,
+            documentID: documentID,
             baseURL: baseURL,
             onScrollReportChange: handleScrollReport,
             readmeFontSizeAdjustment: settings.readmeFontSizeAdjustment,
@@ -146,6 +157,8 @@ struct ReadmeWebView: View {
             onFindResult: { findHasMatch = $0 },
             translationRenderState: translationRenderState,
             onTranslationSourceChange: onTranslationSourceChange,
+            starHistoryRenderState: starHistoryRenderState,
+            onApproachingBottom: onApproachingBottom,
             openRepositoryMarkdownInApp: settings.openRepositoryMarkdownInApp,
             markdownLinkRepositoryOwner: markdownLinkRepositoryOwner,
             markdownLinkRepositoryName: markdownLinkRepositoryName,
@@ -301,6 +314,7 @@ struct ReadmeWebView: View {
 
 private struct ReadmeWebContentView: NSViewRepresentable {
     let htmlFragment: String
+    let documentID: String?
     let baseURL: URL?
     var onScrollReportChange: (RepoDetailScrollReport) -> Void
     let readmeFontSizeAdjustment: Int
@@ -309,6 +323,8 @@ private struct ReadmeWebContentView: NSViewRepresentable {
     var onFindResult: (Bool?) -> Void
     let translationRenderState: ReadmeTranslationRenderState
     var onTranslationSourceChange: (ReadmeTranslationSourceSnapshot) -> Void
+    let starHistoryRenderState: ReadmeStarHistoryRenderState
+    var onApproachingBottom: () -> Void
     var openRepositoryMarkdownInApp: Bool
     var markdownLinkRepositoryOwner: String?
     var markdownLinkRepositoryName: String?
@@ -323,6 +339,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
+        PerformanceTracer.shared.mark(.readmeWebViewCreated)
         let config = WKWebViewConfiguration()
         // GitHub README HTML 已是静态结构，不需要页面脚本。这里仍允许 WebKit 执行
         // app-owned user script（见 installScrollReportingScript），页面脚本由我们注入的
@@ -344,6 +361,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         context.coordinator.webView = webView
         context.coordinator.onScrollReportChange = onScrollReportChange
         context.coordinator.onTranslationSourceChange = onTranslationSourceChange
+        context.coordinator.onApproachingBottom = onApproachingBottom
         context.coordinator.openRepositoryMarkdownInApp = openRepositoryMarkdownInApp
         context.coordinator.markdownLinkRepositoryOwner = markdownLinkRepositoryOwner
         context.coordinator.markdownLinkRepositoryName = markdownLinkRepositoryName
@@ -353,12 +371,14 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             reduceMotion: reduceMotion
         )
         loadIfNeeded(into: webView, context: context)
+        context.coordinator.updateStarHistoryRenderState(starHistoryRenderState)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onScrollReportChange = onScrollReportChange
         context.coordinator.onTranslationSourceChange = onTranslationSourceChange
+        context.coordinator.onApproachingBottom = onApproachingBottom
         context.coordinator.openRepositoryMarkdownInApp = openRepositoryMarkdownInApp
         context.coordinator.markdownLinkRepositoryOwner = markdownLinkRepositoryOwner
         context.coordinator.markdownLinkRepositoryName = markdownLinkRepositoryName
@@ -368,6 +388,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             reduceMotion: reduceMotion
         )
         loadIfNeeded(into: webView, context: context)
+        context.coordinator.updateStarHistoryRenderState(starHistoryRenderState)
         scrollToTopIfNeeded(in: webView, context: context)
         performFindIfNeeded(in: webView, context: context)
     }
@@ -405,7 +426,8 @@ private struct ReadmeWebContentView: NSViewRepresentable {
     /// `--readme-body-font-size` CSS 变量，无重载、无白闪、不触发 scroll。
     private func loadIfNeeded(into webView: WKWebView, context: Context) {
         let contentKey = ReadmeKey(
-            fragment: htmlFragment,
+            documentID: documentID ?? htmlFragment,
+            baseURL: baseURL,
             isDark: colorScheme == .dark,
             interfaceScale: interfaceScale
         )
@@ -467,7 +489,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         interfaceScale: InterfaceScale = .standard,
         readmeFontSizeAdjustment: Int = 0
     ) -> String {
-        let css = ReadmeCSS.full + "\n" + ReadmeMermaidDOM.css + "\n" + ReadmeTranslationDOM.css + "\n" + ReadmeCSS.readingVariables(
+        let css = ReadmeCSS.full + "\n" + ReadmeMermaidDOM.css + "\n" + ReadmeTranslationDOM.css + "\n" + ReadmeStarHistoryDOM.css + "\n" + ReadmeCSS.readingVariables(
             bodyFontSize: readmeBodyFontSize(
                 for: interfaceScale,
                 adjustment: readmeFontSizeAdjustment
@@ -486,6 +508,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         </head>
         <body class="\(bodyClass)">
         <article>\(fragment)</article>
+        <div id="starcat-readme-star-history" data-starcat-owned="true" hidden></div>
         </body>
         </html>
         """
@@ -510,6 +533,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         var lastScrollToTopRequestID = 0
         var onScrollReportChange: (RepoDetailScrollReport) -> Void = { _ in }
         var onTranslationSourceChange: (ReadmeTranslationSourceSnapshot) -> Void = { _ in }
+        var onApproachingBottom: () -> Void = {}
         var onFindResult: (Bool?) -> Void = { _ in }
         var openRepositoryMarkdownInApp = false
         var markdownLinkRepositoryOwner: String?
@@ -518,6 +542,10 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         private weak var userContentController: WKUserContentController?
         private var pendingTranslationRenderState: ReadmeTranslationRenderState = .hidden
         private var lastAppliedTranslationRevision: Int?
+        private var pendingStarHistoryRenderState: ReadmeStarHistoryRenderState = .empty
+        private var lastAppliedStarHistoryRevision: String?
+        private var starHistoryDOMTask: Task<Void, Never>?
+        private var didReportApproachingBottom = false
         /// App 关动画或系统 Reduce Motion 时，DOM 入场一律关掉。
         private var translationReduceMotion = false
         private var mermaidDocumentRevision = 0
@@ -605,6 +633,8 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             userContentController?.removeScriptMessageHandler(
                 forName: ReadmeWebViewConstants.mermaidRequestMessageName
             )
+            starHistoryDOMTask?.cancel()
+            starHistoryDOMTask = nil
             mermaidRuntimeTask?.cancel()
             mermaidRuntimeTask = nil
             userContentController = nil
@@ -626,6 +656,10 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         /// 同时取消旧文档尚未完成的 Mermaid 任务，避免切换仓库后把图表写进新 DOM。
         func prepareForDocumentReload() {
             lastAppliedTranslationRevision = nil
+            lastAppliedStarHistoryRevision = nil
+            didReportApproachingBottom = false
+            starHistoryDOMTask?.cancel()
+            starHistoryDOMTask = nil
             mermaidDocumentRevision &+= 1
             mermaidRuntimeTask?.cancel()
             mermaidRuntimeTask = nil
@@ -671,6 +705,48 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                     )
                 } catch {
                     AppLog.ui.debug("Readme translation DOM update deferred: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+
+        /// 保存最新摘要并在当前文档中原地替换 placeholder。
+        ///
+        /// HTML 由 Swift 固定模板生成并完成转义，通过 `arguments` 桥接给 WebKit；这里不把
+        /// HTML 插进 JavaScript 源码，避免引号或换行改变脚本结构。revision 相同则完全跳过。
+        func updateStarHistoryRenderState(_ state: ReadmeStarHistoryRenderState) {
+            pendingStarHistoryRenderState = state
+            applyStarHistoryRenderStateIfNeeded()
+        }
+
+        private func applyStarHistoryRenderStateIfNeeded() {
+            guard let webView,
+                  lastAppliedStarHistoryRevision != pendingStarHistoryRenderState.revision
+            else { return }
+
+            let state = pendingStarHistoryRenderState
+            let revision = state.revision
+            starHistoryDOMTask?.cancel()
+            starHistoryDOMTask = Task { @MainActor [weak self, weak webView] in
+                guard let self, let webView, !Task.isCancelled else { return }
+                do {
+                    _ = try await webView.callAsyncJavaScript(
+                        """
+                        if (typeof window.starcatReplaceReadmeStarHistory !== 'function') {
+                            throw new Error('Starcat README Star History bridge is unavailable');
+                        }
+                        window.starcatReplaceReadmeStarHistory(html);
+                        """,
+                        arguments: ["html": state.html ?? ""],
+                        in: nil,
+                        contentWorld: .page
+                    )
+                    guard !Task.isCancelled,
+                          revision == self.pendingStarHistoryRenderState.revision
+                    else { return }
+                    self.lastAppliedStarHistoryRevision = revision
+                } catch {
+                    // updateNSView 可能早于 document-end script；didFinish 会再次应用。
+                    AppLog.ui.debug("README Star History DOM update deferred: \(error.localizedDescription, privacy: .public)")
                 }
             }
         }
@@ -787,6 +863,8 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             var previewOverlay = null;
             var previewRemoveTimer = null;
 
+            \(ReadmeStarHistoryDOM.script)
+
             function currentY() {
                 return window.scrollY ||
                     document.documentElement.scrollTop ||
@@ -805,6 +883,28 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 return Math.max(0, scrollHeight - clientHeight);
             }
 
+            window.starcatReplaceReadmeStarHistory = function(html) {
+                var host = document.getElementById('starcat-readme-star-history');
+                if (!host) { return; }
+                if (host.starcatHistoryCleanup) { host.starcatHistoryCleanup(); }
+                if (!html) {
+                    host.replaceChildren();
+                    host.hidden = true;
+                    schedule();
+                    return;
+                }
+                host.innerHTML = html;
+                host.querySelectorAll('.starcat-star-history-avatar img').forEach(function(image) {
+                    image.addEventListener('error', function() {
+                        // 缓存图片无法解码时移除损坏图像，保留圆角底框，不显示破图或字母占位。
+                        image.remove();
+                    }, { once: true });
+                });
+                host.hidden = false;
+                configureStarHistory(host);
+                schedule();
+            };
+
             function report() {
                 ticking = false;
                 var y = currentY();
@@ -815,7 +915,9 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 window.webkit.messageHandlers.\(ReadmeWebViewConstants.scrollMessageName).postMessage({
                     y: y,
                     scrollHeight: overflow + (window.innerHeight || document.documentElement.clientHeight || 0),
-                    clientHeight: window.innerHeight || document.documentElement.clientHeight || 0
+                    clientHeight: window.innerHeight || document.documentElement.clientHeight || 0,
+                    isNearBottom: Math.max(0, overflow - y) <=
+                        2 * (window.innerHeight || document.documentElement.clientHeight || 0)
                 });
             }
 
@@ -1433,6 +1535,14 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                     offsetY: CGFloat(truncating: yValue),
                     scrollOverflow: overflow
                 )
+                if (payload["isNearBottom"] as? NSNumber)?.boolValue == true,
+                   !didReportApproachingBottom {
+                    didReportApproachingBottom = true
+                    // 只在文档端确认接近底部后才启动数据层；短 README 也要等 document-end。
+                    Task { @MainActor in
+                        self.onApproachingBottom()
+                    }
+                }
                 // 避免在 WebKit 回调栈内同步触发 SwiftUI 重排，干扰 loadHTMLString 首帧。
                 Task { @MainActor in
                     self.onScrollReportChange(report)
@@ -1441,9 +1551,12 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            PerformanceTracer.shared.mark(.readmeWebViewNavigationFinished)
             // `updateNSView` 可能先于 document-end script 完成；导航结束后再补一次当前状态。
             lastAppliedTranslationRevision = nil
             applyTranslationRenderStateIfNeeded()
+            lastAppliedStarHistoryRevision = nil
+            applyStarHistoryRenderStateIfNeeded()
         }
 
         func webView(
@@ -1952,12 +2065,13 @@ struct ReadmeFindRequest: Equatable {
     var backwards = false
 }
 
-/// 缓存键：HTML 片段 + 主题，用于 updateNSView 时判断是否需要重新 loadHTMLString。
+/// 缓存键：轻量文档身份 + base URL + 主题，用于判断是否需要重新 loadHTMLString。
 ///
 /// 字号调整不在此键中：字号变化时通过 JS 动态更新 CSS 变量 `--readme-body-font-size`，
 /// 避免 `loadHTMLString` 重载触发 scroll 事件导致字号面板意外关闭。
 struct ReadmeKey: Equatable {
-    let fragment: String
+    let documentID: String
+    let baseURL: URL?
     let isDark: Bool
     let interfaceScale: InterfaceScale
 }

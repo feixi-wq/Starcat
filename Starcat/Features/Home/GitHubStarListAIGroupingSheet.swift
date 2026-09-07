@@ -57,13 +57,16 @@ struct GitHubStarListAIGroupingSheet: View {
         // 固定窗口：min/max 同值，避免 macOS sheet 按内容把窗口撑出屏幕。
         .frame(minWidth: 960, maxWidth: 960, minHeight: 640, maxHeight: 640)
         .clipped()
+        .background {
+            GitHubStarListAIGroupingPresentationObserver(
+                session: session,
+                presentation: presentation
+            )
+        }
         .onAppear {
             guard !hasMarkedFirstFrame else { return }
             hasMarkedFirstFrame = true
             PerformanceTracer.shared.mark(.gitHubStarListAIGroupingFirstFrame)
-        }
-        .onChange(of: session.presentationRevision) { _, _ in
-            presentation.scheduleSynchronize(from: session)
         }
         .sheet(isPresented: $showCreateGroupSheet) {
             GitHubStarListEditorSheet(
@@ -92,8 +95,8 @@ struct GitHubStarListAIGroupingSheet: View {
         } message: {
             Text(String(
                 format: String.l10n("githubStarLists.aiGrouping.applyConfirm.messageFormat"),
-                session.selectedRepoIDsForBulkApply.count,
-                session.selectedListCountForBulkApply
+                presentation.snapshot.selectedRepositoryCount,
+                presentation.snapshot.selectedListCount
             ))
         }
         .confirmationDialog(
@@ -192,11 +195,14 @@ struct GitHubStarListAIGroupingSheet: View {
                 filter: presentation.filter,
                 availableLists: presentation.snapshot.availableLists,
                 hasMore: presentation.canLoadMore,
-                canRetryAnalysis: !session.isRunning && !session.isApplying,
-                canRetryAutomaticallyIgnored: !session.isRunning && !session.isApplying,
-                selectedRepoIDsForBulkApply: session.selectedRepoIDsForBulkApply,
+                canRetryAnalysis: session.canRetryFailedItems,
+                canRetryAutomaticallyIgnored: session.canRetryFailedItems,
+                showsBulkActionCheckboxes: supportsBulkActionSelection,
                 onToggleRepositorySelection: { repoID in
                     performReviewUpdate { session.toggleRepoForBulkApply(repoID: repoID) }
+                },
+                onToggleBulkActionSelection: { repoID in
+                    performReviewUpdate { session.toggleRepoForBulkAction(repoID: repoID, filter: presentation.filter) }
                 },
                 onToggleList: { repoID, listID in
                     performReviewUpdate { session.toggleSelection(repoID: repoID, listID: listID) }
@@ -228,8 +234,15 @@ struct GitHubStarListAIGroupingSheet: View {
                         presentation.synchronizeImmediately(from: session)
                     }
                 },
-                onLoadMore: presentation.loadMore
+                onLoadMore: presentation.loadMore,
+                onScrollInteractionChanged: presentation.setScrollInteractionActive
             )
+            .equatable()
+            // 勾选只在单一 Tab 内有效；切换 Tab 清空批量动作勾选，避免把上个 Tab 的
+            // 选择喂给下个 Tab 的批量动作（重试/忽略语义完全不同）。
+            .onChange(of: presentation.filter) { _, _ in
+                performReviewUpdate { session.clearBulkActionSelection() }
+            }
         }
     }
 
@@ -332,8 +345,7 @@ struct GitHubStarListAIGroupingSheet: View {
                 .fixedSize()
                 .layoutPriority(1)
                 .disabled(
-                    session.isApplying
-                        || session.isRunning
+                    !session.canRetryFailedItems
                         || retryAllCount(snapshot: store.snapshot, filter: store.filter) == 0
                 )
             }
@@ -374,29 +386,112 @@ struct GitHubStarListAIGroupingSheet: View {
             .padding(.vertical, 10)
             .frame(height: 58)
         } else {
+            let filter = presentation.filter
             AIOrganizationReviewFooter(
                 discardTitle: "githubStarLists.aiGrouping.discard.action",
                 canDiscard: session.canDiscardManualSession,
-                selectionSummary: String(
-                    format: String.l10n("githubStarLists.aiGrouping.selectionSummaryFormat"),
-                    locale: locale,
-                    session.selectedRepoIDsForBulkApply.count,
-                    session.selectedListCountForBulkApply
-                ),
-                canApply: !session.selectedRepoIDsForBulkApply.isEmpty,
+                selectionSummary: selectionSummaryText(for: filter),
+                canApply: presentation.snapshot.selectedRepositoryCount > 0,
                 isApplying: session.isApplying,
-                showsSelectionControls: true,
-                canSelectAll: session.selectedRepoIDsForBulkApply.count < session.selectableRepoCountForBulkApply,
-                canClearSelection: !session.selectedRepoIDsForBulkApply.isEmpty,
+                showsSelectionControls: showsFooterSelectionControls,
+                canSelectAll: selectionCanSelectAll(for: filter),
+                canClearSelection: selectionCanClear(for: filter),
                 onSelectAll: {
-                    performReviewUpdate { session.selectAllReposForBulkApply() }
+                    if supportsBulkActionSelection {
+                        performReviewUpdate { session.selectAllReposForBulkAction(filter: presentation.filter) }
+                    } else {
+                        performReviewUpdate { session.selectAllReposForBulkApply() }
+                    }
                 },
                 onClearSelection: {
-                    performReviewUpdate { session.clearRepoSelectionForBulkApply() }
+                    if supportsBulkActionSelection {
+                        performReviewUpdate { session.clearBulkActionSelection() }
+                    } else {
+                        performReviewUpdate { session.clearRepoSelectionForBulkApply() }
+                    }
                 },
+                bulkActionTitle: footerBulkActionTitle,
+                canRunBulkAction: canRunBulkAction(for: filter),
+                onBulkAction: { performBulkAction() },
                 onDiscard: { showDiscardConfirmation = true },
                 onApply: { showApplyConfirmation = true }
             )
+        }
+    }
+
+    /// 支持批量动作勾选的 Tab；待确认/全部沿用批量应用勾选，待处理与已应用不参与批量选择。
+    private var supportsBulkActionSelection: Bool {
+        switch presentation.filter {
+        case .noMatch, .analysisFailed, .applyFailed, .automaticallyIgnored, .ignored: true
+        case .actionable, .all, .suggestions, .applied: false
+        }
+    }
+
+    /// 待处理与已应用没有可勾选行，也不该出现隐藏选择的应用按钮，底栏只保留放弃。
+    private var showsFooterSelectionControls: Bool {
+        presentation.filter != .actionable && presentation.filter != .applied
+    }
+
+    private var footerBulkActionTitle: LocalizedStringKey? {
+        guard supportsBulkActionSelection else { return nil }
+        return switch presentation.filter {
+        case .noMatch: "githubStarLists.aiGrouping.bulkAction.ignore"
+        case .ignored: "githubStarLists.aiGrouping.bulkAction.unignore"
+        default: "githubStarLists.aiGrouping.bulkAction.retry"
+        }
+    }
+
+    private func selectionSummaryText(for filter: GitHubStarListAIResultFilter) -> String {
+        if supportsBulkActionSelection {
+            return String(
+                format: String.l10n("githubStarLists.aiGrouping.bulkAction.selectionSummaryFormat"),
+                locale: locale,
+                presentation.snapshot.selectedCount(for: filter)
+            )
+        }
+        return String(
+            format: String.l10n("githubStarLists.aiGrouping.selectionSummaryFormat"),
+            locale: locale,
+            presentation.snapshot.selectedRepositoryCount,
+            presentation.snapshot.selectedListCount
+        )
+    }
+
+    private func selectionCanSelectAll(for filter: GitHubStarListAIResultFilter) -> Bool {
+        presentation.snapshot.selectedCount(for: filter)
+            < presentation.snapshot.selectableCount(for: filter)
+    }
+
+    private func selectionCanClear(for filter: GitHubStarListAIResultFilter) -> Bool {
+        presentation.snapshot.selectedCount(for: filter) > 0
+    }
+
+    private func canRunBulkAction(for filter: GitHubStarListAIResultFilter) -> Bool {
+        guard presentation.snapshot.selectedCount(for: filter) > 0 else { return false }
+        switch filter {
+        case .analysisFailed, .automaticallyIgnored:
+            return session.canRetryFailedItems
+        case .applyFailed:
+            return !session.isApplying
+        case .noMatch, .ignored:
+            return true
+        case .actionable, .all, .suggestions, .applied:
+            return false
+        }
+    }
+
+    /// 自动忽略重试需要异步清库后再重新入队，其余批量动作同步派发。
+    private func performBulkAction() {
+        let filter = presentation.filter
+        if filter == .automaticallyIgnored {
+            let selectedRepoIDs = session.bulkActionRepoIDs
+            performReviewUpdate { session.clearBulkActionSelection() }
+            Task {
+                await session.retryAutomaticallyIgnored(repoIDs: selectedRepoIDs)
+                presentation.synchronizeImmediately(from: session)
+            }
+        } else {
+            performReviewUpdate { session.applyBulkAction(filter: filter) }
         }
     }
 

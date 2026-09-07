@@ -270,12 +270,6 @@ final class AppDependencies {
     /// 独立 actor，无需 GitHub OAuth；Explore 页 `weekly` 分类直接消费。
     let weeklyAPI: WeeklyAPI
 
-    /// 维护者专用的 weekly-api 管理员导入客户端与长生命周期发布会话。
-    /// 两者独立于普通 WeeklyAPI：管理员凭据不能进入普通 Bearer key 的配置路径。
-    let curatedPublisherAPI: CuratedPublisherAPIClient
-    let curatedProjectIdentificationSession: CuratedProjectIdentificationSession
-    let curatedPublisherSession: CuratedPublisherSession
-
     /// Weekly UI 共享状态：sidebar 计数徽章 + HomeView 详情页路由共用。
     /// 详见 `WeeklySelectionService` 文件头注释。
     let weeklySelectionService: WeeklySelectionService
@@ -1383,25 +1377,6 @@ final class AppDependencies {
         )
         self.weeklyAPI = weeklyAPIInstance
 
-        let curatedPublisherAPI = CuratedPublisherAPIClient(baseURL: AppEndpoints.Weekly.baseURL)
-        self.curatedPublisherAPI = curatedPublisherAPI
-        let curatedGitHubSearch = GitHubRepositorySearchProvider(
-            client: api,
-            noteRepository: self.repoNoteRepository
-        )
-        let curatedIdentificationService = CuratedProjectIdentificationService(
-            reasoner: DefaultCuratedProjectAIReasoner(settings: self.settings),
-            webProvider: ExternalSearchWebProvider(),
-            repositories: DefaultCuratedRepositoryEvidenceProvider(
-                searchProvider: curatedGitHubSearch,
-                githubClient: api
-            )
-        )
-        self.curatedProjectIdentificationSession = CuratedProjectIdentificationSession(
-            service: curatedIdentificationService
-        )
-        self.curatedPublisherSession = CuratedPublisherSession(api: curatedPublisherAPI)
-
         // MUL-176 followup：UI 共享状态总线，sidebar 与 HomeView 通过它读 total / 选中项目。
         self.weeklySelectionService = WeeklySelectionService()
         self.activityCategoryCountService = ActivityCategoryCountService()
@@ -1734,9 +1709,9 @@ final class AppDependencies {
         // 还能看到自己的数据，不会进入"无 DB 可用"的死状态。
         session.onUserSessionChanged = { [weak self] userId in
             guard let self else { return }
-            // 自定义索引跨账号共用同一名称；切库前先清空，避免旧账号 private repo
-            // 或笔记在新账号会话窗口中短暂残留。
-            await self.repositorySpotlightService.removeAll()
+            // 自定义索引跨账号共用同一名称。真实登出/切号必须先清空；冷启动从
+            // anonymous 占位库恢复同一账号时可保留到切库后的内容指纹核验。
+            await self.repositorySpotlightService.prepareForAccountChange(to: userId)
             // 先清空共享快照再切数据库，避免 Widget 在切换窗口继续展示旧账号内容。
             self.widgetRefreshCoordinator.publishEmpty(
                 state: userId == nil ? .signedOut : .preparing
@@ -1982,7 +1957,6 @@ final class AppDependencies {
         case .trending: await trendingAPI.updateBaseURL(target)
         case .weekly:
             await weeklyAPI.updateBaseURL(target)
-            await curatedPublisherAPI.updateBaseURL(target)
         case .sharing:  await shareAPI.updateBaseURL(target)
         case .wiki:     await wikiAPI.updateBaseURL(target)
         case .recommend: await recommendAPI.updateBaseURL(target)

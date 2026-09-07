@@ -248,12 +248,14 @@ struct AgentWorkspaceViewModelTests {
 
         let initialDerivationCount = viewModel.repositoryPickerDerivationCountForTesting
         let first = try #require(viewModel.displayedMentionCandidates.first)
+        #expect(viewModel.displayedMentionCandidates == viewModel.repositoryPickerSnapshot.mentionSuggestions)
 
         viewModel.isContextPickerFilterPresented = true
         viewModel.toggleRepoContext(first)
         viewModel.clearSelectedRepoContexts()
 
         #expect(viewModel.repositoryPickerDerivationCountForTesting == initialDerivationCount)
+        #expect(viewModel.displayedMentionCandidates == viewModel.repositoryPickerSnapshot.mentionSuggestions)
         #expect(viewModel.repositoryPickerDisplayedCount == AgentRepositoryPickerLogic.unselectedDisplayLimit)
 
         viewModel.selectedRepositorySources = [.weekly, .discovery]
@@ -347,6 +349,78 @@ struct AgentWorkspaceViewModelTests {
         try await waitUntil { viewModel.status == .completed }
 
         #expect(viewModel.traceEvents == [completed])
+    }
+
+    @Test("流式正文刷新复用持久化时间线与 Trace 投影")
+    func streamingPresentationReusesDerivedSnapshots() {
+        let runID = UUID()
+        let trace = AgentTraceEvent(
+            id: "\(runID.uuidString):tool-1",
+            runID: runID,
+            backend: .codexAppServer,
+            sequence: 0,
+            kind: .tool,
+            status: .running,
+            title: "fixture_lookup"
+        )
+        let viewModel = AgentWorkspaceViewModel(agents: [BuiltInAgents.githubWeeklyReport])
+        viewModel.traceEvents = [trace]
+
+        _ = viewModel.timelinePresentation()
+        _ = viewModel.traceTimelineSnapshot()
+        let timelineBuilds = viewModel.timelineProjectionBuildCountForTesting
+        let traceBuilds = viewModel.traceProjectionBuildCountForTesting
+
+        // Provider 文本快照只更新正在生成的叶子行，不能连带重建历史展示模型。
+        viewModel.assistantOutput = "streaming snapshot"
+        _ = viewModel.timelinePresentation()
+        _ = viewModel.traceTimelineSnapshot()
+
+        #expect(viewModel.timelineProjectionBuildCountForTesting == timelineBuilds)
+        #expect(viewModel.traceProjectionBuildCountForTesting == traceBuilds)
+
+        viewModel.status = .running
+        _ = viewModel.timelinePresentation()
+        #expect(viewModel.timelineProjectionBuildCountForTesting == timelineBuilds + 1)
+    }
+
+    @Test("乱序 Runtime Trace 只在必要时重排")
+    func outOfOrderRuntimeTraceRemainsDeterministicallySorted() async throws {
+        let runID = UUID()
+        let later = AgentTraceEvent(
+            id: "later",
+            runID: runID,
+            backend: .codexAppServer,
+            sequence: 2,
+            kind: .tool,
+            status: .running,
+            title: "later"
+        )
+        let earlier = AgentTraceEvent(
+            id: "earlier",
+            runID: runID,
+            backend: .codexAppServer,
+            sequence: 1,
+            kind: .reasoningSummary,
+            status: .completed,
+            title: "earlier"
+        )
+        let viewModel = AgentWorkspaceViewModel(
+            agents: [BuiltInAgents.githubWeeklyReport],
+            runtime: EventReplayAgentRuntime(events: [
+                .runStarted(title: BuiltInAgents.githubWeeklyReport.title),
+                .traceUpdated(later),
+                .traceUpdated(earlier),
+                .runCompleted,
+            ])
+        )
+        configureRunnable(viewModel)
+        viewModel.prompt = "生成周刊"
+
+        viewModel.run()
+        try await waitUntil { viewModel.status == .completed }
+
+        #expect(viewModel.traceEvents.map(\.id) == ["earlier", "later"])
     }
 
     @Test("Agent 中间区可渲染为连续任务叙事而非调试卡片")
@@ -1553,6 +1627,10 @@ struct AgentWorkspaceLayoutMetricsTests {
     @Test("Agent 三栏恢复宽度钳制在可拖拽范围内")
     func workspaceColumnWidthsClampToLayoutBounds() {
         #expect(
+            AgentWorkspaceLayoutMetrics.rightDefaultWidth
+                == AgentWorkspaceLayoutMetrics.rightMinimumWidth
+        )
+        #expect(
             AgentWorkspaceLayoutMetrics.clampedLeftWidth(100)
                 == AgentWorkspaceLayoutMetrics.leftMinimumWidth
         )
@@ -1571,6 +1649,30 @@ struct AgentWorkspaceLayoutMetricsTests {
                 == AgentWorkspaceLayoutMetrics.rightMaximumWidth
         )
         #expect(AgentWorkspaceLayoutMetrics.clampedRightWidth(420) == 420)
+    }
+
+    @Test("Agent 窗口硬下限覆盖两侧最大宽度与中栏可读宽度")
+    func windowMinimumWidthPreservesRunSurfaceAtMaximumSidebars() {
+        // 中栏不再设置局部 minWidth；这里守住同一产品约束，确保窗口硬下限扣除
+        // 两侧最大宽度后仍有足够空间，避免未来单独放宽侧栏时重新引入裁切。
+        let remainingRunWidth = AgentWorkspaceWindowMetrics.minimumContentSize.width
+            - AgentWorkspaceLayoutMetrics.leftMaximumWidth
+            - AgentWorkspaceLayoutMetrics.rightMaximumWidth
+
+        #expect(remainingRunWidth >= AgentWorkspaceLayoutMetrics.runMinimumWidth)
+    }
+
+    @MainActor
+    @Test("右栏折叠状态与原生 Inspector 展示状态保持互为反向")
+    func rightInspectorPresentationMirrorsCollapsedState() {
+        let chromeState = WorkspaceChromeState()
+
+        #expect(chromeState.isRightColumnPresented)
+        chromeState.isRightColumnPresented = false
+        #expect(chromeState.isRightColumnCollapsed)
+
+        chromeState.isRightColumnCollapsed = false
+        #expect(chromeState.isRightColumnPresented)
     }
 }
 

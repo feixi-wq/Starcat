@@ -123,12 +123,8 @@ struct SidebarView: View {
     @State private var showLoginSheet: Bool = false
     /// 底部状态条 popover：承载自动/手动整理详情，以及面板已关闭的单仓摘要任务列表。
     @State private var showBackgroundTaskPopover: Bool = false
-    /// popover 内摘要任务行的 hover 高亮；用 id 而不是 index，避免列表刷新时错位。
-    @State private var hoveredSummaryTaskID: RepoAISummaryBackgroundTask.ID?
     /// GitHub Stars List 创建 / 编辑 Sheet。
     @State private var gitHubStarListEditorItem: GitHubStarListEditorItem?
-    /// 侧边栏分组行 hover 时才显示编辑入口，避免每行常驻铅笔切断扫描线。
-    @State private var hoveredGitHubStarListID: String?
     /// 分组行右键删除的二次确认对象。「未分组」没有删除入口。
     @State private var gitHubStarListPendingDelete: GitHubStarList?
     /// “我的项目”独立授权和同步状态 Sheet。
@@ -169,7 +165,7 @@ struct SidebarView: View {
     /// 38pt 在 `.caption` + `monospacedDigit` 下能容纳 "99,999" 等 6 字符（5 位数 + 千分位
     /// 逗号），对绝大多数 starred 数都够。超过时 Text 会被截到 60pt 容器内，但实际
     /// 用户超过 100,000 stars 概率极低，不需要为此牺牲稳定性。
-    private static let trailingFixedWidth: CGFloat = 60
+    static let trailingFixedWidth: CGFloat = 60
 
     // MARK: - 折叠动画规格（2026-06-11 dong4j 体验优化：对齐 Xcode 文件树的丝滑感）
 
@@ -720,57 +716,45 @@ struct SidebarView: View {
         _ task: RepoAISummaryBackgroundTask,
         rowIndex: Int
     ) -> some View {
-        let isHovered = hoveredSummaryTaskID == task.id
-        return Button {
-            showBackgroundTaskPopover = false
-            onOpenSummaryTask?(task.repo)
-        } label: {
-            HStack(spacing: 8) {
-                summaryTaskIcon(task.state)
-                    .frame(width: 14, height: 14)
+        LocalHoverSurface(
+            normalBackground: rowIndex.isMultiple(of: 2) ? .clear : Color.primary.opacity(0.045),
+            hoveredBackground: Color.accentColor.opacity(0.10),
+            cornerRadius: 0
+        ) {
+            Button {
+                showBackgroundTaskPopover = false
+                onOpenSummaryTask?(task.repo)
+            } label: {
+                HStack(spacing: 8) {
+                    summaryTaskIcon(task.state)
+                        .frame(width: 14, height: 14)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(verbatim: task.repo.fullName)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: task.repo.fullName)
+                            .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(summaryTaskStatusKey(task.state))
+                            .font(interfaceScale.font(.captionSmall))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
                         .font(interfaceScale.font(.captionSmall, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(summaryTaskStatusKey(task.state))
-                        .font(interfaceScale.font(.captionSmall))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
-
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(interfaceScale.font(.captionSmall, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(summaryTaskRowBackground(isHovered: isHovered, rowIndex: rowIndex))
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .onHover { hovering in
-            hoveredSummaryTaskID = hovering ? task.id : nil
-        }
-        .onDisappear {
-            if hoveredSummaryTaskID == task.id {
-                hoveredSummaryTaskID = nil
-            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
         }
         .help(Text("sidebar.background.summary.tooltip"))
-    }
-
-    /// 斑马纹用 primary 极低透明；hover 优先于斑马纹，避免明暗主题下交替色被盖没。
-    private func summaryTaskRowBackground(isHovered: Bool, rowIndex: Int) -> Color {
-        if isHovered {
-            return Color.accentColor.opacity(0.10)
-        }
-        return rowIndex.isMultiple(of: 2) ? .clear : Color.primary.opacity(0.045)
     }
 
     @ViewBuilder
@@ -945,14 +929,18 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var sidebarList: some View {
-        @Bindable var vm = viewModel
-
         switch selectedPage {
         case .manage:
-            List(selection: $vm.selection) {
+            List(selection: Binding(
+                get: { viewModel.selection },
+                set: { viewModel.selectSidebarFromUser($0) }
+            )) {
                 manageSidebarContent
             }
             .listStyle(.sidebar)
+            .task(id: viewModel.sidebarFacetQuery) {
+                await viewModel.refreshSidebarFacetCounts()
+            }
         case .trending:
             List(selection: exploreSidebarSelectionBinding) {
                 exploreModeSidebarContent
@@ -1035,19 +1023,27 @@ struct SidebarView: View {
                 if tagsExpanded && !viewModel.tags.isEmpty {
                     TagWallView(
                         tags: viewModel.tags,
-                        tagCounts: viewModel.tagCounts,
+                        tagCounts: viewModel.sidebarTagCounts,
+                        countUpperBounds: viewModel.sidebarTagCountUpperBounds,
                         selectedTagIds: viewModel.selectedTagIds,
                         onTagTap: { tagId in
                             viewModel.toggleSelectedTag(tagId)
                         }
                     )
+                    .disabled(!viewModel.canFilterByTags)
+                    .opacity(viewModel.canFilterByTags ? 1 : 0.5)
                     .transition(Self.disclosureRowTransition)
+                    if !viewModel.canFilterByTags {
+                        Text("sidebar.tags.untaggedExplanation")
+                            .font(interfaceScale.font(.caption))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             } header: {
                 tagSectionHeader
             }
 
-            if !viewModel.languageStats.isEmpty {
+            if !viewModel.languageStats.isEmpty || viewModel.libraryCount > 0 || viewModel.myProjectsCount > 0 {
                 // HOM-43：折叠按钮始终可见，不依赖 hover；图标在右侧；点击整个区域可折叠
                 // 2026-06-11：每行加 disclosureRowTransition,展开时逐行从顶部滑入。
                 // List 内 row .transition 在 macOS 14+ 趋于稳定,与 chevron 旋转 + spring
@@ -1056,8 +1052,8 @@ struct SidebarView: View {
                     allLanguagesRow
 
                     if languagesExpanded {
-                        ForEach(viewModel.languageStats) { stat in
-                            languageRow(stat)
+                        ForEach(viewModel.sidebarLanguageRows) { row in
+                            languageRow(row)
                                 .transition(Self.disclosureRowTransition)
                         }
                     }
@@ -1216,15 +1212,98 @@ struct SidebarView: View {
         }
     }
 
+    /// 探索栏目语言分类的一行（不含「全部」）。后端语言聚合按「感兴趣语言」重分组后的结果。
+    private enum ExploreLanguageRowItem: Identifiable, Equatable {
+        case uncategorized(count: Int)
+        case other(count: Int)
+        case language(name: String, count: Int)
+
+        var id: String { key }
+
+        var count: Int {
+            switch self {
+            case .uncategorized(let c), .other(let c), .language(_, let c): return c
+            }
+        }
+
+        /// Weekly / Discover 的选中 key。
+        var key: String {
+            switch self {
+            case .uncategorized: return TrendingLanguage.uncategorizedKey
+            case .other: return TrendingLanguage.otherRawValue
+            case .language(let name, _): return name
+            }
+        }
+
+        /// Trending 的选中值。
+        var trendingLanguage: TrendingLanguage {
+            switch self {
+            case .uncategorized: return .uncategorized
+            case .other: return .other
+            case .language(let name, _): return TrendingLanguage(name)
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .uncategorized: return "Uncategorized"
+            case .other: return String.l10n("sidebar.languages.other")
+            case .language(let name, _): return name
+            }
+        }
+    }
+
+    /// 把后端语言聚合（key + count）按「感兴趣语言」重分组为：未分类 → 其他 → 感兴趣语言。
+    /// count=0 的感兴趣语言也保留（与星标模块口径一致）。
+    private func exploreLanguageRowItems(
+        keysWithCounts: [(key: String, count: Int)],
+        interestedLanguages: [String]
+    ) -> [ExploreLanguageRowItem] {
+        let interestedSet = Set(interestedLanguages.map { $0.lowercased() })
+        var uncategorizedCount: Int?
+        var otherCount = 0
+        var interestedCountByLowercased: [String: Int] = [:]
+
+        for item in keysWithCounts {
+            let key = item.key
+            if key == TrendingLanguage.uncategorizedKey {
+                uncategorizedCount = item.count
+            } else if interestedSet.contains(key.lowercased()) {
+                interestedCountByLowercased[key.lowercased()] = item.count
+            } else {
+                otherCount += item.count
+            }
+        }
+
+        var items: [ExploreLanguageRowItem] = []
+        if let uncategorizedCount {
+            items.append(.uncategorized(count: uncategorizedCount))
+        }
+        for language in interestedLanguages {
+            let count = interestedCountByLowercased[language.lowercased()] ?? 0
+            items.append(.language(name: language, count: count))
+        }
+        if otherCount > 0 {
+            items.append(.other(count: otherCount))
+        }
+        return items
+    }
+
     @ViewBuilder
     private var exploreLanguageSidebarContent: some View {
         Section {
             exploreLanguageRow(nil)
 
             if trendingLanguagesExpanded {
-                ForEach(dependencies.exploreCatalogStore.displayLanguages(for: selectedExploreMode)) { language in
-                    exploreLanguageRow(language)
-                        .transition(Self.disclosureRowTransition)
+                let items = exploreLanguageRowItems(
+                    keysWithCounts: dependencies.exploreCatalogStore.displayLanguages(for: selectedExploreMode).map { ($0.key, $0.count) },
+                    interestedLanguages: viewModel.interestedLanguages
+                )
+                ForEach(items) { item in
+                    exploreLanguageRow(
+                        DiscoveryLanguageDTO(key: item.key, label: item.label, count: item.count)
+                    )
+                    .transition(Self.disclosureRowTransition)
                 }
             }
         } header: {
@@ -1238,13 +1317,13 @@ struct SidebarView: View {
             trendingLanguageRow(.all, count: exploreModeCount(.trending))
 
             if trendingLanguagesExpanded {
-                // 2026-06-11 改造：列表数据从后端 `/api/v1/languages` 聚合而来（含 __uncategorized__）。
-                // 后端返空 / 不可达时 store 内部自动退化到 fallbackList，所以这里 displayList 永远非空。
-                // disclosureRowTransition：每行折叠/展开时从顶部滑入 + 淡入,与 chevron 旋转 spring 同步。
-                ForEach(dependencies.trendingLanguageStore.displayList, id: \.key) { agg in
-                    let language = agg.asTrendingLanguage
-                    // count = 0 时不展示数字（fallback 列表 / 后端尚未返回时）；> 0 才展示
-                    trendingLanguageRow(language, count: agg.count > 0 ? agg.count : nil)
+                // 2026-09-03：语言列表按「感兴趣语言」重分组为 未分类 / 其他 / 感兴趣语言。
+                let items = exploreLanguageRowItems(
+                    keysWithCounts: dependencies.trendingLanguageStore.displayList.map { ($0.key, $0.count) },
+                    interestedLanguages: viewModel.interestedLanguages
+                )
+                ForEach(items) { item in
+                    trendingLanguageRow(item.trendingLanguage, count: item.count)
                         .transition(Self.disclosureRowTransition)
                 }
             }
@@ -1259,9 +1338,15 @@ struct SidebarView: View {
             weeklyLanguageRow(nil)
 
             if trendingLanguagesExpanded {
-                ForEach(dependencies.weeklyLanguageStore.displayList, id: \.key) { aggregate in
-                    weeklyLanguageRow(aggregate)
-                        .transition(Self.disclosureRowTransition)
+                let items = exploreLanguageRowItems(
+                    keysWithCounts: dependencies.weeklyLanguageStore.displayList.map { ($0.key, $0.count) },
+                    interestedLanguages: viewModel.interestedLanguages
+                )
+                ForEach(items) { item in
+                    weeklyLanguageRow(
+                        TrendingLanguageAggregateDTO(key: item.key, label: item.label, count: item.count)
+                    )
+                    .transition(Self.disclosureRowTransition)
                 }
             }
         } header: {
@@ -1585,7 +1670,7 @@ struct SidebarView: View {
 
                 Spacer(minLength: 8)
 
-                Text(viewModel.languageStats.count.formatted())
+                Text(viewModel.sidebarLanguageRows.count.formatted())
                     .font(interfaceScale.font(.captionSmall))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -1888,11 +1973,14 @@ struct SidebarView: View {
 
     private func exploreLanguageRow(_ language: DiscoveryLanguageDTO?) -> some View {
         let key = language?.key
+        // 「其他」/感兴趣语言由客户端聚合而来，count 优先用 DTO 自带值；
+        // 「全部」回退到 catalog total。
+        let count: Int? = language?.count ?? dependencies.exploreCatalogStore.total(for: selectedExploreMode)
         // 语言 logo 不是 SF Symbol，不能塞进 systemImage 字符串；仍走 Label icon 槽，
         // 与趋势/周刊语言行、星标主导航同一套 sidebar 图标列对齐。
         return exploreSelectableRow(
             selection: .language(key),
-            count: dependencies.exploreCatalogStore.languageCount(for: key, mode: selectedExploreMode)
+            count: count
         ) {
             if let language {
                 exploreLanguageIcon(language)
@@ -1954,6 +2042,11 @@ struct SidebarView: View {
     private func exploreLanguageIcon(_ language: DiscoveryLanguageDTO) -> some View {
         if language.key == TrendingLanguage.uncategorizedKey {
             UncategorizedLanguageIcon(size: 14)
+        } else if language.key == TrendingLanguage.otherRawValue {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(SidebarSemanticIconStyle(semanticColor: .secondary))
+                .frame(width: 14, height: 14)
         } else {
             LanguageIconView(language: language.key, size: 14)
         }
@@ -1962,6 +2055,9 @@ struct SidebarView: View {
     private func exploreLanguageTitle(_ language: DiscoveryLanguageDTO) -> String {
         if language.key == TrendingLanguage.uncategorizedKey {
             return String.l10n("trending.language.uncategorized")
+        }
+        if language.key == TrendingLanguage.otherRawValue {
+            return String.l10n("sidebar.languages.other")
         }
         return LanguageDisplayName.shortened(for: language.key)
     }
@@ -1976,7 +2072,7 @@ struct SidebarView: View {
 
                 Spacer(minLength: 4)
 
-                if let count, count > 0 {
+                if let count {
                     Text(count.formatted())
                         .font(interfaceScale.font(.captionSmall))
                         .foregroundStyle(.secondary)
@@ -2005,7 +2101,7 @@ struct SidebarView: View {
 
                 Spacer(minLength: 4)
 
-                if let aggregate, aggregate.count > 0 {
+                if let aggregate {
                     Text(aggregate.count.formatted())
                         .font(interfaceScale.font(.captionSmall))
                         .foregroundStyle(.secondary)
@@ -2028,6 +2124,11 @@ struct SidebarView: View {
         if let aggregate {
             if aggregate.key == TrendingLanguage.uncategorizedKey {
                 UncategorizedLanguageIcon(size: 14)
+            } else if aggregate.key == TrendingLanguage.otherRawValue {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(SidebarSemanticIconStyle(semanticColor: .secondary))
+                    .frame(width: 14, height: 14)
             } else {
                 LanguageIconView(language: aggregate.key, size: 14)
             }
@@ -2042,6 +2143,12 @@ struct SidebarView: View {
             AllLanguagesIcon(size: 14)
         } else if language.isUncategorized {
             UncategorizedLanguageIcon(size: 14)
+        } else if language.isOther {
+            // 「其他」没有专属语言 logo，用网格图标表示"其余杂项集合"。
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(SidebarSemanticIconStyle(semanticColor: .secondary))
+                .frame(width: 14, height: 14)
         } else {
             LanguageIconView(language: language.rawValue, size: 14)
         }
@@ -2053,6 +2160,8 @@ struct SidebarView: View {
             Text("trending.allLanguages")
         } else if language.isUncategorized {
             Text("trending.language.uncategorized")
+        } else if language.isOther {
+            Text("sidebar.languages.other")
         } else {
             // Trending 语言 picker label：同样走短名（详见 LanguageDisplayName）。
             Text(verbatim: LanguageDisplayName.shortened(for: language.rawValue))
@@ -2257,79 +2366,22 @@ struct SidebarView: View {
     @ViewBuilder
     private func githubStarListRow(_ list: GitHubStarList) -> some View {
         let item = SidebarItem.githubStarList(list.id)
-        let isHovered = hoveredGitHubStarListID == list.id
-        Label {
-            HStack(spacing: 4) {
-                Text(verbatim: list.name)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                if isHovered {
-                    githubStarListEditButton(list)
-                }
-
-                Spacer(minLength: 4)
-
-                HStack(spacing: 4) {
-                    Spacer(minLength: 0)
-
-                    Text((viewModel.githubStarListCounts[list.id] ?? 0).formatted())
-                        .font(interfaceScale.font(.captionSmall))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-                .frame(width: Self.trailingFixedWidth, alignment: .trailing)
-            }
-        } icon: {
-            Circle()
-                .fill(
-                    SidebarSemanticIconStyle(
-                        semanticColor: Color(hex: list.colorHex) ?? .accentColor
-                    )
-                )
-                .frame(width: 14, height: 14)
-        }
-        .tag(item)
-        .contextMenu {
-            Button {
+        GitHubStarListSidebarRow(
+            list: list,
+            count: viewModel.githubStarListCounts[list.id] ?? 0,
+            onEdit: {
                 gitHubStarListEditorItem = GitHubStarListEditorItem(list: list)
-            } label: {
-                Label("sidebar.githubStarLists.edit", systemImage: "slider.horizontal.2.square")
-            }
-            Divider()
-            Button(role: .destructive) {
+            },
+            onDelete: {
                 gitHubStarListPendingDelete = list
-            } label: {
-                Label("action.delete", systemImage: "trash")
-            }
-        }
-        .onHover { isHovering in
-            if isHovering {
-                hoveredGitHubStarListID = list.id
+            },
+            onPrefetch: {
                 for candidate in item.prefetchCandidates {
                     viewModel.prefetch(selection: candidate)
                 }
-            } else if hoveredGitHubStarListID == list.id {
-                hoveredGitHubStarListID = nil
             }
-        }
-    }
-
-    private func githubStarListEditButton(_ list: GitHubStarList) -> some View {
-        Button {
-            gitHubStarListEditorItem = GitHubStarListEditorItem(list: list)
-        } label: {
-            Image(systemName: "slider.horizontal.2.square")
-                .font(interfaceScale.font(.iconMedium, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .help(Text("sidebar.githubStarLists.edit"))
+        )
+        .tag(item)
     }
 
     /// 侧边栏右键删除必须二次确认：这是远端 destructive mutation，失败时不能先改本地 selection。
@@ -2398,24 +2450,23 @@ struct SidebarView: View {
     /// 语言是当前基础仓库范围上的附加条件，不能再通过 `.tag(.language(...))`
     /// 写入 `List(selection:)`，否则会把“未分类 / 知识库”等主导航选择覆盖掉。
     @ViewBuilder
-    private func languageRow(_ stat: LanguageStat) -> some View {
-        let language = stat.languageOrNil
-        let isSelected = isManageLanguageFilterSelected(language)
+    private func languageRow(_ row: HomeViewModel.SidebarLanguageRow) -> some View {
+        let isSelected = isManageLanguageFilterSelected(row.filter)
 
         Button {
-            viewModel.toggleLanguageFilterFromUser(language)
+            viewModel.toggleLanguageFilterFromUser(row.filter)
         } label: {
             Label {
                 // Sidebar count bugfix v4：trailing 容器整体 fixed width 锁死，
                 // 避免选中筛选后计数位数变化导致标题横向跳动。
                 HStack {
-                    Text(verbatim: LanguageDisplayName.shortened(for: stat.displayName))
+                    Text(verbatim: row.title)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 4)
                     HStack(spacing: 4) {
                         Spacer(minLength: 0)
-                        Text(stat.count.formatted())
+                        Text(viewModel.sidebarFacetCounts == nil ? "—" : row.count.formatted())
                             .font(interfaceScale.font(.captionSmall))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -2424,10 +2475,18 @@ struct SidebarView: View {
                     .frame(width: Self.trailingFixedWidth, alignment: .trailing)
                 }
             } icon: {
-                if let language, !language.isEmpty {
-                    LanguageIconView(language: language, size: 14)
-                } else {
+                switch row {
+                case .uncategorized:
                     UncategorizedLanguageIcon(size: 14)
+                case .other:
+                    // 「其他」没有专属语言 logo，用网格图标表示"其余杂项集合"，
+                    // 沿用 SidebarSemanticIconStyle 以便选中时反白。
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(SidebarSemanticIconStyle(semanticColor: .secondary))
+                        .frame(width: 14, height: 14)
+                case .language(let name, _):
+                    LanguageIconView(language: name, size: 14)
                 }
             }
             .contentShape(Rectangle())
@@ -2441,7 +2500,7 @@ struct SidebarView: View {
     /// “全部语言”只清空语言条件，不改变当前基础仓库范围。
     private var allLanguagesRow: some View {
         Button {
-            viewModel.clearLanguageFiltersFromUser()
+            viewModel.clearSidebarLanguageFilter()
         } label: {
             Label {
                 HStack(spacing: 4) {
@@ -2453,7 +2512,7 @@ struct SidebarView: View {
 
                     HStack(spacing: 4) {
                         Spacer(minLength: 0)
-                        Text(viewModel.totalCount.formatted())
+                        Text(viewModel.sidebarFacetCounts?.languageTotal.formatted() ?? "—")
                             .font(interfaceScale.font(.captionSmall))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -2470,21 +2529,8 @@ struct SidebarView: View {
         .focusEffectDisabled()
     }
 
-    /// Sidebar 的语言高亮读取真实有效筛选，确保 Toolbar 修改后这里同步反馈。
-    private func isManageLanguageFilterSelected(_ language: String?) -> Bool {
-        let filters = viewModel.effectiveGlobalFilterState
-        guard let language, !language.isEmpty else {
-            return filters.repoLanguageFilter == .uncategorized
-        }
-
-        let matchesSingleLanguage: Bool
-        if case .language(let selectedLanguage) = filters.repoLanguageFilter {
-            matchesSingleLanguage = selectedLanguage.caseInsensitiveCompare(language) == .orderedSame
-        } else {
-            matchesSingleLanguage = false
-        }
-        return matchesSingleLanguage || filters.globalFilterLanguages.contains {
-            $0.caseInsensitiveCompare(language) == .orderedSame
-        }
+    /// Sidebar 的语言高亮只读左侧单选 `repoLanguageFilter`，不再与全局筛选多选联动。
+    private func isManageLanguageFilterSelected(_ filter: RepoLanguageFilter) -> Bool {
+        viewModel.effectiveGlobalFilterState.repoLanguageFilter == filter
     }
 }

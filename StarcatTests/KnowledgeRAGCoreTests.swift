@@ -5093,14 +5093,14 @@ struct KnowledgeRAGCoreTests {
         #expect(pinnedFirstAfterRename.summary.pinnedAt == pinnedFirstBeforeRename.summary.pinnedAt)
     }
 
-    @Test("未置顶会话按创建时间排序，发送消息和生成回答不触发重排")
-    func conversationActivityKeepsCreationOrdering() async throws {
+    @Test("未置顶会话按最近活跃排序，发送消息和回答完成后上浮到顶部")
+    func conversationActivityReordersByUpdatedAt() async throws {
         let database = try InMemoryDatabaseManager()
         let store = GRDBRAGConversationStore(database: database)
         let first = try await store.createConversation(title: "first")
         let second = try await store.createConversation(title: "second")
 
-        // first 会话更早创建；后续即使成为最近活跃会话，也必须留在 second 后面。
+        // 固定 created_at 与 updated_at：first 创建更早，second 活跃更晚，初始顺序由 updated_at 决定。
         try await database.writer.write { db in
             try db.execute(
                 sql: "UPDATE rag_conversations SET created_at = ?, updated_at = ? WHERE id = ?",
@@ -5108,11 +5108,13 @@ struct KnowledgeRAGCoreTests {
             )
             try db.execute(
                 sql: "UPDATE rag_conversations SET created_at = ?, updated_at = ? WHERE id = ?",
-                arguments: ["2026-07-15T11:00:00.000Z", "2026-07-15T11:00:00.000Z", second.id.uuidString]
+                arguments: ["2026-07-15T11:00:00.000Z", "2026-07-15T11:30:00.000Z", second.id.uuidString]
             )
         }
 
         let originalOrder = try await store.listConversations().map(\.id)
+        #expect(originalOrder == [second.id, first.id])
+
         try await store.appendUserMessage(
             conversationID: first.id,
             messageID: UUID(),
@@ -5122,8 +5124,8 @@ struct KnowledgeRAGCoreTests {
         let orderAfterUserMessage = try await store.listConversations().map(\.id)
         let firstAfterUserMessage = try #require(try await store.loadConversation(id: first.id))
 
-        #expect(originalOrder == [second.id, first.id])
-        #expect(orderAfterUserMessage == originalOrder)
+        // 发送消息推进 updated_at 后，创建更早的 first 应上浮到普通区顶部。
+        #expect(orderAfterUserMessage == [first.id, second.id])
         #expect(firstAfterUserMessage.summary.updatedAt == "2026-07-15T12:00:00.000Z")
 
         try await store.appendTurn(
@@ -5136,7 +5138,7 @@ struct KnowledgeRAGCoreTests {
         let orderAfterAnswer = try await store.listConversations().map(\.id)
         let firstAfterAnswer = try #require(try await store.loadConversation(id: first.id))
 
-        #expect(orderAfterAnswer == originalOrder)
+        #expect(orderAfterAnswer == [first.id, second.id])
         #expect(firstAfterAnswer.summary.createdAt == "2026-07-15T10:00:00.000Z")
         #expect(firstAfterAnswer.summary.updatedAt != firstAfterUserMessage.summary.updatedAt)
     }
@@ -5153,17 +5155,148 @@ struct KnowledgeRAGCoreTests {
             updatedAt: "2026-07-15T10:00:00.000Z"
         )
         let groupID = UUID()
-        let pinned = RAGConversationRailRowEntry.rows(from: [conversation], placement: .pinned)
-        let ungrouped = RAGConversationRailRowEntry.rows(from: [conversation], placement: .ungrouped)
-        let grouped = RAGConversationRailRowEntry.rows(from: [conversation], placement: .group(groupID))
+        let pinned = RAGConversationRailPresentation.Row(
+            conversation: conversation,
+            rowIndex: 0,
+            placement: .pinned
+        )
+        let ungrouped = RAGConversationRailPresentation.Row(
+            conversation: conversation,
+            rowIndex: 0,
+            placement: .ungrouped
+        )
+        let grouped = RAGConversationRailPresentation.Row(
+            conversation: conversation,
+            rowIndex: 0,
+            placement: .group(groupID)
+        )
 
-        #expect(pinned[0].id != ungrouped[0].id)
-        #expect(pinned[0].id != grouped[0].id)
-        #expect(ungrouped[0].id != grouped[0].id)
+        #expect(pinned.id != ungrouped.id)
+        #expect(pinned.id != grouped.id)
+        #expect(ungrouped.id != grouped.id)
+    }
+
+    @Test("会话侧栏快照一次分桶并保留各区稳定下标")
+    func conversationRailPresentationBucketsRows() {
+        let groupID = UUID()
+        let group = RAGConversationGroup(
+            id: groupID,
+            title: "Research",
+            sortOrder: 0,
+            createdAt: "2026-07-15T10:00:00.000Z",
+            updatedAt: "2026-07-15T10:00:00.000Z"
+        )
+        let conversations = [
+            RAGConversationSummary(
+                id: UUID(), title: "Pinned", isPinned: true, pinnedAt: "2026-07-15T12:00:00.000Z",
+                groupID: groupID, createdAt: "2026-07-15T10:00:00.000Z", updatedAt: "2026-07-15T12:00:00.000Z"
+            ),
+            RAGConversationSummary(
+                id: UUID(), title: "Ungrouped", isPinned: false, pinnedAt: nil,
+                groupID: nil, createdAt: "2026-07-15T10:00:00.000Z", updatedAt: "2026-07-15T11:00:00.000Z"
+            ),
+            RAGConversationSummary(
+                id: UUID(), title: "Grouped 1", isPinned: false, pinnedAt: nil,
+                groupID: groupID, createdAt: "2026-07-15T10:00:00.000Z", updatedAt: "2026-07-15T10:30:00.000Z"
+            ),
+            RAGConversationSummary(
+                id: UUID(), title: "Grouped 2", isPinned: false, pinnedAt: nil,
+                groupID: groupID, createdAt: "2026-07-15T10:00:00.000Z", updatedAt: "2026-07-15T10:15:00.000Z"
+            )
+        ]
+
+        let presentation = RAGConversationRailPresentation(
+            conversations: conversations,
+            groups: [group]
+        )
+
+        #expect(presentation.pinnedRows.map(\.conversation.id) == [conversations[0].id])
+        #expect(presentation.ungroupedRows.map(\.conversation.id) == [conversations[1].id])
+        #expect(presentation.rows(inGroupID: groupID).map(\.rowIndex) == [0, 1])
+        #expect(presentation.groupIDs == [groupID])
+    }
+
+    @Test("会话行只为选中或悬停状态挂载操作菜单")
+    func conversationRowMountsActionMenuOnDemand() {
+        #expect(!RAGWorkspaceConversationRow.shouldMountActionMenu(isSelected: false, isHovered: false))
+        #expect(RAGWorkspaceConversationRow.shouldMountActionMenu(isSelected: true, isHovered: false))
+        #expect(RAGWorkspaceConversationRow.shouldMountActionMenu(isSelected: false, isHovered: true))
+    }
+
+    @Test("会话选择只翻转旧、新两行的独立状态")
+    @MainActor
+    func conversationRailSelectionStoreUpdatesAffectedRows() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let untouchedID = UUID()
+        let store = RAGConversationRailSelectionStore()
+        let first = store.state(for: firstID)
+        let second = store.state(for: secondID)
+        let untouched = store.state(for: untouchedID)
+
+        store.select(firstID)
+        #expect(first.isSelected)
+        #expect(!second.isSelected)
+        #expect(!untouched.isSelected)
+
+        store.select(secondID)
+        #expect(!first.isSelected)
+        #expect(second.isSelected)
+        #expect(!untouched.isSelected)
+    }
+
+    @Test("Composer 空问题直接复用上一轮 Context Usage")
+    func composerContextUsageReusesLastSnapshotForEmptyQuestion() {
+        let expected = RAGContextUsage(
+            windowTokens: 8_192,
+            reservedOutputTokens: 1_024,
+            tokensBySegment: [.system: 120, .recentMessages: 480],
+            promptPreview: "cached"
+        )
+        let input = RAGComposerContextUsageCalculator.Input(
+            question: "  \n",
+            messages: [],
+            contextSummary: nil,
+            attachmentNames: [],
+            contextWindowTokens: 8_192,
+            maximumOutputTokens: 1_024,
+            maxEvidenceTokens: 2_048,
+            promptConfiguration: RAGDefaultPrompts.generator,
+            outputLanguage: "English",
+            lastContextUsage: expected
+        )
+
+        #expect(RAGComposerContextUsageCalculator.calculate(input) == expected)
+    }
+
+    @Test("Composer Context Usage 可从纯值输入生成快照")
+    func composerContextUsageCalculatesFromValueSnapshot() {
+        let input = RAGComposerContextUsageCalculator.Input(
+            question: "Which repositories use Swift?",
+            messages: [],
+            contextSummary: nil,
+            attachmentNames: ["notes.md"],
+            contextWindowTokens: 8_192,
+            maximumOutputTokens: 1_024,
+            maxEvidenceTokens: 2_048,
+            promptConfiguration: RAGDefaultPrompts.generator,
+            outputLanguage: "English",
+            lastContextUsage: nil
+        )
+
+        let usage = RAGComposerContextUsageCalculator.calculate(input)
+
+        #expect(usage.windowTokens == 8_192)
+        #expect(usage.reservedOutputTokens == 1_024)
+        #expect(usage.inputTokens > 0)
     }
 
     @Test("RAG 三栏恢复宽度钳制在可拖拽范围内")
     func workspaceColumnWidthsClampToLayoutBounds() {
+        #expect(
+            RAGWorkspaceLayoutMetrics.rightDefaultWidth
+                == RAGWorkspaceLayoutMetrics.rightMinimumWidth
+        )
         #expect(
             RAGWorkspaceLayoutMetrics.clampedLeftWidth(100)
                 == RAGWorkspaceLayoutMetrics.leftMinimumWidth
@@ -5183,6 +5316,17 @@ struct KnowledgeRAGCoreTests {
                 == RAGWorkspaceLayoutMetrics.rightMaximumWidth
         )
         #expect(RAGWorkspaceLayoutMetrics.clampedRightWidth(456) == 456)
+    }
+
+    @Test("RAG 窗口硬下限覆盖两侧最大宽度与中栏可读宽度")
+    func windowMinimumWidthPreservesAnswerSurfaceAtMaximumSidebars() {
+        // 中栏不再设置局部 minWidth；这里守住同一产品约束，确保窗口硬下限扣除
+        // 两侧最大宽度后仍有足够空间，避免未来单独放宽侧栏时重新引入裁切。
+        let remainingAnswerWidth = KnowledgeRAGWorkspaceWindowMetrics.minimumContentSize.width
+            - RAGWorkspaceLayoutMetrics.leftMaximumWidth
+            - RAGWorkspaceLayoutMetrics.rightMaximumWidth
+
+        #expect(remainingAnswerWidth >= RAGWorkspaceLayoutMetrics.answerMinimumWidth)
     }
 
     @Test("会话语义摘要持久化，并只替代 recent window 外的历史")

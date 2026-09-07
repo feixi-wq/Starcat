@@ -178,6 +178,9 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
     /// OpenSSF 入口，避免把 Pro 私人功能暴露到公共发现页。
     let showsRepoHealthEntry: Bool
 
+    /// Manage 详情传入时展示语言分布分割线；其它详情场景保持 nil，不加载语言数据。
+    let onLanguageTapped: ((String) -> Void)?
+
     /// 账本行等场景的顶栏一句（如「你 Star 了 · 2 小时前」）。
     ///
     /// 必须画在本骨架内部、tint 下面：挂在 Scaffold 外面会挡住语言色光晕，
@@ -291,6 +294,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         fallbackAccentColor: Color = .accentColor,
         starHelpKey: LocalizedStringKey = "repo.unstar",
         showsRepoHealthEntry: Bool = false,
+        onLanguageTapped: ((String) -> Void)? = nil,
         topBanner: String? = nil,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder heroExtension: @escaping () -> HeroExt,
@@ -301,6 +305,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         self.fallbackAccentColor = fallbackAccentColor
         self.starHelpKey = starHelpKey
         self.showsRepoHealthEntry = showsRepoHealthEntry
+        self.onLanguageTapped = onLanguageTapped
         self.topBanner = topBanner
         self.onStarTapped = onStarTapped
         self.heroExtension_ = heroExtension
@@ -314,6 +319,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         fallbackAccentColor: Color = .accentColor,
         starHelpKey: LocalizedStringKey = "repo.unstar",
         showsRepoHealthEntry: Bool = false,
+        onLanguageTapped: ((String) -> Void)? = nil,
         topBanner: String? = nil,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder body: @escaping (@escaping (RepoDetailScrollReport) -> Void) -> Body
@@ -324,6 +330,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             fallbackAccentColor: fallbackAccentColor,
             starHelpKey: starHelpKey,
             showsRepoHealthEntry: showsRepoHealthEntry,
+            onLanguageTapped: onLanguageTapped,
             topBanner: topBanner,
             onStarTapped: onStarTapped,
             heroExtension: { EmptyView() },
@@ -393,7 +400,13 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             ),
             opacity: 1 - metadataPanelCollapseProgress
         )
-        .id(repo.id)
+        // 切仓直接更新现有视图，避免入场位移让 Hero 在加载时上下抖动。
+        // 保持 Scaffold / Notes / Tags / WKWebView 的结构身份，首帧统计仍在让出执行权后记录。
+        .task(id: repo.id) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            PerformanceTracer.shared.mark(.repoDetailFirstFrame)
+        }
         .navigationTitle(repo.name)
         .navigationSubtitle(repo.owner)
         .task(id: wikiLookupKey(for: repo)) {
@@ -406,9 +419,9 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             reloadWikiLinksIfReset(notification, for: repo)
         }
         .task(id: repo.id, priority: .utility) {
-            // 先让出一次执行权，确保详情 Hero / README 首帧提交后再启动旁路推荐。
-            // 真正的磁盘 I/O 已在 cache actor 中执行，这里只负责最终 UI 状态赋值。
-            await Task.yield()
+            // 推荐不是首屏必需数据；短暂延后可把主线程和 SQLite 资源让给 Hero / README。
+            // task(id:) 会在连续切换时取消旧请求，避免后台追赶用户已经离开的仓库。
+            try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled else { return }
             guard ProjectPrivacyPolicy.allowsDiscoveryLookup(for: repo) else {
                 recommendationVM.clear()
@@ -444,12 +457,23 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             bottomPadding: detailToastBottomPadding
         )
         .onChange(of: repo.id) { _, _ in
-            withAnimation(reduceMotion ? nil : metadataPanelAnimation) {
+            // 新仓库直接恢复展开，不能沿用上一仓库的折叠进度播放弹簧动画。
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
                 metadataPanelCollapseProgress = 0
                 readmeScrollOverflow = nil
             }
+            scrollReportScheduler.pendingReport = nil
+            wikiRepoKey = nil
+            wikiLinks = []
+            recommendationVM.clear()
             showsRecommendations = false
+            aiOverlayTopChromeInset = 0
+            libraryState = .outsideLibrary
+            isLibraryOperationInFlight = false
             detailToastMessage = nil
+            proPaywallContext = nil
         }
         .onChange(of: metadataPanelHeight) { _, newHeight in
             restoreExpandedHeroIfNeeded(naturalPanelHeight: newHeight)
@@ -737,6 +761,8 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                     starHelpKey: starHelpKey,
                     headerSourceBadge: viewData.headerSourceBadge,
                     showsRepoHealthEntry: showsRepoHealthEntry,
+                    libraryState: libraryState,
+                    onLanguageTapped: onLanguageTapped,
                     onStarTapped: onStarTapped
                 ) {
                     trailingActionsView
@@ -754,9 +780,8 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
     /// Wiki 评审约束（2026-06-11）：Weekly Issue 是 Weekly 分组特有入口，必须永远排第一。
     /// 因此先渲染 `.weeklyIssue`，最后渲染 AI / custom。
     /// Share 已迁入 window toolbar：它是当前 repo 的全局操作，不应继续占用 hero
-    /// 内容区的主 CTA 位置。Wiki 保留在 hero action 区并排在 AI 前，避免它的
-    /// 异步服务商探测结果让 toolbar 重排跳动；这里仍接收 `.share`，但派发时跳过，
-    /// 避免四个场景调用方为一个展示位置变化同步改数据模型。
+    /// 内容区操作统一放在 Hero；分享位于知识库按钮右侧，直接跟随当前详情仓库。
+    /// 分享可见性不依赖各 shell 的旧 `.share` 标记，未 Star 的公开仓库也可直接复制链接。
     @ViewBuilder
     private var trailingActionsView: some View {
         HStack(spacing: 8) {
@@ -777,7 +802,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                                 .frame(width: 28, height: 28)
                                 .background {
                                     Capsule(style: .continuous)
-                                        .fill(WikiAccent.background(colorScheme: colorScheme))
+                                        .fill(HeroActionIconStyle.background(colorScheme: colorScheme))
                                 }
                         }
                         .buttonStyle(.plain)
@@ -796,7 +821,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                             .frame(width: 28, height: 28)
                             .background {
                                 Capsule(style: .continuous)
-                                    .fill(WikiAccent.background(colorScheme: colorScheme))
+                                    .fill(HeroActionIconStyle.background(colorScheme: colorScheme))
                             }
                     }
                     .buttonStyle(.plain)
@@ -811,7 +836,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             // 位置：Wiki 菜单之后、剩余 actions（.ai 等）之前 —— 即 AI 按钮的左侧。
             // 显示条件：recommendationVM.hasItems（保持旧浮动按钮的「有就显示、没有就不显示」契约）。
             if recommendationVM.hasItems {
-                RepoRecommendButton(hasItems: true) {
+                RepoRecommendButton {
                     guard dependencies.authSession.state.isAuthenticated else {
                         dependencies.authSession.requestLoginSheet()
                         return
@@ -881,6 +906,14 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                     }
                 }
                 .gettingStartedAnchor(.addToLibrary)
+            }
+            if !repo.isPrivate,
+               let deepLink = RepositoryDeepLink(fullName: repo.fullName, repositoryID: repo.id) {
+                RepoShareButton(repo: repo, publicURL: deepLink.publicURL) {
+                    detailToastMessage = "repo.share.link.copied"
+                }
+                // AppKit 可能保留旧 NSMenu action；切换仓库时连同复制反馈一起重建。
+                .id("\(repo.id):\(repo.fullName)")
             }
             ForEach(remainingActions) { action in
                 actionButton(for: action)

@@ -73,6 +73,7 @@ struct SettingsView: View {
     @State private var forwardHistory: [SettingsLocation] = []
     @State private var settingsSearchText = ""
     @State private var isRedispatchingSettingsJump = false
+    @State private var hasMarkedFirstFrame = false
     /// 快捷键录制失败时只在 General 页就地提示，不修改已保存配置。
     @State private var shortcutValidationError: KeyboardShortcutConfiguration.ValidationError?
 
@@ -107,6 +108,8 @@ struct SettingsView: View {
     private enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case general
         case pro
+        /// 2026-09-06 新增：权限类配置（OAuth scope、数据贡献）独立成页。
+        case privacy
         case ai
         case mcp
         /// 2026-06-08 新增：第三方 / 自建后端服务的 URL 配置。
@@ -126,6 +129,7 @@ struct SettingsView: View {
             switch self {
             case .general:      return "settings.general.title"
             case .pro:          return "Pro"
+            case .privacy:      return "settings.privacy.title"
             case .ai:           return "settings.ai.title"
             case .mcp:          return "settings.mcp.title"
             case .services:     return "settings.services.title"
@@ -146,6 +150,7 @@ struct SettingsView: View {
             switch self {
             case .general:      return "gearshape"
             case .pro:          return "crown.fill"
+            case .privacy:      return "lock.shield"
             case .ai:           return "sparkles"
             case .mcp:          return "point.3.connected.trianglepath.dotted"
             case .services:     return "network"
@@ -208,7 +213,12 @@ struct SettingsView: View {
 
     /// 设置窗口固定使用当前验收尺寸；Scene 同时声明 `.contentSize`，让 AppKit
     /// 禁用边缘缩放和绿色缩放按钮，而不是只给一个仍可继续放大的最小值。
-    private static let contentSize = CGSize(width: 920, height: 600)
+    /// 注意：这才是窗口实际尺寸的单一来源；`StarcatApp` 的 `.defaultSize` 只
+    /// 是首次启动且无持久化 frame 时的兜底，必须与这里保持一致。
+    private static let contentSize = CGSize(width: 720, height: 720)
+    /// SwiftUI 与 AppKit 桥接共用同一组数值，避免视觉建议和硬拖拽边界分叉。
+    private static let sidebarWidth: (minimum: CGFloat, ideal: CGFloat, maximum: CGFloat) =
+        (220, 240, 260)
 
     var body: some View {
         // NavigationSplitView + sidebar List 使用 macOS 原生选中态、材质和分隔线。
@@ -224,10 +234,14 @@ struct SettingsView: View {
                 .navigationTitle(String.l10n(selectedTab.titleKeyString))
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(
-            width: Self.contentSize.width,
-            height: Self.contentSize.height
-        )
+        // Window scene 的 defaultSize 负责初始尺寸；内容只填满已分配 bounds，不再把
+        // 720×720 作为 intrinsic size 回传给 SwiftUI 窗口控制器。这样菜单 action
+        // 不需要先同步测量完整的 NavigationSplitView 才能决定窗口大小。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            SettingsWindowSizeLimiter(contentSize: Self.contentSize)
+                .frame(width: 0, height: 0)
+        }
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 ControlGroup {
@@ -258,6 +272,10 @@ struct SettingsView: View {
             }
         }
         .onAppear {
+            if !hasMarkedFirstFrame {
+                hasMarkedFirstFrame = true
+                PerformanceTracer.shared.mark(.settingsWindowFirstFrame)
+            }
             dependencies.telemetryManager.track(.settingsOpened)
             // 第一次打开 Window 时通知可能早于 View 安装订阅；消费 AppDelegate
             // 暂存的目标，保证独立窗口入口首次也能准确定位到目标页/区块。
@@ -286,6 +304,7 @@ struct SettingsView: View {
             Section("settings.sidebar.group.basic") {
                 settingsSidebarRow(.general)
                 settingsSidebarRow(.pro)
+                settingsSidebarRow(.privacy)
             }
 
             Section("settings.sidebar.group.intelligence") {
@@ -312,8 +331,20 @@ struct SettingsView: View {
         // Apple 要求把默认项移除声明挂在产生它的 Sidebar column 上；挂在 SplitView
         // 根部时 macOS 26 仍可能在窗口重建 Toolbar 后重新注入折叠按钮。
         .toolbar(removing: .sidebarToggle)
-        // 系统设置采用稳定的分类栏宽度；固定值也能覆盖旧窗口保存的过窄 divider 位置。
-        .navigationSplitViewColumnWidth(240)
+        // 系统设置采用稳定的分类栏宽度；拖动只允许在窄幅范围内微调，
+        // SwiftUI modifier 负责理想值，AppKit limiter 负责真正限制 divider 拖拽边界。
+        .navigationSplitViewColumnWidth(
+            min: Self.sidebarWidth.minimum,
+            ideal: Self.sidebarWidth.ideal,
+            max: Self.sidebarWidth.maximum
+        )
+        .background {
+            SettingsSidebarWidthLimiter(
+                minimumThickness: Self.sidebarWidth.minimum,
+                maximumThickness: Self.sidebarWidth.maximum
+            )
+            .frame(width: 0, height: 0)
+        }
         .searchable(
             text: $settingsSearchText,
             placement: .sidebar,
@@ -344,6 +375,8 @@ struct SettingsView: View {
             generalTab
         case .pro:
             ProSettingsTab()
+        case .privacy:
+            privacyTab
         case .ai:
             AISettingsTab()
         case .mcp:
@@ -380,6 +413,12 @@ struct SettingsView: View {
                                keywords: ["动画", "无障碍", "accessibility", "motion"]),
             SettingsSearchItem("pro", titleKey: "Pro", tab: .pro,
                                keywords: ["订阅", "授权", "激活", "license", "subscription", "purchase"]),
+            SettingsSearchItem("privacy", titleKey: "settings.privacy.title", tab: .privacy,
+                               keywords: ["隐私", "权限", "OAuth", "数据贡献", "推荐", "privacy"]),
+            SettingsSearchItem("privacy.oauthScopes", titleKey: "settings.general.oauthScopes.section", tab: .privacy,
+                               keywords: ["OAuth", "scope", "权限", "组织"]),
+            SettingsSearchItem("privacy.dataContribution", titleKey: "settings.general.dataContribution.section", tab: .privacy,
+                               keywords: ["数据贡献", "匿名", "推荐", "隐私"]),
             SettingsSearchItem("ai", titleKey: "settings.ai.title", tab: .ai,
                                keywords: ["人工智能", "模型", "provider", "model", "api key"]),
             SettingsSearchItem("ai.provider", titleKey: "settings.ai.provider.sectionTitle", tab: .ai,
@@ -452,6 +491,8 @@ struct SettingsView: View {
             return SettingsLocation(tab: .general)
         case "pro":
             return SettingsLocation(tab: .pro)
+        case "privacy", "privacy.oauthScopes", "privacy.dataContribution":
+            return SettingsLocation(tab: .privacy)
         case "ai", "ai.chat", "ai.embedding", "ai.repoContext":
             return SettingsLocation(tab: .ai, target: target == "ai" ? nil : target)
         case "mcp":
@@ -634,70 +675,6 @@ struct SettingsView: View {
                 SettingsSectionHeader(
                     "settings.general.language",
                     systemImage: "globe",
-                    style: .prominent
-                )
-            }
-
-            Section {
-                Text("settings.general.oauthScopes.summary")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                ForEach(AppConstants.githubOAuthScopes, id: \.self) { scope in
-                    HStack(alignment: .firstTextBaseline, spacing: 16) {
-                        Text(scope)
-                            .font(.body.monospaced())
-
-                        Spacer(minLength: 16)
-
-                        Text(githubOAuthScopeDescriptionKey(for: scope))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.trailing)
-                    }
-                }
-
-                Text("settings.general.oauthScopes.organizationHelp")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.general.oauthScopes.section",
-                    systemImage: "lock.shield.fill",
-                    style: .prominent
-                )
-            }
-
-            // 数据贡献严格默认关闭且按 GitHub 账号隔离。这里只展示一个授权开关；
-            // 上传数量、时间、失败和重试均属于后台旁路状态，不进入用户界面。
-            Section {
-                Toggle(isOn: Binding(
-                    get: { dependencies.dataContributionSettings.isEnabled },
-                    set: { newValue in
-                        guard let accountID = dependencies.database.currentUserId else { return }
-                        Task {
-                            await dependencies.dataContributionSettings.setEnabled(
-                                newValue,
-                                accountID: accountID
-                            )
-                        }
-                    }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.general.dataContribution.title")
-                        Text("settings.general.dataContribution.help")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .disabled(dependencies.database.currentUserId == nil)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.general.dataContribution.section",
-                    systemImage: "hand.raised.fill",
                     style: .prominent
                 )
             }
@@ -1033,6 +1010,80 @@ struct SettingsView: View {
                 SettingsSectionHeader(
                     "settings.general.other",
                     systemImage: "ellipsis.circle",
+                    style: .prominent
+                )
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 2026-09-06 dong4j 需求：新增「隐私」侧栏页，收拢权限类配置。
+    /// GitHub OAuth 权限（登录申请的 scope）与隐私与推荐（数据贡献开关）从
+    /// 通用页整体迁入：两者本质都是「用户数据授权边界」，独立成页后用户能
+    /// 在一处看全 Starcat 申请了哪些权限、贡献了哪些数据；通用页只保留
+    /// 界面 / 行为偏好。两个 Section 的标题、图标与内容保持迁入前原样。
+    private var privacyTab: some View {
+        Form {
+            Section {
+                Text("settings.general.oauthScopes.summary")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(AppConstants.githubOAuthScopes, id: \.self) { scope in
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        Text(scope)
+                            .font(.body.monospaced())
+
+                        Spacer(minLength: 16)
+
+                        Text(githubOAuthScopeDescriptionKey(for: scope))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+
+                Text("settings.general.oauthScopes.organizationHelp")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.general.oauthScopes.section",
+                    systemImage: "lock.shield.fill",
+                    style: .prominent
+                )
+            }
+
+            // 数据贡献严格默认关闭且按 GitHub 账号隔离。这里只展示一个授权开关；
+            // 上传数量、时间、失败和重试均属于后台旁路状态，不进入用户界面。
+            Section {
+                Toggle(isOn: Binding(
+                    get: { dependencies.dataContributionSettings.isEnabled },
+                    set: { newValue in
+                        guard let accountID = dependencies.database.currentUserId else { return }
+                        Task {
+                            await dependencies.dataContributionSettings.setEnabled(
+                                newValue,
+                                accountID: accountID
+                            )
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.dataContribution.title")
+                        Text("settings.general.dataContribution.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(dependencies.database.currentUserId == nil)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.general.dataContribution.section",
+                    systemImage: "hand.raised.fill",
                     style: .prominent
                 )
             }
@@ -1889,6 +1940,8 @@ private struct StorageSettingsTab: View {
             }
 
             Section {
+                StorageCacheUsageOverviewCard(snapshot: cacheUsageOverviewSnapshot)
+
                 usageRow(
                     titleKey: "settings.storage.readme",
                     usageText: readmeUsageText,
@@ -2474,6 +2527,27 @@ private struct StorageSettingsTab: View {
     }
 
     // MARK: - 用量文案
+
+    /// Cache Usage 顶部总览：把十几种明细合并成 4 大类占比。
+    private var cacheUsageOverviewSnapshot: StorageCacheUsageOverviewSnapshot {
+        .make(
+            readmeBytes: stats.readmeBytes,
+            imageBytes: Int64(stats.imageDiskBytes),
+            archiveBytes: stats.archiveBytes,
+            translationBytes: translationCache.totalBytes,
+            externalSearchBytes: externalSearchCache.totalBytes,
+            wikiBytes: wikiCache.totalBytes,
+            issueTimelineBytes: issueTimelineCache.totalBytes,
+            issueCommentDraftBytes: issueCommentDraftCache.totalBytes,
+            recommendationBytes: recommendationCache.totalBytes,
+            chatHistoryBytes: chatHistoryStore.totalBytes,
+            ragIndexBytes: ragIndexBytes,
+            ragHistoryBytes: ragConversationStats.totalBytes,
+            aiContextBytes: aiContextStorage.totalBytes,
+            codeFlowBytes: codeFlowStorage.totalBytes,
+            codebaseMemoryBytes: codebaseMemoryStorage.totalBytes
+        )
+    }
 
     private var readmeUsageText: String {
         String(

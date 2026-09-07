@@ -199,4 +199,43 @@ struct ReadmeWebViewTests {
         #expect(standardHTML.contains("font-size: var(--readme-body-font-size, 16px);"))
         #expect(standardHTML.contains("line-height: var(--readme-line-height, 1.62);"))
     }
+
+    @Test("README 在正文后提供隐藏的 Star History placeholder")
+    func assembleDocument_placesStarHistoryHostAfterArticle() throws {
+        let html = ReadmeWebView.assembleDocument(
+            fragment: "<p>README body</p>",
+            isDark: false
+        )
+        let articleEnd = try #require(html.range(of: "</article>"))
+        let host = try #require(html.range(of: #"id="starcat-readme-star-history""#))
+
+        #expect(articleEnd.upperBound < host.lowerBound)
+        #expect(html.contains(#"data-starcat-owned="true" hidden"#))
+        #expect(html.contains(".starcat-star-history-line"))
+        #expect(html.contains(".starcat-star-history-area"))
+        #expect(html.contains(".starcat-star-history-endpoint"))
+        #expect(html.contains("--history-panel: #ffffff;"))
+        #expect(html.contains("--history-panel: rgba(255,255,255,.065);"))
+        #expect(html.contains(".starcat-star-history-attribution"))
+        #expect(html.contains(".starcat-star-history-attribution strong"))
+        #expect(html.contains(".starcat-star-history-avatar img"))
+        #expect(html.contains(".starcat-star-history-card-kicker"))
+        #expect(html.contains(".starcat-star-history-current-star"))
+        #expect(html.contains("--history-brand: #9a6b00;"))
+        #expect(html.contains("--history-brand: #ffd34d;"))
+    }
+
+    @Test("Star History 只在接近底部时触发并通过受控函数局部替换")
+    func starHistoryBridge_isLazyAndIncremental() {
+        let script = ReadmeWebView.readmeEnhancementScript
+
+        #expect(script.contains("Math.max(0, overflow - y) <="))
+        #expect(script.contains("isNearBottom:"))
+        #expect(script.contains("window.starcatReplaceReadmeStarHistory = function(html)"))
+        #expect(script.contains("host.innerHTML = html;"))
+        #expect(script.contains(".starcat-star-history-avatar img"))
+        #expect(script.contains("image.remove();"))
+        #expect(script.contains("host.hidden = false;"))
+        #expect(!script.contains("location.reload"))
+    }
 }

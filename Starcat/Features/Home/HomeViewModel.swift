@@ -154,6 +154,8 @@ final class HomeViewModel {
 
             if selectedRepoID != nil { selectedRepoID = nil }
             if !searchQuery.isEmpty { searchQuery = "" }
+            // 切换分类时清除临时置顶卡片：置顶语义只对「定位时所在分类」的列表有意义。
+            temporaryPinnedRepo = nil
         }
     }
 
@@ -276,7 +278,9 @@ final class HomeViewModel {
     /// W4-4 D2：原始 fetch 结果（未经 filter / sort）。
     /// `items` 是 rawItems 的派生 — sort / filter 改变时只需重跑 `applyView()` 而不必重 fetch。
     /// 私有：不暴露给 UI，保持单向流: rawItems → applyView → items → UI。
-    private var rawItems: [Repo] = []
+    private var rawItems: [Repo] = [] {
+        didSet { sidebarFacetDerivedRevision &+= 1 }
+    }
 
     /// 当前详情选中的 repo **ID**（不是 Repo 值）。
     ///
@@ -288,11 +292,24 @@ final class HomeViewModel {
     ///   ForEach 默认 id 即 `Repo.id`，selection 类型与 ForEach.id 完全匹配，
     ///   SwiftUI 不需要再做 tag 匹配，是最稳的写法。
     /// - selectedRepo（值）通过 computed property 从 items 派生即可。
-    var selectedRepoID: Int64?
+    var selectedRepoID: Int64? {
+        didSet {
+            guard selectedRepoID != nil, selectedRepoID != oldValue else { return }
+            PerformanceTracer.shared.mark(.repoDetailSelectionRequested)
+        }
+    }
 
     /// 外部传入的 Repo 对象（如 Undo Star 选中行），不在当前 Manage 列表中。
     /// 设置后 `selectedRepo` 优先返回此值。
     var externalSelectedRepo: Repo?
+
+    /// 从外部入口（SearchCenter / Universal Link / Spotlight / 侧栏摘要任务等）跳转到
+    /// 某个「当前列表尚未加载」的本地 repo 时，临时置顶在列表最顶部的卡片。
+    ///
+    /// 只用于「定位」：不参与分页计数、排序或数据库查询；置顶的 repo 一定不在 `items`
+    /// 里（调用方先判 `items.contains`），避免与分页行重复渲染同一 id。
+    /// 切换分类或开始搜索时清除；再次外部定位时直接覆盖。
+    private(set) var temporaryPinnedRepo: Repo?
 
     /// 外部导航要求中栏定位到当前 repo 时递增。
     ///
@@ -316,6 +333,9 @@ final class HomeViewModel {
     /// 由 `ensureRepoVisible(repoId:)` 负责把 currentPage 推到对应页。
     var selectedRepo: Repo? {
         if let external = externalSelectedRepo { return external }
+        // 临时置顶优先于列表选中：置顶仓即使 selectedRepoID 被 reload / 筛选清理，
+        // 详情也保持指向它，避免 applyManageDetailSelectionPolicy 抢选列表第一条。
+        if let pinned = temporaryPinnedRepo { return pinned }
         guard let id = selectedRepoID else { return nil }
         return filteredSorted.first { $0.id == id }
     }
@@ -370,6 +390,7 @@ final class HomeViewModel {
         let library: String
         let language: String
         let selectedLanguages: Set<String>
+        let excludedLanguages: Set<String>
         let healthAvailability: String
         let openSSFAvailability: String
         let tagAvailability: String
@@ -504,11 +525,166 @@ final class HomeViewModel {
     /// Languages 聚合（Sidebar Languages 组）。D-04：`private(set)` 收敛。
     private(set) var languageStats: [LanguageStat] = []
 
+    /// 查询身份随分类、筛选和数据刷新变化；分页追加不改变分面统计。
+    struct SidebarFacetQuery: Equatable {
+        let selection: SidebarItem
+        let scope: RepoListScope?
+        var filters: RepoListFilters
+        let searchQuery: String
+        let interestedLanguages: [String]
+        let dataRevision: Int
+        let derivedRevision: Int
+        let isLoading: Bool
+
+        /// 标签计数忽略自身勾选；只改标签时旧数字仍有效，语言计数仍按完整身份刷新。
+        var tagCountQuery: Self {
+            var query = self
+            query.filters.selectedTagIDs = []
+            return query
+        }
+    }
+
+    private var sidebarFacetDataRevision = 0
+    private var sidebarFacetDerivedRevision = 0
+    private var sidebarFacetSnapshot: (query: SidebarFacetQuery, counts: RepoListFacetCounts)?
+
+    var sidebarFacetQuery: SidebarFacetQuery {
+        let scope = currentRepoListScopeForDatabasePaging()
+        let usesMemory = scope == nil || (isSearching && selection != .myProjects)
+        return SidebarFacetQuery(
+            selection: selection, scope: scope,
+            filters: currentRepoListFiltersForDatabasePaging(), searchQuery: searchQuery,
+            interestedLanguages: interestedLanguages, dataRevision: sidebarFacetDataRevision,
+            derivedRevision: usesMemory ? sidebarFacetDerivedRevision : 0,
+            isLoading: usesMemory && (isLoading || isDatabasePagingActive)
+        )
+    }
+
+    /// 等待当前查询时不展示上一分类的数字；视图用占位符区分「待加载」和真实的 0。
+    var sidebarFacetCounts: RepoListFacetCounts? {
+        guard sidebarFacetSnapshot?.query == sidebarFacetQuery else { return nil }
+        return sidebarFacetSnapshot?.counts
+    }
+
+    /// 复用仍有效的标签计数，避免每次勾选都经历「数字 → 占位 → 同一个数字」。
+    var sidebarTagCounts: [String: Int]? {
+        guard let snapshot = sidebarFacetSnapshot,
+              snapshot.query.tagCountQuery == sidebarFacetQuery.tagCountQuery else { return nil }
+        return snapshot.counts.tags
+    }
+
+    /// 仅用于数字区域的宽度上界，不作为当前筛选计数展示。
+    private(set) var sidebarTagCountUpperBounds: [String: Int] = [:]
+
+    /// 未分类的定义就是没有标签，因此禁用标签过滤，而不是偷偷改到全部仓库。
+    var canFilterByTags: Bool {
+        selection != .untagged && selection != .smartCollection(.noTags)
+    }
+
+    /// SwiftUI task(id:) 会取消上一请求；返回时再核对身份，拦住不响应取消的数据库读取。
+    func refreshSidebarFacetCounts() async {
+        let query = sidebarFacetQuery
+        guard !query.isLoading else { return }
+        do {
+            let counts: RepoListFacetCounts
+            if let scope = query.scope, !isSearching || selection == .myProjects {
+                counts = try await repository.fetchListFacetCounts(scope: scope, filters: query.filters)
+            } else {
+                // Wiki、搜索和智能集合已有完整候选集；复用列表过滤，绝不能拿分页 items 计数。
+                let languageRepos = computeFilteredSorted(ignoringSidebarLanguage: true, sortResults: false)
+                let tagRepos = computeFilteredSorted(ignoringSelectedTags: true, sortResults: false)
+                let languages = Dictionary(grouping: languageRepos, by: { $0.language ?? "" })
+                    .map { LanguageStat(language: $0.key, count: $0.value.count) }
+                    .sorted { $0.language < $1.language }
+                var tags: [String: Int] = [:]
+                for repo in tagRepos {
+                    for tagID in repoTagsMap[repo.id] ?? [] { tags[tagID, default: 0] += 1 }
+                }
+                counts = RepoListFacetCounts(languages: languages, tags: tags)
+            }
+            guard !Task.isCancelled, sidebarFacetQuery == query else { return }
+            sidebarFacetSnapshot = (query, counts)
+        } catch {
+            guard !Task.isCancelled else { return }
+            AppLog.database.error("Sidebar facet counts failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// 知识库集合专用语言聚合。
     ///
     /// Sidebar 的 `languageStats` 必须继续保持 GitHub starred 口径；这里单独维护
     /// `library_state = in_library` 范围，避免未 star 但已入库的 repo 语言在筛选菜单里消失。
     private(set) var knowledgeLanguageStats: [LanguageStat] = []
+
+    /// 左侧语言分类的一行（不含「全部」，全部走独立 allLanguagesRow）。
+    /// 固定顺序：未分类 → 其他 → 感兴趣语言；每行映射一个 `RepoLanguageFilter` 单选目标。
+    enum SidebarLanguageRow: Identifiable, Equatable {
+        case uncategorized(count: Int)
+        case other(count: Int)
+        case language(name: String, count: Int)
+
+        var id: String {
+            switch self {
+            case .uncategorized: return "__uncategorized__"
+            case .other: return "__other__"
+            case .language(let name, _): return name
+            }
+        }
+
+        /// 点击该行要写入的左侧单选语言筛选。
+        var filter: RepoLanguageFilter {
+            switch self {
+            case .uncategorized: return .uncategorized
+            case .other: return .other
+            case .language(let name, _): return .language(name)
+            }
+        }
+
+        var count: Int {
+            switch self {
+            case .uncategorized(let count), .other(let count), .language(_, let count):
+                return count
+            }
+        }
+
+        /// 渲染标题：未分类沿用英文原词（与 LanguageStat 一致），其他走 i18n，语言走短名。
+        var title: String {
+            switch self {
+            case .uncategorized: return "Uncategorized"
+            case .other: return String.l10n("sidebar.languages.other")
+            case .language(let name, _): return LanguageDisplayName.shortened(for: name)
+            }
+        }
+    }
+
+    /// 左侧语言分类行（不含「全部」）。将当前范围的计数按设置中的候选语言重分组。
+    /// count = 0 的感兴趣语言也保留，避免用户误以为设置被丢。
+    var sidebarLanguageRows: [SidebarLanguageRow] {
+        let interestedSet = Set(interestedLanguages.map { $0.lowercased() })
+        var uncategorizedCount = 0
+        var otherCount = 0
+        var interestedCountByLowercased: [String: Int] = [:]
+
+        for stat in sidebarFacetCounts?.languages ?? [] {
+            let name = stat.language
+            if name.isEmpty {
+                uncategorizedCount = stat.count
+            } else if interestedSet.contains(name.lowercased()) {
+                interestedCountByLowercased[name.lowercased()] = stat.count
+            } else {
+                otherCount += stat.count
+            }
+        }
+
+        var rows: [SidebarLanguageRow] = []
+        rows.append(.uncategorized(count: uncategorizedCount))
+        for language in interestedLanguages {
+            let count = interestedCountByLowercased[language.lowercased()] ?? 0
+            rows.append(.language(name: language, count: count))
+        }
+        rows.append(.other(count: otherCount))
+        return rows
+    }
 
     /// W4 A6：用户自定义标签列表（Sidebar Tags 组）。
     private(set) var tags: [Tag] = []
@@ -562,7 +738,16 @@ final class HomeViewModel {
     /// - 总量 1801 repos × 平均 ~3 tags = 几千条映射，内存占用可忽略（<100KB）
     /// - 切 Languages / 勾 / 取消标签时不发起 DB 查询，UI 即时响应
     /// - 与现有 `statusMap` 走的"全表加载到字典 + applyView 过滤"路径完全一致
-    private var repoTagsMap: [Int64: Set<String>] = [:]
+    private var repoTagsMap: [Int64: Set<String>] = [:] {
+        didSet {
+            // 全部本地关联包含未 Star 的知识库 / 项目；在数据刷新时一次计算，点击不重算。
+            var counts: [String: Int] = [:]
+            for tagIDs in repoTagsMap.values {
+                for tagID in tagIDs { counts[tagID, default: 0] += 1 }
+            }
+            sidebarTagCountUpperBounds = counts
+        }
+    }
 
     /// Wiki availability 的批量只读快照。缺失 key 明确表示“尚未探测”，不能当成 missing。
     /// 文件 IO / JSON decode 由 `WikiAvailabilitySnapshotLoader` 在主线程外完成。
@@ -706,6 +891,18 @@ final class HomeViewModel {
         didSet {
             guard oldValue != globalFilterLanguages else { return }
             guard !isHydratingManageFilters, !isApplyingGlobalFilterState else { return }
+            reloadOrApplyCurrentManageView()
+        }
+    }
+
+    /// 设置页「感兴趣的语言」镜像。左侧语言分类与 `.other` 过滤都依赖它；
+    /// 由 HomeView 从 AppSettings 单向同步（启动 + onChange），ViewModel 本身不持有 settings。
+    /// 变化时只有左侧语言筛选是 `.other` 才 refilter——排除集合变了，列表结果才可能变。
+    var interestedLanguages: [String] = [] {
+        didSet {
+            guard oldValue != interestedLanguages else { return }
+            guard !isHydratingManageFilters, !isApplyingGlobalFilterState else { return }
+            guard repoLanguageFilter == .other else { return }
             reloadOrApplyCurrentManageView()
         }
     }
@@ -866,6 +1063,7 @@ final class HomeViewModel {
     /// `.library` 是 Sidebar 基础分类；`.smartCollection(.library)` 是原系统集合入口；
     /// `.smartCollection(.outsideLibraryStars)` 的结果与入库状态相反，也必须同步失效。
     private func invalidateLibraryDerivedCaches() {
+        sidebarFacetDataRevision &+= 1
         listCache.removeValue(forKey: .library)
         listCache.removeValue(forKey: .smartCollection(.library))
         listCache.removeValue(forKey: .smartCollection(.outsideLibraryStars))
@@ -1051,6 +1249,30 @@ final class HomeViewModel {
         }
     }
 
+    /// 详情 Hero 点击语言后，在当前 Sidebar 分类上叠加一次临时主语言筛选。
+    ///
+    /// 这条入口不改用户持久偏好；重复点击同一语言只撤销本次临时条件，离开当前分类时
+    /// 仍由 `clearTemporaryGlobalFiltersIfNeeded(for:)` 自动恢复原筛选。
+    func toggleTemporaryLanguageFilterFromDetail(_ language: String) {
+        let normalized = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        var filters = effectiveGlobalFilterState
+        let target = RepoLanguageFilter.language(normalized)
+        filters.repoLanguageFilter = filters.repoLanguageFilter == target ? .all : target
+
+        if filters == persistentGlobalFilterState {
+            clearTemporaryGlobalFilters()
+        } else {
+            applyTemporaryGlobalFilters(
+                filters,
+                requestID: UUID(),
+                anchorSelection: selection,
+                returnPage: temporaryGlobalFilterSession?.returnPage
+            )
+        }
+    }
+
     /// Toolbar 的任何主动选择都代表用户接管：先结束临时会话，再修改并持久化真实筛选。
     func setGlobalFilterFromUser<Value>(
         _ keyPath: WritableKeyPath<GlobalRepoFilterState, Value>,
@@ -1061,73 +1283,96 @@ final class HomeViewModel {
         applyPersistentGlobalFilterState(filters)
     }
 
-    /// Sidebar 与 Toolbar 共用同一份“已选语言”状态。
-    ///
-    /// 分类语言使用 `globalFilterLanguages` 支持多选；无主语言仍由
-    /// `repoLanguageFilter.uncategorized` 表达，因为 SQLite 中它对应 `NULL`，
-    /// 不能伪装成普通字符串塞进 `IN (...)`。
-    func toggleLanguageFilterFromUser(_ language: String?) {
+    /// 左侧语言分类单选 toggle。只操作 `repoLanguageFilter`（单选），
+    /// 与全局筛选的多选 `globalFilterLanguages` 完全解耦；再点一次已选中项 = 取消回「全部」。
+    func toggleLanguageFilterFromUser(_ filter: RepoLanguageFilter) {
         var filters = persistentGlobalFilterState
-        let normalizedLanguage = language?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let normalizedLanguage, !normalizedLanguage.isEmpty {
-            let matchesSingleLanguage: Bool
-            if case .language(let selectedLanguage) = filters.repoLanguageFilter {
-                matchesSingleLanguage = selectedLanguage.caseInsensitiveCompare(normalizedLanguage) == .orderedSame
-            } else {
-                matchesSingleLanguage = false
-            }
-            let matchesMultiLanguage = filters.globalFilterLanguages.contains {
-                $0.caseInsensitiveCompare(normalizedLanguage) == .orderedSame
-            }
+        if filters.repoLanguageFilter == filter {
             filters.repoLanguageFilter = .all
-            let nextLanguages = matchesSingleLanguage || matchesMultiLanguage
-                ? filters.globalFilterLanguages.filter {
-                    $0.caseInsensitiveCompare(normalizedLanguage) != .orderedSame
-                }
-                : filters.globalFilterLanguages + [normalizedLanguage]
-            filters.globalFilterLanguages = AppSettings.normalizedLanguageList(nextLanguages)
         } else {
-            let wasUncategorized = filters.repoLanguageFilter == .uncategorized
-            filters.repoLanguageFilter = wasUncategorized ? .all : .uncategorized
-            filters.globalFilterLanguages = []
+            filters.repoLanguageFilter = filter
         }
-
         applyPersistentGlobalFilterState(filters)
     }
 
-    /// 旧版 `.language(...)` 导航恢复时，把它一次性归一化为“全部仓库 + 语言筛选”。
+    /// 旧版 `.language(...)` 导航恢复：直接落到左侧单选语言筛选，不碰全局多选。
     func selectSingleLanguageFilterFromUser(_ language: String?) {
         var filters = persistentGlobalFilterState
         let normalizedLanguage = language?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let normalizedLanguage, !normalizedLanguage.isEmpty {
-            filters.repoLanguageFilter = .all
-            filters.globalFilterLanguages = [normalizedLanguage]
+            filters.repoLanguageFilter = .language(normalizedLanguage)
         } else {
             filters.repoLanguageFilter = .uncategorized
-            filters.globalFilterLanguages = []
         }
 
         applyPersistentGlobalFilterState(filters)
     }
 
-    /// Toolbar 多选语言接管时清掉旧的单语言/无主语言条件，避免两套语言条件做 AND 后误变空集。
+    /// 全局语言仍跨分类保留；只有新集合与局部语言互斥时，才将局部选择恢复为「全部」。
     func setCategorizedLanguageFiltersFromUser(_ languages: [String]) {
         var filters = persistentGlobalFilterState
-        filters.repoLanguageFilter = .all
         filters.globalFilterLanguages = AppSettings.normalizedLanguageList(languages)
+        if !filters.globalFilterLanguages.isEmpty,
+           !filters.globalFilterLanguages.contains(where: {
+               filters.repoLanguageFilter.matches($0, excluding: Set(interestedLanguages))
+           }) {
+            filters.repoLanguageFilter = .all
+        }
         applyPersistentGlobalFilterState(filters)
     }
 
-    /// “全部语言”只重置语言维度，不影响 Star、知识库状态等其它全局筛选。
+    /// 全局筛选「清除语言选择」：只清多选，不动左侧单选。
     func clearLanguageFiltersFromUser() {
         var filters = persistentGlobalFilterState
-        filters.repoLanguageFilter = .all
         filters.globalFilterLanguages = []
         applyPersistentGlobalFilterState(filters)
+    }
+
+    /// 左侧「全部语言」：只清左侧单选，不动全局筛选语言。
+    func clearSidebarLanguageFilter() {
+        var filters = persistentGlobalFilterState
+        filters.repoLanguageFilter = .all
+        applyPersistentGlobalFilterState(filters)
+    }
+
+    /// 两层条件分别命名，避免全局多选覆盖局部单选的可见提示。
+    var languageFilterTitles: [String] {
+        let filters = effectiveGlobalFilterState
+        var titles: [String] = []
+        if !filters.globalFilterLanguages.isEmpty {
+            let languages = filters.globalFilterLanguages.map { LanguageDisplayName.shortened(for: $0) }
+            titles.append(String(format: String.l10n("list.filter.language.globalFormat"), languages.joined(separator: ", ")))
+        }
+        let localTitle: String?
+        switch filters.repoLanguageFilter {
+        case .all: localTitle = nil
+        case .uncategorized: localTitle = "Uncategorized"
+        case .other: localTitle = String.l10n("sidebar.languages.other")
+        case .language(let language): localTitle = LanguageDisplayName.shortened(for: language)
+        }
+        if let localTitle {
+            titles.append(String(format: String.l10n("list.filter.language.localFormat"), localTitle))
+        }
+        return titles
+    }
+
+    /// 只有用户点击主导航 / GitHub 分组才重置局部条件。程序化定位和恢复仍可携带筛选。
+    /// 先批量清理再写 selection，保证急切缓存加载也使用目标分类的干净条件。
+    func selectSidebarFromUser(_ item: SidebarItem) {
+        let hadLocalFilters = !selectedTagIds.isEmpty || repoLanguageFilter != .all
+            || temporaryGlobalFilterSession != nil
+        isHydratingManageFilters = true
+        selectedTagIds = []
+        repoLanguageFilter = .all
+        temporaryGlobalFilterSession = nil
+        isHydratingManageFilters = false
+        if selection != item {
+            selection = item
+        } else if hadLocalFilters {
+            reloadOrApplyCurrentManageView()
+        }
     }
 
     /// 重置所有全局筛选条件到默认值。
@@ -1175,6 +1420,9 @@ final class HomeViewModel {
     /// D-01：依赖协议而非具体 struct，便于单测注入 Mock。
     private let repository: any RepoRepositoryProtocol
 
+    /// Wiki 分面测试使用独立缓存目录，不能依赖或污染用户真实的探测记录。
+    private let wikiAvailabilityRootForTesting: URL?
+
     /// W4 A6：Sidebar Tags 段 + 按 tag 过滤需要这两个 repo。
     private let tagRepository: any TagRepositoryProtocol
     private let repoTagRepository: any RepoTagRepositoryProtocol
@@ -1194,6 +1442,8 @@ final class HomeViewModel {
     /// 仅用于并发回归测试，在 DB query 真正启动前制造可控挂起点。
     /// 生产构造始终使用默认 nil，不改变运行时路径。
     private let beforeDatabasePageFetchForTesting: (@Sendable () async -> Void)?
+    /// 仅用于验证分页追加不会重复执行总数查询；生产构造始终为 nil。
+    private let beforeDatabaseListCountFetchForTesting: (@Sendable () async -> Void)?
 
     /// 当前用户智能集合的规则快照。进入非用户集合时清空，避免旧规则污染普通列表。
     private var activeUserSmartCollectionRule: SmartCollectionRule?
@@ -1335,9 +1585,12 @@ final class HomeViewModel {
         openSSFScoreRepository: (any OpenSSFScoreRepositoryProtocol)? = nil,
         smartCollectionRepository: (any SmartCollectionRepositoryProtocol)? = nil,
         semanticSearchService: SemanticSearchService? = nil,
-        beforeDatabasePageFetchForTesting: (@Sendable () async -> Void)? = nil
+        wikiAvailabilityRootForTesting: URL? = nil,
+        beforeDatabasePageFetchForTesting: (@Sendable () async -> Void)? = nil,
+        beforeDatabaseListCountFetchForTesting: (@Sendable () async -> Void)? = nil
     ) {
         self.repository = repository
+        self.wikiAvailabilityRootForTesting = wikiAvailabilityRootForTesting
         self.tagRepository = tagRepository
         self.repoTagRepository = repoTagRepository
         self.githubStarListRepository = githubStarListRepository
@@ -1349,6 +1602,7 @@ final class HomeViewModel {
         self.smartCollectionRepository = smartCollectionRepository
         self.semanticSearchService = semanticSearchService
         self.beforeDatabasePageFetchForTesting = beforeDatabasePageFetchForTesting
+        self.beforeDatabaseListCountFetchForTesting = beforeDatabaseListCountFetchForTesting
     }
 
     // MARK: - 公开 action
@@ -1449,6 +1703,8 @@ final class HomeViewModel {
         untaggedCount = 0
         libraryCount = 0
         languageStats = []
+        sidebarFacetSnapshot = nil
+        sidebarFacetDataRevision &+= 1
         tags = []
         tagCounts = [:]
         githubStarLists = []
@@ -1476,6 +1732,10 @@ final class HomeViewModel {
         searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         semanticHitMap = [:]
         searchSubmissionID += 1
+        // 用户主动输入搜索词时，列表进入搜索结果视图，临时置顶卡片不再有意义；清空搜索词则保留。
+        if !searchQuery.isEmpty {
+            temporaryPinnedRepo = nil
+        }
     }
 
     /// 测试专用：等待当前列表查询完成。
@@ -1531,6 +1791,7 @@ final class HomeViewModel {
     /// 刷新 Sidebar 数据（counts + language stats）。
     /// 通常在 onAppear 或 sync 完成后调用。
     func refreshSidebar() async {
+        defer { sidebarFacetDataRevision &+= 1 }
         let previousRepoTagsMap = repoTagsMap
         let previousGitHubListCounts = githubStarListCounts
         let previousUngroupedCount = githubStarListUngroupedCount
@@ -1538,7 +1799,7 @@ final class HomeViewModel {
             async let total = repository.starredCount()
             async let myProjects = fetchMyProjectsCount()
             async let projectOptions = fetchProjectFilterOptions()
-            async let untagged = repository.fetchUntagged().count
+            async let untagged = repository.fetchListCount(scope: .untagged, filters: .empty)
             async let library = repository.fetchListCount(scope: .library, filters: .empty)
             async let langs = repository.languageStats()
             async let knowledgeLangs = repository.knowledgeLanguageStats()
@@ -1554,7 +1815,7 @@ final class HomeViewModel {
             async let releaseSubscriptionCountResult = fetchReleaseSubscriptionCount()
             // HOM-179：一并刷新 repo→tagIds 映射，让 selectedTagIds 多选过滤实时生效。
             // 与 sidebar 其他统计同步刷新，避免新增/删除 tag 后 wall 多选还按旧映射过滤。
-            async let tagAssignmentsResult = repoTagRepository.fetchAllTagAssignments()
+            async let tagAssignmentsResult = repoTagRepository.fetchAllTagIDsByRepo()
 
             self.totalCount = try await total
             self.myProjectsCount = try await myProjects
@@ -1578,8 +1839,7 @@ final class HomeViewModel {
             )
             self.userSmartCollections = try await smartCollectionsResult
             self.releaseSubscriptionCount = try await releaseSubscriptionCountResult
-            let assignments = try await tagAssignmentsResult
-            self.repoTagsMap = assignments.mapValues { Set($0.map(\.id)) }
+            self.repoTagsMap = try await tagAssignmentsResult
             if previousRepoTagsMap != self.repoTagsMap {
                 removeDatabaseSnapshots { key in
                     if !key.selectedTagIDs.isEmpty { return true }
@@ -1608,10 +1868,13 @@ final class HomeViewModel {
             let stale = self.selectedTagIds.subtracting(validTagIds)
             if !stale.isEmpty {
                 self.selectedTagIds.subtract(stale) // didSet 会触发 applyView
-            } else if !self.selectedTagIds.isEmpty {
-                // 即使 id 没变，repoTagsMap 内容可能变（刚刚打/卸标签）→ 主动 applyView
-                // R-07：refreshSidebar 是后台数据刷新（非用户主动 sort/filter），保用户滚动位置
-                self.applyView(resetPage: false)
+            } else if !self.selectedTagIds.isEmpty && previousRepoTagsMap != self.repoTagsMap {
+                // 数据库分页只缓存已加载页，标签关系变化必须重查全集条件；内存路径保留滚动位置。
+                if self.isDatabasePagingActive {
+                    self.reloadOrApplyCurrentManageView()
+                } else {
+                    self.applyView(resetPage: false)
+                }
             }
         } catch {
             AppLog.database.error("refreshSidebar failed: \(error.localizedDescription, privacy: .public)")
@@ -1961,9 +2224,13 @@ final class HomeViewModel {
     /// 仅供无法下推 SQLite 的兼容路径和 hover 预取使用；正常列表仍按页读取。
     private func fetchAllMyProjects() async throws -> [Repo] {
         guard let activeUserID else { return [] }
+        var filters = currentRepoListFiltersForDatabasePaging()
+        // Wiki 走内存派生，侧栏分面也需要尚未被局部语言 / 标签裁剪的候选集。
+        filters.language = .all
+        filters.selectedTagIDs = []
         return try await repository.fetchListPage(
             scope: .myProjects(userID: activeUserID),
-            filters: currentRepoListFiltersForDatabasePaging(),
+            filters: filters,
             sort: .starredAtDesc,
             limit: Int.max,
             offset: 0
@@ -1987,6 +2254,10 @@ final class HomeViewModel {
             }
             filters.projectSearchText = searchQuery
         }
+        // `.other` 的排除集合来自设置页「感兴趣的语言」；SQL 层需要它才能下推 NOT IN。
+        if filters.language == .other {
+            filters.excludedLanguages = Set(interestedLanguages)
+        }
         return filters
     }
 
@@ -2002,6 +2273,7 @@ final class HomeViewModel {
             library: filters.library.rawValue,
             language: filters.language.persistedRawValue,
             selectedLanguages: filters.selectedLanguages,
+            excludedLanguages: filters.excludedLanguages,
             healthAvailability: filters.healthAvailability.rawValue,
             openSSFAvailability: filters.openSSFAvailability.rawValue,
             tagAvailability: filters.tagAvailability.rawValue,
@@ -2211,32 +2483,16 @@ final class HomeViewModel {
 
     /// 切换某个 tag 在多选集合中的勾选状态。
     ///
-    /// 实现顺序很关键：**先**修正 selection、**再**写 selectedTagIds，让最终
-    /// 一次 applyView 同时拿到对的 base set 和对的 filter，避免 SwiftUI 短暂渲染
-    /// "untagged + selectedTagIds={tag1}"这种永远空集的过渡态。
+    /// 标签始终收窄当前基础范围，多标签之间保持 OR。
     /// 关键约束：`Set.insert/remove` 走值语义；写回 `selectedTagIds` 时整个 Set
     /// 被替换，didSet 一定触发。
     func toggleSelectedTag(_ tagId: String) {
+        guard canFilterByTags else { return }
         var next = selectedTagIds
         if next.contains(tagId) {
             next.remove(tagId)
         } else {
             next.insert(tagId)
-        }
-
-        // 选中至少一个 tag 时，强制把 selection 退回到 .allStars，避免和 .tag(legacy) /
-        // .untagged 形成"自相矛盾"组合：
-        // - .untagged + selectedTagIds 永远空集，UX 反直觉
-        // - .tag(legacy) + selectedTagIds 语义重叠（旧的单标签等价于 selectedTagIds = {legacy}）
-        // 用户后续可显式切到 .language(...) 形成 AND 组合。
-        if !next.isEmpty {
-            switch selection {
-            case .untagged, .library, .tag, .smartCollectionsHome, .smartCollection,
-                 .userSmartCollection, .githubStarList, .githubStarListUngrouped:
-                selection = .allStars
-            case .allStars, .myProjects, .allLanguages, .language, .trending:
-                break
-            }
         }
 
         selectedTagIds = next
@@ -2313,6 +2569,9 @@ final class HomeViewModel {
         forceRefresh: Bool = false,
         reason reloadReason: ManageReloadReason = .unspecified
     ) async {
+        defer {
+            if forceRefresh { sidebarFacetDataRevision &+= 1 }
+        }
         let identity = makeReloadIdentity(forceRefresh: forceRefresh)
         #if DEBUG
         AppLog.ui.notice("[switch-cat] T1 reloadItems entered reason=\(reloadReason.rawValue, privacy: .public) +\(Self.msSinceT0, format: .fixed(precision: 1))ms")
@@ -2537,7 +2796,7 @@ final class HomeViewModel {
                         case .githubStarList(let listId):
                             repos = try await self.repository.fetchListPage(
                                 scope: .githubStarList(listId),
-                                filters: self.currentRepoListFiltersForDatabasePaging(),
+                                filters: .empty,
                                 sort: self.sortOption,
                                 limit: 100_000,
                                 offset: 0
@@ -2545,7 +2804,7 @@ final class HomeViewModel {
                         case .githubStarListUngrouped:
                             repos = try await self.repository.fetchListPage(
                                 scope: .githubStarListUngrouped,
-                                filters: self.currentRepoListFiltersForDatabasePaging(),
+                                filters: .empty,
                                 sort: self.sortOption,
                                 limit: 100_000,
                                 offset: 0
@@ -2794,7 +3053,11 @@ final class HomeViewModel {
                     limit: queryLimit,
                     offset: queryOffset
                 )
-                async let countTask = self.repository.fetchListCount(scope: scope, filters: filters)
+                async let countTask = self.fetchDatabaseListCount(
+                    scope: scope,
+                    filters: filters,
+                    shouldFetch: !isAppend
+                )
                 let databaseInterval = PerformanceTracer.shared.begin(.manageDatabaseQuery)
                 let rowsWithSentinel: [Repo]
                 do {
@@ -2840,7 +3103,7 @@ final class HomeViewModel {
                     pageProjectRelations,
                     pageProjectGrowth
                 ))
-                countResult = .success((try? await countTask) ?? self.visibleRepoTotalCount)
+                countResult = .success(await countTask)
             } catch {
                 result = .failure(error)
                 countResult = .success(self.visibleRepoTotalCount)
@@ -2941,6 +3204,24 @@ final class HomeViewModel {
         reloadCoordinator.installQueryTask(task, generation: generation)
         let span: PerformanceSpan = isAppend ? .manageLoadMore : .manageInitialLoad
         await PerformanceTracer.shared.trace(span, task: task)
+    }
+
+    /// 读取当前查询总数；滚动追加沿用首屏/刷新已经发布的总数。
+    ///
+    /// 追加页的 `LIMIT + 1` sentinel 已足够判断 `hasMore`，再次执行相同条件的
+    /// `COUNT(*)` 只会增加 SQLite 工作量。同步完成或显式刷新仍走非 append 路径，
+    /// 因此数据库总数变化会在正确的刷新边沿重新发布。
+    private func fetchDatabaseListCount(
+        scope: RepoListScope,
+        filters: RepoListFilters,
+        shouldFetch: Bool
+    ) async -> Int {
+        guard shouldFetch else { return visibleRepoTotalCount }
+        if let beforeDatabaseListCountFetchForTesting {
+            await beforeDatabaseListCountFetchForTesting()
+        }
+        return (try? await repository.fetchListCount(scope: scope, filters: filters))
+            ?? visibleRepoTotalCount
     }
 
     func semanticHit(for repoID: Int64) -> SemanticSearchHit? {
@@ -3067,7 +3348,7 @@ final class HomeViewModel {
                     case .githubStarList(let listId):
                         return try await self.repository.fetchListPage(
                             scope: .githubStarList(listId),
-                            filters: self.currentRepoListFiltersForDatabasePaging(),
+                            filters: .empty,
                             sort: self.sortOption,
                             limit: 100_000,
                             offset: 0
@@ -3075,7 +3356,7 @@ final class HomeViewModel {
                     case .githubStarListUngrouped:
                         return try await self.repository.fetchListPage(
                             scope: .githubStarListUngrouped,
-                            filters: self.currentRepoListFiltersForDatabasePaging(),
+                            filters: .empty,
                             sort: self.sortOption,
                             limit: 100_000,
                             offset: 0
@@ -3164,6 +3445,7 @@ final class HomeViewModel {
     /// 把 currentPage 重置回 1（典型场景：切分类 / 排序 / 过滤），false 时保留
     /// （典型场景：SWR / forceRefresh 数据变化，preserveScrollPosition）。
     private func applyView(resetPage: Bool = true) {
+        sidebarFacetDerivedRevision &+= 1
         let wasDeepScrolledToEnd = !resetPage && !hasMore && items.count > Self.pageSize
         let newFilteredSorted = computeFilteredSorted()
         visibleRepoTotalCount = newFilteredSorted.count
@@ -3203,11 +3485,17 @@ final class HomeViewModel {
 
     /// R-07：把 filter + sort 计算从 applyView 拆出。
     /// 纯函数：只读 rawItems / statusMap / repoTagsMap / 各 filter 字段。
-    private func computeFilteredSorted() -> [Repo] {
+    private func computeFilteredSorted(
+        ignoringSidebarLanguage: Bool = false,
+        ignoringSelectedTags: Bool = false,
+        sortResults: Bool = true
+    ) -> [Repo] {
         var view = rawItems
         let filters = effectiveGlobalFilterState
+        let tagIDs = ignoringSelectedTags ? [] : selectedTagIds
 
-        if let effective = effectiveUserSmartCollectionRule() {
+        if var effective = effectiveUserSmartCollectionRule() {
+            if ignoringSelectedTags { effective.selectedTagIDs = [] }
             view = SmartCollectionRuleFilter.apply(
                 repos: view,
                 rule: effective,
@@ -3222,13 +3510,6 @@ final class HomeViewModel {
                     return actual != status
                 }
             }
-            if let language = filters.repoLanguageFilter.queryLanguage {
-                if let language {
-                    view.removeAll { $0.language != language }
-                } else {
-                    view.removeAll { $0.language != nil }
-                }
-            }
             switch filters.libraryFilter {
             case .all:
                 break
@@ -3241,12 +3522,16 @@ final class HomeViewModel {
                     (libraryStateMap[repo.id] ?? .outsideLibrary) == .inLibrary
                 }
             }
-            if !selectedTagIds.isEmpty {
+            if !tagIDs.isEmpty {
                 view.removeAll { repo in
                     let tagsOfRepo = repoTagsMap[repo.id] ?? []
-                    return tagsOfRepo.isDisjoint(with: selectedTagIds)
+                    return tagsOfRepo.isDisjoint(with: tagIDs)
                 }
             }
+        }
+        if !ignoringSidebarLanguage {
+            let excluded = Set(interestedLanguages)
+            view.removeAll { !filters.repoLanguageFilter.matches($0.language, excluding: excluded) }
         }
         applyGlobalRepoFilters(to: &view)
         // HOM-197（2026-06-13 dong4j）：AI 语义搜索结果按相似度阈值过滤。
@@ -3271,7 +3556,7 @@ final class HomeViewModel {
         let userCollectionSemanticSearch = activeUserSmartCollectionRule != nil
             && smartSearchMode == .semantic
             && !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if !isSemanticSearching && !userCollectionSemanticSearch {
+        if sortResults && !isSemanticSearching && !userCollectionSemanticSearch {
             let selectedSort: (Repo, Repo) -> Bool
             if sortOption == .healthScoreDesc {
                 selectedSort = healthScoreComparator
@@ -3367,7 +3652,7 @@ final class HomeViewModel {
         let requests = repos.map {
             WikiAvailabilityRequest(id: $0.id, owner: $0.owner, repo: $0.name)
         }
-        return await WikiAvailabilitySnapshotLoader.load(requests: requests)
+        return await WikiAvailabilitySnapshotLoader.load(requests: requests, rootOverride: wikiAvailabilityRootForTesting)
     }
 
     private func matchesAvailability(_ available: Bool, filter: RepoSignalAvailabilityFilter) -> Bool {
@@ -3472,6 +3757,18 @@ final class HomeViewModel {
     ///   stagger 动画把已经看了的 20 行重新淡入，体感极糟。
     private func sliceToCurrentPage(reason: SliceReason) {
         let endIndex = min(currentPage * Self.pageSize, filteredSorted.count)
+
+        if case .append = reason {
+            // 筛选事实源没有变化时，滚动翻页只追加一页。旧实现每次都复制从第 1 页
+            // 到当前页的完整 prefix，深度滚动越往后成本越高，还会让 SwiftUI 比对整段数组。
+            let startIndex = min(items.count, endIndex)
+            if startIndex < endIndex {
+                items.append(contentsOf: filteredSorted[startIndex..<endIndex])
+            }
+            hasMore = filteredSorted.count > items.count
+            return
+        }
+
         let newItems = Array(filteredSorted.prefix(endIndex))
 
         let itemsIdentical = newItems.count == items.count &&
@@ -3479,19 +3776,14 @@ final class HomeViewModel {
 
         if !itemsIdentical {
             items = newItems
-            switch reason {
-            case .recompute, .jump:
-                itemsRevision += 1
-            case .append:
-                break  // 故意不 bump：让 SwiftUI 走增量插入路径，不重建已有行
-            }
+            itemsRevision += 1
         }
         hasMore = filteredSorted.count > items.count
     }
 
     /// R-07：列表滚到底部附近 row `.onAppear` 触发。
     /// DB 分页路径会异步加载下一页；内存分页路径只做本地切片增长。
-    /// 调用频率：每页 20 条 × 1800 条 ≈ 90 次/次完整滚动，开销可忽略。
+    /// 内存分页只复制下一页固定数量，完整滚动时不会反复重建累计前缀。
     func loadMoreIfNeeded() {
         guard hasMore else { return }
         guard !isLoading, !isRefreshing else { return }
@@ -3572,6 +3864,20 @@ final class HomeViewModel {
     func requestSelectedRepoScroll() {
         guard selectedRepoID != nil else { return }
         repoListScrollRequestRevision &+= 1
+    }
+
+    /// 把目标 repo 临时置顶到 Manage 列表顶部（外部定位入口用）。
+    ///
+    /// 仅当 repo 不在当前已加载 `items` 里时才调用；若已在 items 内，调用方应走
+    /// `requestSelectedRepoScroll()` 滚动定位。置顶会直接覆盖上一次置顶。
+    func pinTemporaryRepo(_ repo: Repo) {
+        temporaryPinnedRepo = repo
+    }
+
+    /// 清除临时置顶卡片。用户点选普通列表卡片时调用，表示「离开置顶定位状态」；
+    /// 切换分类 / 开始搜索已由各自路径（selection.didSet / submitSearch）直接清。
+    func clearTemporaryPinnedRepo() {
+        temporaryPinnedRepo = nil
     }
 
     /// R-07：外部跳转（SearchCenter / 详情页"上一篇/下一篇" / unhandled 跳转）

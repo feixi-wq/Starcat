@@ -49,7 +49,8 @@ enum StatSemanticColor {
         case .actionLibrary: return 0xE11D48
         case .fork: return 0x2563EB
         case .watchers: return 0x7C3AED
-        case .issues: return 0xDC2626
+        // 比系统红略灰一点，列表胶囊偏红但不刺眼。
+        case .issues: return 0xC45C5C
         case .branch: return 0x7C3AED
         case .language: return 0x059669
         case .wikiDeepWiki: return 0x4F46E5
@@ -67,7 +68,7 @@ enum StatSemanticColor {
         case .actionLibrary: return 0xFB7185
         case .fork: return 0x60A5FA
         case .watchers: return 0xA78BFA
-        case .issues: return 0xF87171
+        case .issues: return 0xE8A0A0
         case .branch: return 0xA78BFA
         case .language: return 0x34D399
         case .wikiDeepWiki: return 0x818CF8

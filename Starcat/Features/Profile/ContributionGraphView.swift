@@ -60,6 +60,12 @@ import SwiftUI
 ///     login: user.login
 /// )
 /// ```
+/// 草坪局部视觉样式。默认值保持所有既有调用不变，Owner Dark 仅提高空格子的可辨识度。
+enum ContributionGraphStyle: Equatable, Sendable {
+    case standard
+    case ownerCardDark
+}
+
 struct ContributionGraphView: View {
 
     /// 贡献数据；nil 时显示占位（首次加载未完成）。
@@ -75,6 +81,9 @@ struct ContributionGraphView: View {
     /// 因为头像已经承担"跳 GitHub 主页"的语义。
     var login: String?
 
+    /// 调色板只影响后台位图渲染，不改变草坪的动态固有高度。
+    var style: ContributionGraphStyle = .standard
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.starcatReduceMotion) private var reduceMotion
     /// Sheet 不会让宿主窗口失去前台状态，不能依赖 TimelineView 自动停表。
@@ -85,10 +94,9 @@ struct ContributionGraphView: View {
     /// HOM-SNAKE-MODES：读取用户选的玩法。
     @Environment(AppSettings.self) private var settings
 
-    /// 当前绑定的 animator。`@State` 让 onChange 重建 animator 时 SwiftUI 自动重渲染。
-    /// nil 表示 `.off` 玩法或数据未到位——只画静态草坪。
-    /// 用 `(any SnakeAnimator)?` 而非具体类型，让协议替换零负担。
-    @State private var animator: (any SnakeAnimator)?
+    /// 后台动画驱动：定时计算帧 + CGContext 渲染 CGImage，主线程只读 frameImage 显示。
+    /// 动画的重活（371 格 + 蛇身 + 食物）都在后台队列，切换模块/分类时不再掉帧。
+    @State private var renderService = SnakeRenderService()
 
     /// 每格宽度（pt）。
     ///
@@ -152,14 +160,26 @@ struct ContributionGraphView: View {
         .onChange(of: settings.snakeStyle) { _, _ in rebuildAnimator() }
         // payload 从 nil → 有数据时也要重建，让 greedy / foodChase / multiSnake 拿到真实 weeks
         .onChange(of: payload?.totalContributions) { _, _ in rebuildAnimator() }
+        // 明暗主题切换时也要重建：草坪是 CGContext 后台渲染成 CGImage 的，
+        // 配色在 configure 时按 colorScheme 固化，不随主题切换自动更新，否则明亮主题下仍显示暗色格子。
+        .onChange(of: colorScheme) { _, _ in rebuildAnimator() }
+        .onChange(of: style) { _, _ in rebuildAnimator() }
     }
 
-    /// 根据当前 settings.snakeStyle + payload 重建 animator。
+    /// 根据当前 settings.snakeStyle + payload 重建 animator 并驱动后台渲染。
     /// 频次很低（用户切换 / 数据到位），每次 init 可能要做几十毫秒的预计算（greedy 最重），
     /// 但仍在主线程能容忍范围；避免在 frame(at:) 这种每帧路径上做重活。
     private func rebuildAnimator() {
-        animator = SnakeAnimatorFactory.make(style: settings.snakeStyle,
-                                             weeks: payload?.weeks)
+        let animator = SnakeAnimatorFactory.make(style: settings.snakeStyle,
+                                                 weeks: payload?.weeks)
+        // reduceMotion / 宿主暂停 / off 玩法（animator == nil）→ 只画静态草坪。
+        let shouldAnimate = !reduceMotion && !continuousAnimationsPaused && animator != nil
+        renderService.configure(
+            animator: shouldAnimate ? animator : nil,
+            payload: payload,
+            colorScheme: colorScheme,
+            style: style
+        )
     }
 
     // MARK: - Header
@@ -206,189 +226,35 @@ struct ContributionGraphView: View {
         }
     }
 
-    // MARK: - 草坪 + 蛇身绘制
+    // MARK: - 草坪 + 蛇身显示
 
     /// 草坪 + 蛇身合成视图。
     ///
-    /// reduceMotion / 宿主暂停开启，或 animator nil（off 玩法 / 数据未到）→ 仅画静态草坪；
-    /// 否则 `TimelineView(.animation)` 驱动每帧重绘，由 elapsed time 算 step。
-    ///
-    /// **scale 由 Canvas 内部算**：Canvas closure 的 `size` 参数就是实际渲染尺寸；
-    /// 外层 aspectRatio 保证 size 与 intrinsicSize 等比，所以 scale = size.width / intrinsicSize.width
-    /// 即可（scaleX == scaleY，取 width 即可）。
+    /// 帧由后台 `SnakeRenderService` 用 CGContext 渲染成 CGImage，这里只做 Image 显示，
+    /// 避免每帧 371 格重绘占用主线程导致切换模块/分类时动画掉帧。
+    /// 外层 aspectRatio 保证 Image 与 intrinsicSize 等比缩放。
     @ViewBuilder
     private var gridContent: some View {
-        if reduceMotion || continuousAnimationsPaused || animator == nil {
-            Canvas { ctx, size in
-                let scale = size.width / intrinsicSize.width
-                drawGrid(ctx: ctx, scale: scale, frame: .empty)
-            }
+        // 只有这个叶子 View 读取 `frameImage`。把 Observation 依赖隔离在这里后，
+        // 每帧发布不会让上方标题、相对时间和整张贡献卡片一起重算。
+        SnakeFrameImageView(renderService: renderService)
+    }
+}
+
+/// 动画帧最小观察边界：只替换 CGImage，不把 10~12 FPS 的更新扩散到父视图。
+private struct SnakeFrameImageView: View {
+    let renderService: SnakeRenderService
+
+    @ViewBuilder
+    var body: some View {
+        if let image = renderService.frameImage {
+            // 后台已经用 CGContext 渲染好一帧（草坪 + 蛇身 + 食物），主线程只显示图片。
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .interpolation(.none)
         } else {
-            // 蛇身步进远低于屏幕刷新率；20 FPS 能保持连续运动，
-            // 同时减少 Canvas 全量重画对 sidebar 滚动的干扰。
-            TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
-                let frame = currentFrame(at: context.date)
-                Canvas { ctx, size in
-                    let scale = size.width / intrinsicSize.width
-                    drawGrid(ctx: ctx, scale: scale, frame: frame)
-                    drawSnakes(ctx: ctx, scale: scale, snakes: frame.snakes)
-                    drawFood(ctx: ctx, scale: scale, food: frame.foodCells, time: context.date)
-                }
-            }
-        }
-    }
-
-    /// 把当前时间映射到 animator 的当前帧。
-    /// nil → animator 在"轮间暂停"或没数据，返回 empty frame（草坪完整、不画蛇）。
-    private func currentFrame(at date: Date) -> AnimationFrame {
-        guard let animator else { return .empty }
-        guard let step = animator.currentStep(at: date) else { return .empty }
-        return animator.frame(at: step)
-    }
-
-    /// 在 Canvas 上绘制 53×7 草坪。
-    /// - Parameters:
-    ///   - frame: 当前帧；`frame.eatenCells` 内的格子渲染为 NONE 色。
-    private func drawGrid(ctx: GraphicsContext, scale: CGFloat, frame: AnimationFrame) {
-        let palette = ContributionPalette.palette(for: colorScheme)
-        let scaledCellW = cellWidth * scale
-        let scaledCellH = cellHeight * scale
-        let scaledSpacing = cellSpacing * scale
-        let scaledCorner = cellCornerRadius * scale
-
-        guard let weeks = payload?.weeks else {
-            drawPlaceholderGrid(ctx: ctx, palette: palette,
-                                cellW: scaledCellW, cellH: scaledCellH,
-                                spacing: scaledSpacing, corner: scaledCorner)
-            return
-        }
-
-        // weeks 可能不足 53 周（账号较新）；按实际长度从左对齐绘制。
-        // GitHub GraphQL 返回的 weeks 数组按时间正序（最近一周在末尾），
-        // 这里 startColumn 让"过早的空位"留在左侧，与 GitHub 主页一致。
-        let startColumn = max(0, 53 - weeks.count)
-
-        for (weekIdx, week) in weeks.enumerated() {
-            let col = startColumn + weekIdx
-            let x = CGFloat(col) * (scaledCellW + scaledSpacing)
-
-            for day in week.contributionDays {
-                let row = day.weekday
-                let y = CGFloat(row) * (scaledCellH + scaledSpacing)
-                let rect = CGRect(x: x, y: y, width: scaledCellW, height: scaledCellH)
-                let path = Path(roundedRect: rect, cornerRadius: scaledCorner)
-
-                // 关键：判断该格是否在已吃集合内
-                let pos = GridPosition(col: col, row: row)
-                let level = frame.eatenCells.contains(pos)
-                    ? .none
-                    : day.contributionLevel
-                ctx.fill(path, with: .color(palette.color(for: level)))
-            }
-        }
-    }
-
-    /// 全部 NONE 颜色的占位网格（首次加载未拿到数据时用）。
-    private func drawPlaceholderGrid(
-        ctx: GraphicsContext,
-        palette: ContributionPalette,
-        cellW: CGFloat, cellH: CGFloat, spacing: CGFloat, corner: CGFloat
-    ) {
-        let color = palette.color(for: .none)
-        for col in 0..<53 {
-            for row in 0..<7 {
-                let x = CGFloat(col) * (cellW + spacing)
-                let y = CGFloat(row) * (cellH + spacing)
-                let rect = CGRect(x: x, y: y, width: cellW, height: cellH)
-                let path = Path(roundedRect: rect, cornerRadius: corner)
-                ctx.fill(path, with: .color(color))
-            }
-        }
-    }
-
-    /// 绘制 N 条蛇（每节从蛇头往尾部 alpha 渐淡）。
-    ///
-    /// 蛇头比格子稍大（1.2x），向中心扩展——视觉上"咬"住目标格子，符合 snk 风格；
-    /// 后续节按格子原尺寸 + alpha 渐淡画出尾迹。多条蛇并发时各自独立渲染、互不干涉。
-    ///
-    /// **alpha 阶梯**：head 100%、第 2 节 85%、之后线性衰减到 25%，最多渲染
-    /// `maxRenderedSegments` 节（FoodChase 蛇可能很长）。
-    private func drawSnakes(ctx: GraphicsContext, scale: CGFloat, snakes: [[GridPosition]]) {
-        guard !snakes.isEmpty else { return }
-        let palette = ContributionPalette.palette(for: colorScheme)
-        let snakeColor = palette.color(for: .fourthQuartile)
-        let scaledCellW = cellWidth * scale
-        let scaledCellH = cellHeight * scale
-        let scaledSpacing = cellSpacing * scale
-        let scaledCorner = cellCornerRadius * scale
-
-        for body in snakes {
-            let segCount = min(body.count, maxRenderedSegments)
-            for i in 0..<segCount {
-                let pos = body[i]
-                let baseX = CGFloat(pos.col) * (scaledCellW + scaledSpacing)
-                let baseY = CGFloat(pos.row) * (scaledCellH + scaledSpacing)
-
-                // alpha 阶梯：head 1.0；之后每节线性衰减至 0.2，避免长蛇尾部消失太突兀
-                let alpha: Double = (i == 0) ? 1.0 :
-                    max(0.2, 0.85 - Double(i - 1) * (0.65 / Double(max(1, segCount - 1))))
-
-                // 蛇头放大到 1.2x，向中心展开
-                let inflate: CGFloat = (i == 0) ? 0.2 : 0.0
-                let segW = scaledCellW * (1.0 + inflate)
-                let segH = scaledCellH * (1.0 + inflate)
-                let offsetX = (segW - scaledCellW) / 2
-                let offsetY = (segH - scaledCellH) / 2
-                let rect = CGRect(
-                    x: baseX - offsetX,
-                    y: baseY - offsetY,
-                    width: segW,
-                    height: segH
-                )
-                let segCorner = scaledCorner * (1.0 + inflate)
-                let path = Path(roundedRect: rect, cornerRadius: segCorner)
-                ctx.fill(path, with: .color(snakeColor.opacity(alpha)))
-            }
-        }
-    }
-
-    /// 绘制食物（仅 FoodChase 玩法非空）。
-    ///
-    /// 视觉：把目标格子本身染成琥珀色并叠一层内描边，1Hz 频率呼吸。
-    /// 旧版外扩圆环会在草坪最外圈被 Canvas 边界裁切，所以高亮必须完全收在单格内部。
-    private func drawFood(ctx: GraphicsContext, scale: CGFloat,
-                          food: Set<GridPosition>, time: Date) {
-        guard !food.isEmpty else { return }
-        let scaledCellW = cellWidth * scale
-        let scaledCellH = cellHeight * scale
-        let scaledSpacing = cellSpacing * scale
-        let scaledCorner = cellCornerRadius * scale
-
-        // 1Hz 呼吸：sin(2π·t) 映射到 [0.4, 1.0]，只影响透明度，不改变格子尺寸。
-        let phase = time.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.0)
-        let pulse = 0.7 + 0.3 * sin(phase * 2 * .pi)
-
-        let foodColor = Color(.sRGB, red: 1.0, green: 0.69, blue: 0.18, opacity: 1.0)  // 琥珀色
-
-        for pos in food {
-            let baseX = CGFloat(pos.col) * (scaledCellW + scaledSpacing)
-            let baseY = CGFloat(pos.row) * (scaledCellH + scaledSpacing)
-            let rect = CGRect(
-                x: baseX,
-                y: baseY,
-                width: scaledCellW,
-                height: scaledCellH
-            )
-            let path = Path(roundedRect: rect, cornerRadius: scaledCorner)
-            ctx.fill(path, with: .color(foodColor.opacity(0.58 + 0.22 * pulse)))
-
-            let lineWidth = max(0.75, 1.0 * scale)
-            let insetRect = rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
-            ctx.stroke(
-                Path(roundedRect: insetRect, cornerRadius: max(0, scaledCorner - lineWidth / 2)),
-                with: .color(foodColor.opacity(0.9)),
-                lineWidth: lineWidth
-            )
+            // 首次渲染前：透明占位，保持 aspectRatio 高度不变。
+            Color.clear
         }
     }
 }
@@ -404,10 +270,28 @@ struct ContributionGraphView: View {
 /// 拆成独立结构而非散落 hex 字符串：①便于单测；②未来用户自定义主题时只换这一处。
 struct ContributionPalette {
     let none: Color
+    let noneBorder: Color?
     let l1: Color
     let l2: Color
     let l3: Color
     let l4: Color
+
+    /// 既有分享卡主题无需边框；默认 nil 保持原渲染，仅 Owner Dark 显式传入描边色。
+    init(
+        none: Color,
+        noneBorder: Color? = nil,
+        l1: Color,
+        l2: Color,
+        l3: Color,
+        l4: Color
+    ) {
+        self.none = none
+        self.noneBorder = noneBorder
+        self.l1 = l1
+        self.l2 = l2
+        self.l3 = l3
+        self.l4 = l4
+    }
 
     func color(for level: ContributionLevel) -> Color {
         switch level {
@@ -421,6 +305,7 @@ struct ContributionPalette {
 
     static let light = ContributionPalette(
         none: Color(hex6: 0xebedf0),
+        noneBorder: nil,
         l1:   Color(hex6: 0x9be9a8),
         l2:   Color(hex6: 0x40c463),
         l3:   Color(hex6: 0x30a14e),
@@ -429,14 +314,31 @@ struct ContributionPalette {
 
     static let dark = ContributionPalette(
         none: Color(hex6: 0x161b22),
+        noneBorder: nil,
         l1:   Color(hex6: 0x0e4429),
         l2:   Color(hex6: 0x006d32),
         l3:   Color(hex6: 0x26a641),
         l4:   Color(hex6: 0x39d353)
     )
 
-    static func palette(for scheme: ColorScheme) -> ContributionPalette {
-        scheme == .dark ? .dark : .light
+    /// Owner Dark 的空格子比卡片底色亮一档，并带轻描边；绿色等级沿用 GitHub 深色调色板。
+    static let ownerCardDark = ContributionPalette(
+        none: Color(hex6: 0x2b3139),
+        noneBorder: Color(hex6: 0x3b4550),
+        l1: Color(hex6: 0x0e4429),
+        l2: Color(hex6: 0x006d32),
+        l3: Color(hex6: 0x26a641),
+        l4: Color(hex6: 0x39d353)
+    )
+
+    static func palette(
+        for scheme: ColorScheme,
+        style: ContributionGraphStyle = .standard
+    ) -> ContributionPalette {
+        if scheme == .dark, style == .ownerCardDark {
+            return .ownerCardDark
+        }
+        return scheme == .dark ? .dark : .light
     }
 }
 

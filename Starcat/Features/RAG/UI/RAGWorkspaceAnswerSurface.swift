@@ -19,7 +19,6 @@ struct RAGWorkspaceAnswerSurface: View {
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.ragSettingsNavigation) private var settingsNavigation
     @Environment(AppSettings.self) private var settings
     @Environment(AuthSession.self) private var authSession
@@ -27,6 +26,7 @@ struct RAGWorkspaceAnswerSurface: View {
     @Bindable var viewModel: KnowledgeRAGWorkspaceViewModel
     @State private var composerContentHeight: CGFloat = 0
     @FocusState private var isContextPickerSearchFocused: Bool
+    @State private var contextPickerInteractionController = ListInteractionSuppressionController()
     @State private var messageTail = ScrollTailController()
     @State private var historyWindow = RAGConversationHistoryWindow()
     @State private var isMessageNearBottom = true
@@ -174,8 +174,17 @@ struct RAGWorkspaceAnswerSurface: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            // 会话标题右侧：复制 / 导出全部对话（右对齐）。
+            // 会话标题右侧：创建时间 / 复制 / 导出全部对话（右对齐）。
             if !viewModel.messages.isEmpty {
+                // 创建时间精确到分，放在复制按钮左侧；解析失败时静默省略，不阻塞 header。
+                if let createdAt = viewModel.conversations
+                    .first(where: { $0.id == viewModel.selectedConversationID })?.createdAt,
+                   let createdDate = ISO8601DateFormatter.shared.date(from: createdAt) {
+                    Text(localizedTimestamp(createdDate))
+                        .font(ragFont(.caption))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 CopyFeedbackButton(
                     providesContent: { viewModel.conversationTranscriptMarkdown },
                     tooltip: "rag.workspace.conversation.copyAll"
@@ -209,14 +218,12 @@ struct RAGWorkspaceAnswerSurface: View {
     var messageTimeline: some View {
         let conversationID = viewModel.selectedConversationID
         let outlineTurns = viewModel.conversationOutlineTurns
-        let visibleMessages = historyWindow.visibleMessages(
+        let historyPresentation = historyWindow.visiblePresentation(
             conversationID: conversationID,
             messages: viewModel.messages
         )
-        let hasEarlierMessages = historyWindow.hasEarlierMessages(
-            conversationID: conversationID,
-            messages: viewModel.messages
-        )
+        let visibleMessages = historyPresentation.messages
+        let hasEarlierMessages = historyPresentation.hasEarlierMessages
         let hasTimelineContent = !viewModel.messages.isEmpty
             || viewModel.isAnswering
             || !viewModel.streamingAnswer.isEmpty
@@ -465,41 +472,23 @@ struct RAGWorkspaceAnswerSurface: View {
                     .help("rag.workspace.addToLibrary.openHelp")
                 }
             } else {
-                if colorScheme == .light {
-                    decoratedEmptyConversation
-                } else {
-                    // 示意图是浅色视觉稿，深色模式继续用系统语义色空态，避免白底位图破坏窗口层级。
-                    EmptyStateView(
-                        systemImage: "text.book.closed",
-                        title: "rag.workspace.empty.title",
-                        subtitle: "rag.workspace.empty.subtitle",
-                        iconSize: interfaceScale.scaled(52),
-                        spacing: 14,
-                        subtitleHorizontalPadding: 48,
-                        titleFont: interfaceScale.font(.workspaceTitle, weight: .semibold),
-                        subtitleFont: ragFont(.callout)
-                    )
-                }
+                decoratedEmptyConversation
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 浅色新会话空态只表达中栏将发生的问答与引用，不重复现有窗口的三栏结构。
-    /// 资源图自带的中文标题会在这里被裁出，实际文案仍由 xcstrings 绘制，确保英文界面可本地化。
+    /// 3D 透明插画表达知识检索、问答与引用，明暗主题共用同一份素材。
+    /// 图片不含文字，标题与说明仍由 xcstrings 绘制，避免固定语言和裁切文案的旧路径。
     private var decoratedEmptyConversation: some View {
         VStack(spacing: interfaceScale.scaled(14)) {
-            Image("RAGEmptyConversationArtwork")
+            Image(decorative: "RAGEmptyConversationArtwork")
                 .resizable()
-                .scaledToFill()
-                // 原图底部是中文视觉稿文案；只取上半部对话示意，避免和本地化文本重复。
-                .frame(
-                    width: interfaceScale.scaled(520),
-                    height: interfaceScale.scaled(282),
-                    alignment: .top
-                )
-                .clipped()
-                .accessibilityHidden(true)
+                .renderingMode(.original)
+                .scaledToFit()
+                // 完整保留书本和引用标签；窄中栏按可用宽度缩小，不再裁取图片上半部。
+                .frame(maxWidth: interfaceScale.scaled(520))
+                .frame(height: interfaceScale.scaled(282))
 
             Text("rag.workspace.empty.title")
                 .font(interfaceScale.font(.workspaceTitle, weight: .semibold))
@@ -719,10 +708,10 @@ struct RAGWorkspaceAnswerSurface: View {
                     // 不与右侧的动作按钮（附件 / 联网 / 发送）争视觉权重。
                     RAGContextUsageButton(usage: viewModel.composerContextUsage)
 
-                    modelMenu
+                    RAGWorkspaceModelMenu(viewModel: viewModel)
 
                     if !viewModel.selectedRepoContexts.isEmpty {
-                        explicitModeMenu
+                        RAGWorkspaceRepoModeMenu(viewModel: viewModel)
                     }
 
                     Spacer(minLength: 8)
@@ -985,7 +974,8 @@ struct RAGWorkspaceAnswerSurface: View {
             && viewModel.composerBlockingReason == nil
     }
 
-    /// 按钮、Return 与 ⌘Return 共用同一发送入口，保证展开面板只在真实发送时收起。
+    /// 按钮、Return 与 ⌘Return 共用同一发送入口；只有真实发送才收起上下文相关面板。
+    /// 已选仓库保存在 ViewModel 中，关闭项目列表只移除浮层，不会丢失本轮 RAG 上下文。
     func submitComposerQuestion() {
         guard composerCanSend else { return }
         if isComposerContextExpanded {
@@ -993,6 +983,7 @@ struct RAGWorkspaceAnswerSurface: View {
                 isComposerContextExpanded = false
             }
         }
+        viewModel.dismissMentionPicker()
         viewModel.send()
     }
 
@@ -1077,6 +1068,11 @@ struct RAGWorkspaceAnswerSurface: View {
     /// 全宽悬浮上下文选择面板：停在消息区底边、Composer 上方，已选仓库始终置顶。
     var contextPickerPanel: some View {
         let snapshot = viewModel.mentionPickerSnapshot
+        // 选择态与键盘落点在面板级一次性投影；LazyVStack 创建行时只做 O(1) 查询，
+        // 不能让每个新出现的行重新扫描选择数组或重建整份候选快照。
+        let selectedRepoIDs = Set(viewModel.selectedRepoContexts.map(\.id))
+        let highlightedRepoID = viewModel.highlightedMentionRepoID(in: snapshot.suggestions)
+        let selectionFull = selectedRepoIDs.count >= KnowledgeRAGWorkspaceViewModel.maxSelectedRepoContexts
 
         return VStack(alignment: .leading, spacing: 0) {
             contextPickerHeader(snapshot: snapshot)
@@ -1134,13 +1130,32 @@ struct RAGWorkspaceAnswerSurface: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(snapshot.suggestions) { repo in
-                            mentionPickerRow(repo)
+                            let isSelected = selectedRepoIDs.contains(repo.id)
+                            RAGContextPickerRepositoryRow(
+                                candidate: repo,
+                                isSelected: isSelected,
+                                isHighlighted: repo.id == highlightedRepoID,
+                                isEnabled: isSelected || !selectionFull,
+                                selectionLimit: KnowledgeRAGWorkspaceViewModel.maxSelectedRepoContexts,
+                                onToggle: { viewModel.toggleMention(repo) }
+                            )
+                            .equatable()
                         }
                     }
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onScrollPhaseChange { _, newPhase in
+                    contextPickerInteractionController.update(isActive: newPhase != .idle)
+                }
+                .environment(
+                    \.starcatListInteractionSuppressed,
+                    contextPickerInteractionController.isSuppressed
+                )
+                .onDisappear {
+                    contextPickerInteractionController.cancel()
+                }
             }
 
             if snapshot.isTruncated {
@@ -1252,158 +1267,6 @@ struct RAGWorkspaceAnswerSurface: View {
         .padding(.vertical, 16)
     }
 
-    func mentionPickerRow(_ candidate: RAGMentionCandidate) -> some View {
-        let isHighlighted = candidate.id == viewModel.highlightedMentionRepoIDValue
-        let isSelected = viewModel.isMentionSelected(candidate)
-        // 已达上限时仍允许取消已选项；未选中的行禁用，避免一次塞进上千仓库。
-        let selectionFull = viewModel.selectedRepoContexts.count
-            >= KnowledgeRAGWorkspaceViewModel.maxSelectedRepoContexts
-        let canToggle = isSelected || !selectionFull
-        return Button { viewModel.toggleMention(candidate) } label: {
-            UnifiedCompactRepoRow(
-                fullName: candidate.fullName,
-                owner: candidate.owner,
-                ownerAvatarURL: candidate.ownerAvatar,
-                language: candidate.language,
-                starsCount: candidate.starsCount,
-                isChecked: isSelected,
-                isHighlighted: isHighlighted,
-                isEnabled: canToggle
-            ) {
-                // 索引侧元数据属于 RAG，不下沉进共享 Row 的仓库身份模型。
-                if candidate.chunkCount > 0 {
-                    MetaBadge(
-                        systemImage: "square.stack.3d.up",
-                        text: candidate.chunkCount.formattedShort,
-                        tint: .secondary
-                    )
-                    .help(
-                        Text(
-                            String(
-                                format: String.l10n("rag.workspace.mention.badge.chunks"),
-                                locale: locale,
-                                candidate.chunkCount
-                            )
-                        )
-                    )
-                }
-                if candidate.hasAISummary {
-                    MetaBadge(
-                        systemImage: "sparkles",
-                        text: "",
-                        tint: .accentColor,
-                        iconOnly: true,
-                        accessibilityLabel: "rag.workspace.mention.badge.aiSummary"
-                    )
-                    .help("rag.workspace.mention.badge.aiSummary")
-                }
-                if candidate.hasPrivateNote {
-                    MetaBadge(
-                        systemImage: "note.text",
-                        text: "",
-                        tint: .orange,
-                        iconOnly: true,
-                        accessibilityLabel: "rag.workspace.mention.badge.privateNote"
-                    )
-                    .help("rag.workspace.mention.badge.privateNote")
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .disabled(!canToggle)
-        .help(
-            canToggle
-                ? Text(candidate.fullName)
-                : Text(
-                    String(
-                        format: String.l10n("rag.workspace.mention.selectionLimit"),
-                        locale: locale,
-                        KnowledgeRAGWorkspaceViewModel.maxSelectedRepoContexts
-                    )
-                )
-        )
-    }
-
-    var modelMenu: some View {
-        Menu {
-            // 用 inline Picker：系统只给当前 selection 打勾，避免手写 checkmark 在
-            // macOS Menu 里被全部渲染成已选状态。
-            Picker("", selection: $viewModel.selectedModelID) {
-                ForEach(viewModel.availableModels) { model in
-                    modelPickerLabel(model)
-                        .tag(Optional(model.id))
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 6) {
-                if let provider = viewModel.selectedModelProvider {
-                    AIProviderIconView(provider: provider, size: 14)
-                } else {
-                    // fallback 也固定 14×14，避免与有 logo 时（14pt）宽窄跳动。
-                    Image(systemName: "sparkles")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 14, height: 14)
-                        .foregroundStyle(.secondary)
-                }
-                Text(viewModel.selectedModelDisplayName)
-                    .lineLimit(1)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .ragComposerMenuLabelStyle(font: ragFont(.caption, weight: .semibold))
-        .fixedSize()
-        // CLI 后端由 RAG 设置统一选择；这里保留当前 API 模型作为切回 API 时的偏好，
-        // 但不能让用户误以为 Codex / Claude 会使用这个 OpenAI-compatible 模型名。
-        .disabled(!viewModel.usesAPIInferenceBackend)
-        .help("rag.workspace.composer.model")
-    }
-
-    var explicitModeMenu: some View {
-        Menu {
-            // Text("key") 走 LocalizedStringKey；勿把 String 字面量传进 Text，否则会显示 raw key。
-            Picker("", selection: $viewModel.explicitRepoMode) {
-                Text("rag.workspace.repoMode.only").tag(RAGExplicitRepoMode.only)
-                Text("rag.workspace.repoMode.prefer").tag(RAGExplicitRepoMode.prefer)
-                Text("rag.workspace.repoMode.exclude").tag(RAGExplicitRepoMode.exclude)
-            }
-            .labelsHidden()
-            .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 6) {
-                // 与模型菜单的 14pt 品牌 logo 对齐：SF Symbol 默认跟随字号会比 logo
-                // 更粗更沉，这里固定成 14×14 让两个底栏菜单图标视觉等大。
-                Image(systemName: "scope")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 14, height: 14)
-                Text(repoModeKey(viewModel.explicitRepoMode))
-                    .lineLimit(1)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .ragComposerMenuLabelStyle(font: ragFont(.caption, weight: .semibold))
-        .fixedSize()
-        .help("rag.workspace.composer.scope")
-    }
-
-    /// 模型的 providerID 是配置 profile 的 ID，不是 AIServiceProvider 的 rawValue；
-    /// 必须经 ViewModel 映射，才能在多个同类服务商 profile 共存时展示正确 logo。
-    @ViewBuilder
-    func modelPickerLabel(_ model: AIModelDescriptor) -> some View {
-        if let provider = viewModel.provider(for: model) {
-            Label {
-                Text(model.name)
-            } icon: {
-                AIProviderIconView(provider: provider, size: 15)
-            }
-        } else {
-            Label(model.name, systemImage: "sparkles")
-        }
-    }
     var composerNSFont: NSFont {
         NSFont.systemFont(
             ofSize: interfaceScale.scaled(RAGConversationTypography.text.pointSize)
@@ -1430,11 +1293,8 @@ struct RAGWorkspaceAnswerSurface: View {
             return false
         case .returnKey(let modifiers):
             let flags = modifiers.intersection(.deviceIndependentFlagsMask)
-            // @ 候选打开时：Enter 切换勾选；Cmd+Enter 仍走发送偏好。
-            if viewModel.isContextPickerPresented, !flags.contains(.command) {
-                viewModel.selectHighlightedMention()
-                return true
-            }
+            // 事件来自主 Composer，就必须遵循发送偏好，不能因为项目面板仍打开而改成
+            // 勾选/取消项目。面板搜索框自己的 onSubmit 仍负责键盘选择高亮候选。
             switch AIComposerKeyboardPolicy.action(
                 for: flags,
                 requiresCommandReturn: settings.aiChatRequiresCommandReturn
@@ -1479,14 +1339,6 @@ struct RAGWorkspaceAnswerSurface: View {
         case .generating: return String.l10n("rag.workspace.state.generating")
         case .cancelled: return String.l10n("rag.workspace.state.cancelled")
         case .failed(let message): return message
-        }
-    }
-
-    func repoModeKey(_ mode: RAGExplicitRepoMode) -> LocalizedStringKey {
-        switch mode {
-        case .only: return "rag.workspace.repoMode.only"
-        case .prefer: return "rag.workspace.repoMode.prefer"
-        case .exclude: return "rag.workspace.repoMode.exclude"
         }
     }
 

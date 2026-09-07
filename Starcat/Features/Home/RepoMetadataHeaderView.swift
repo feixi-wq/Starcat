@@ -63,6 +63,9 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     let starHelpKey: LocalizedStringKey
     let headerSourceBadge: RepoDetailHeaderSourceBadge?
     let showsRepoHealthEntry: Bool
+    /// Scaffold 已读取的知识库状态；Release stat 复用它，避免首屏重复查 repo_notes。
+    let libraryState: LibraryState
+    let onLanguageTapped: ((String) -> Void)?
     private let trailingActions: TrailingActions
 
     /// OpenSSF 与 Repo Health 都放在 `full_name` 同行。
@@ -82,6 +85,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         starHelpKey: LocalizedStringKey = "repo.unstar",
         headerSourceBadge: RepoDetailHeaderSourceBadge? = nil,
         showsRepoHealthEntry: Bool = false,
+        libraryState: LibraryState = .outsideLibrary,
+        onLanguageTapped: ((String) -> Void)? = nil,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder trailingActions: () -> TrailingActions
     ) {
@@ -90,6 +95,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         self.starHelpKey = starHelpKey
         self.headerSourceBadge = headerSourceBadge
         self.showsRepoHealthEntry = showsRepoHealthEntry
+        self.libraryState = libraryState
+        self.onLanguageTapped = onLanguageTapped
         self.onStarTapped = onStarTapped
         self.trailingActions = trailingActions()
     }
@@ -98,11 +105,26 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             descriptionSection
-            statsSection
+            VStack(alignment: .leading, spacing: 8) {
+                statsSection
+                if let onLanguageTapped {
+                    RepositoryLanguageDistributionBar(
+                        repo: repo,
+                        service: RepositoryLanguageService(
+                            apiClient: dependencies.apiClient,
+                            cache: dependencies.repositoryInsightsCache
+                        ),
+                        onLanguageTapped: onLanguageTapped
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 24)
         .padding(.top, 16)
-        .padding(.bottom, 14)
+        // Manage 已有语言横条作为视觉分割线，只保留下方标签区自己的 12pt 顶距；
+        // 其它详情没有这条线，继续沿用原来的 14pt Hero 收尾留白。
+        .padding(.bottom, onLanguageTapped == nil ? 14 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
         // hero tint 由 `RepoDetailScaffold` 根节点 `DetailHeroTintBackground` 统一绘制。
         .sheet(isPresented: $showOpenSSFScoreSheet) {
@@ -166,6 +188,11 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
 
     @ViewBuilder
     private var badgeRow: some View {
+        // 原始展示文本：去空白，空串归一成 N/A（与可点分支共用，避免两处文案漂移）。
+        let licenseText = repo.license.flatMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } ?? "N/A"
         HStack(spacing: 10) {
             if repo.isArchived {
                 RepoBadgeChip(text: "repo.archived", systemImage: "archivebox", tint: .orange)
@@ -176,14 +203,30 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             if repo.isPrivate {
                 RepoBadgeChip(text: "repo.private", systemImage: "lock.fill", tint: .purple)
             }
-            RepoRawBadgeChip(
-                text: repo.license.flatMap { value in
-                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return trimmed.isEmpty ? nil : trimmed
-                } ?? "N/A",
-                systemImage: "scale.3d",
-                tint: .secondary
-            )
+            // License chip：标准 SPDX 时整颗可点，跳 GitHub license 概览页
+            // （与仓库页侧栏 license 胶囊同一目标）；N/A / Other 等无法构造
+            // 合法链接的场景保持纯展示。
+            if let licenseURL = RepoExternalLinks.license(repo) {
+                Button {
+                    NSWorkspace.shared.open(licenseURL)
+                } label: {
+                    RepoRawBadgeChip(
+                        text: licenseText,
+                        systemImage: "scale.3d",
+                        tint: .secondary
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .pressableHover()
+                .help("repo.license.openHelp")
+            } else {
+                RepoRawBadgeChip(
+                    text: licenseText,
+                    systemImage: "scale.3d",
+                    tint: .secondary
+                )
+            }
         }
         .lineLimit(1)
         .frame(minHeight: 18, maxHeight: 18, alignment: .leading)
@@ -256,7 +299,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             // v2.0(2026-06-12,dong4j 反馈)：原本独立成段的 Releases 订阅区被压缩为这一列紧凑 stat,
             // 与 Stars / Forks / Watchers / Created / Updated 同行展示。详见
             // `Starcat/Features/Releases/RepoReleaseSection.swift` 文件头 v2.0 演化说明。
-            RepoReleaseStatItem(repo: repo)
+            RepoReleaseStatItem(repo: repo, libraryState: libraryState)
         }
     }
 }
@@ -518,7 +561,8 @@ private struct RepoOwnerSegment: View {
             }
         }
         .sheet(isPresented: $showOwnerCard) {
-            OwnerCardSheet(ownerLogin: owner)
+            // 详情页已经完成关注状态查询，直接共享给卡片，避免打开时重复请求 GitHub。
+            OwnerCardSheet(ownerLogin: owner, isFollowing: $isFollowing)
                 .appSheetRootEnvironment(dependencies)
         }
         .task(id: owner) {
@@ -548,6 +592,8 @@ private struct RepoOwnerSegment: View {
     }
 
     private func loadFollowing() async {
+        // Repo 切换时先清空旧 owner 状态，避免卡片短暂复用上一位 owner 的结果。
+        isFollowing = nil
         guard authSession.state.isAuthenticated else { return }
         if let following = try? await dependencies.ownerFollowService.isFollowing(login: owner) {
             isFollowing = following
@@ -634,20 +680,42 @@ struct RepoAIOpenButton: View {
     }
 }
 
-/// 仓库分享菜单。
+/// Hero 分享入口：已 Star 展示两项菜单，未 Star 直接复制公开链接。
 ///
-/// 基础链接是免费、无登录依赖的主路径；AI 分享是已 Star 仓库可选的增强路径。
-/// 两者放在同一个系统分享入口里，避免用户把「复制公开链接」误解为 Pro 能力。
-struct RepoShareMenu: View {
+/// 两种状态共用同一图标外观且不显示下拉箭头；任务与 Sheet 由稳定的 RepoShareHost 承载。
+struct RepoShareButton: View {
+    let repo: Repo
     let publicURL: URL
-    let isSharing: Bool
-    let isShared: Bool
-    let canCreateAIShare: Bool
-    let createAIShare: () -> Void
     /// 系统菜单点击后会立即关闭，复制成功提示必须交给稳定的页面根节点显示。
     let onLinkCopied: () -> Void
 
+    @Environment(AppDependencies.self) private var dependencies
+    @Environment(RepoShareTaskStore.self) private var taskStore
+    @Environment(\.presentRepoShare) private var presentRepoShare
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
+        // 探索和独立详情可能持有旧快照；统一读 registry，确保 Star / 取消 Star 后
+        // 立即切换点击行为，不把入口绑定到侧边栏分类或快照里的旧 isStarred。
+        let targetRepo = dependencies.starredRegistry.applyingDisplayState(to: repo)
+        if targetRepo.isStarred {
+            shareMenu(for: targetRepo)
+        } else {
+            CopyFeedbackButton(
+                providesContent: { publicURL.absoluteString },
+                tooltip: "repo.share.link.copy.help",
+                onCopied: onLinkCopied
+            ) { didCopy in
+                shareIcon(didCopy: didCopy)
+            }
+            .accessibilityLabel(Text("repo.share.link.copy"))
+            .pressableHover()
+            .fixedSize()
+        }
+    }
+
+    /// 菜单保留已有任务的恢复 / 完成文案；权限门控只在选择 AI 分享时执行。
+    private func shareMenu(for targetRepo: Repo) -> some View {
         Menu {
             CopyFeedbackButton(
                 providesContent: { publicURL.absoluteString },
@@ -661,32 +729,48 @@ struct RepoShareMenu: View {
                 .foregroundStyle(didCopy ? Color.green : Color.primary)
             }
 
-            if canCreateAIShare {
-                Divider()
-                Button(action: createAIShare) {
-                    if isSharing {
-                        Label {
-                            Text("repo.share.progress.reopen")
-                        } icon: {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    } else {
-                        Label(
-                            isShared ? "repo.share.ai.created" : "repo.share.ai.create",
-                            systemImage: isShared ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack"
-                        )
+            Divider()
+            Button { presentRepoShare(targetRepo) } label: {
+                if taskStore.isRunning(repoID: targetRepo.id) {
+                    Label {
+                        Text("repo.share.progress.reopen")
+                    } icon: {
+                        ProgressView()
+                            .controlSize(.small)
                     }
+                } else {
+                    let isShared = taskStore.isSuccessful(repoID: targetRepo.id)
+                    Label(
+                        isShared ? "repo.share.ai.created" : "repo.share.ai.create",
+                        systemImage: isShared ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack"
+                    )
                 }
             }
         } label: {
-            // macOS 的 Menu 由 AppKit 承载；异步操作期间替换 label 的根视图类型，
-            // 可能让 toolbar 复用到空的菜单宿主，因此入口图标必须始终保持稳定。
-            ToolbarIcon("square.and.arrow.up.circle")
-                .accessibilityLabel(Text("repo.share.button.label"))
+            // AppKit Menu 的 label 根类型保持稳定，任务进度只更新菜单内容。
+            shareIcon()
         }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .pressableHover()
         .accessibilityLabel(Text("repo.share.button.label"))
         .help("repo.share.button.help")
+        .fixedSize()
+    }
+
+    /// 沿用 Hero 操作的 28pt 点击区域与 13pt 图标，和知识库 / Wiki 入口保持一致。
+    private func shareIcon(didCopy: Bool = false) -> some View {
+        Image(systemName: didCopy ? "checkmark.circle.fill" : "square.and.arrow.up")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(didCopy ? Color.green : Color.secondary)
+            .frame(width: 28, height: 28)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(HeroActionIconStyle.background(colorScheme: colorScheme))
+            }
+            .contentShape(Capsule())
     }
 }
 

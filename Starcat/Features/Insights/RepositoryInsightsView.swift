@@ -13,6 +13,7 @@
 
 import AppKit
 import Charts
+import Kingfisher
 import SwiftUI
 
 enum StarHistoryChartSeriesBuilder {
@@ -21,7 +22,7 @@ enum StarHistoryChartSeriesBuilder {
     static let oneYearPointLimit = 80
     static let allRangePointLimit = 90
 
-    /// 为图表准备最终渲染点：全部范围补创建日零基线，各范围都用 LTTB 保留主要视觉拐点。
+    /// 为图表准备最终渲染点：全部范围补齐创建日起点，各范围都用 LTTB 保留主要视觉拐点。
     ///
     /// 原始日级事件仍完整保留在 ViewModel 中，统计值和缓存不会因图表抽稀而丢失；
     /// 这里只减少 Swift Charts 的 Mark 数量；数据来源与精度仍完整保留在原始数据中。
@@ -63,29 +64,34 @@ enum StarHistoryChartSeriesBuilder {
         return [first, last]
     }
 
-    private static func addingCreationBaseline(
+    /// 输入必须按日期升序；完整交互序列与抽稀曲线共用起点，补点不得写回统计或缓存。
+    static func addingCreationBaseline(
         to points: [StarHistoryPoint],
         range: StarHistoryRange,
         repositoryCreatedAt: Date?
     ) -> [StarHistoryPoint] {
         guard range == .all,
               let repositoryCreatedAt,
-              let first = points.first,
-              repositoryCreatedAt < first.date
+              let first = points.first
         else {
             return points
         }
 
-        // 仓库创建时 Star 必然为 0；沿用首个观测点的 source / precision，避免引入
-        // 仅为图表展示而存在的新数据语义。该点不会写回缓存或数据库。
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let hasCreationDayRecord = calendar.isDate(first.date, inSameDayAs: repositoryCreatedAt)
+        guard hasCreationDayRecord || repositoryCreatedAt < first.date else { return points }
+
+        // 日级历史可能位于 UTC 零点，而 createdAt 带具体时分秒：同日优先保留观测值，
+        // 只对齐绘图时间；缺少创建日记录时才补 0，不能把这个视觉起点声称为真实快照。
         let baseline = StarHistoryPoint(
             date: repositoryCreatedAt,
-            count: 0,
+            count: hasCreationDayRecord ? first.count : 0,
             source: first.source,
-            precision: first.precision,
+            precision: hasCreationDayRecord ? first.precision : .estimated,
             fetchedAt: first.fetchedAt
         )
-        return [baseline] + points
+        return [baseline] + (hasCreationDayRecord ? Array(points.dropFirst()) : points)
     }
 
     /// Largest-Triangle-Three-Buckets：按相邻桶形成的三角形面积保留最能表达形状的点。
@@ -346,7 +352,7 @@ struct RepositoryInsightsView: View {
     @State private var isReleaseAssetsExpanded = false
     /// 附件下载结果挂在洞察面板底部，避免行内 toast 看起来像屏幕中间弹出。
     @State private var releaseAssetDownloadToast: String?
-    @State private var releaseAssetDownloadDirectory: URL?
+    @State private var releaseAssetDownloadFileURL: URL?
     /// 时间线默认只展示最近几条，避免整页被事件列表撑满。
     @State private var isTimelineExpanded = false
     /// 贡献者默认截断；更多走底部「查看全部」，不在网格里再塞 +N。
@@ -462,14 +468,14 @@ struct RepositoryInsightsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .releaseAssetDownloadToast(
             message: $releaseAssetDownloadToast,
-            directoryURL: $releaseAssetDownloadDirectory
+            fileURL: $releaseAssetDownloadFileURL
         )
         .onChange(of: repo.id) { _, _ in
             // 切仓库时清掉旧高度，避免短暂锁在上一仓的 contentSize。
             insightsContentHeight = 0
             isReleaseAssetsExpanded = false
             releaseAssetDownloadToast = nil
-            releaseAssetDownloadDirectory = nil
+            releaseAssetDownloadFileURL = nil
         }
         .accessibilityLabel(Text("insights.repo.mode.insights"))
     }
@@ -2124,17 +2130,25 @@ struct RepositoryInsightsView: View {
     private func contributorItem(_ contributor: RepositoryContributor) -> some View {
         let destinationURL = contributorProfileURL(contributor)
         let isHovered = hoveredContributorID == contributor.id
+        let avatarURL = GitHubAvatarURL.imageURL(
+            from: contributor.avatarURL?.absoluteString,
+            displayDiameter: 28
+        )
         let content = HStack(spacing: 8) {
-            AsyncImage(url: contributor.avatarURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Text(String(contributor.login.prefix(1)).uppercased())
-                    .font(interfaceScale.font(.caption, weight: .bold))
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // 低透明度强调色让 `.primary` 在明暗主题和增强对比度下都保持系统语义。
-                    .background(InsightsColor.resolve(contributor.colorName).opacity(0.2))
-            }
+            KFImage(avatarURL)
+                .resizable()
+                // 快速切仓时取消离屏请求；已完成图片继续由 Kingfisher 内存/磁盘缓存复用。
+                .cancelOnDisappear(true)
+                .placeholder {
+                    Text(String(contributor.login.prefix(1)).uppercased())
+                        .font(interfaceScale.font(.caption, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // 低透明度强调色让 `.primary` 在明暗主题和增强对比度下都保持系统语义。
+                        .background(InsightsColor.resolve(contributor.colorName).opacity(0.2))
+                }
+                .fade(duration: 0.15)
+                .scaledToFill()
             .frame(width: 28, height: 28)
             .clipShape(Circle())
 
@@ -2319,7 +2333,7 @@ struct RepositoryInsightsView: View {
                             ReleaseAssetDownloadToastSupport.apply(
                                 finish,
                                 message: &releaseAssetDownloadToast,
-                                directoryURL: &releaseAssetDownloadDirectory
+                                fileURL: &releaseAssetDownloadFileURL
                             )
                         }
                     )

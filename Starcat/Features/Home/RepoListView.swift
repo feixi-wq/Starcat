@@ -412,12 +412,6 @@ private struct TitlebarSubtitleAccessoryAttacher<Accessory: View>: NSViewReprese
     }
 }
 
-/// 规则编辑器 Sheet 载荷（`sheet(item:)` 避免首帧空白 sheet）。
-private struct SmartCollectionRuleEditorItem: Identifiable {
-    let id = UUID()
-    let mode: SmartCollectionRuleEditorSheet.Mode
-}
-
 /// CodeFlow / CodebaseMemory sheet 每次打开都需要独立 identity。
 ///
 /// macOS `.sheet(item:)` 可能复用旧 presentation host；如果直接用 `Repo` 做 item，
@@ -426,6 +420,13 @@ private struct SmartCollectionRuleEditorItem: Identifiable {
 private struct CodeGraphSheetItem: Identifiable {
     let id = UUID()
     let repo: Repo
+}
+
+/// 列表徽章缓存加载身份只保留稳定 revision 与数量，避免 SwiftUI 为 `.task(id:)`
+/// 在每次追加分页时重新创建并哈希完整 repo ID 数组。
+private struct RepoBadgeCacheLoadIdentity: Hashable {
+    let itemsRevision: Int
+    let itemCount: Int
 }
 
 struct RepoListView: View {
@@ -502,15 +503,8 @@ struct RepoListView: View {
     /// 否则关闭 CodeFlow 时 presentation host 被替换，窗口会短暂再次出现。
     @State private var codeFlowSheetItem: CodeGraphSheetItem?
     @State private var codebaseMemorySheetItem: CodeGraphSheetItem?
-    /// 分享入口已迁到 toolbar；进度 Sheet 同样必须由稳定根节点承载，避免 toolbar
-    /// 子树重建时 presentation host 被替换。任务状态按 repoID 隔离，切换仓库不会串写结果。
-    @State private var shareTaskStore = RepoShareTaskStore()
-    @State private var sharePresentation: RepoSharePresentation?
-    /// Sheet 收起后任务仍会完成；轻量 toast 明确指出是哪个仓库，避免当前选择造成误解。
-    @State private var shareCompletionMessage: String?
     /// CodeFlow 为 Pro 功能；免费用户点入口时弹出统一付费墙，不打开执行面板。
     @State private var paywallContext: ProPaywallContext?
-    @State private var ruleEditorSheetItem: SmartCollectionRuleEditorItem?
     /// GitHub 组织可限制第三方 OAuth App 访问仓库节点；这类错误需要结构化解释原因。
     @State private var gitHubStarListOAuthRestrictedRepo: Repo?
     /// 列表顶栏「同步于」文案；会话内跟 `SyncManager.state`，冷启动读 DB `last_sync_at`。
@@ -519,6 +513,15 @@ struct RepoListView: View {
     @State private var navigationMetrics = RepoListNavigationMetrics()
     /// 摘要存在状态与导航计数同样局部观察，避免摘要生成后重算整个页面根视图。
     @State private var aiSummaryAvailability = RepoListAISummaryAvailability()
+    /// 已成功补齐徽章缓存的列表前缀。append 不 bump revision，因此可只加载新增页；
+    /// reset / filter / sort 导致 revision 变化时会从 0 重新核对新列表。
+    @State private var badgeCacheLoadedItemsRevision: Int?
+    @State private var badgeCacheLoadedItemCount = 0
+    /// 与已确认徽章前缀同步的可见 repo 集合。Health/OpenSSF 通知逐仓到达时用 O(1)
+    /// membership 判断，避免在数千行列表上为每条通知反复线性扫描。
+    @State private var badgeCacheVisibleRepoIDs: Set<Int64> = []
+    /// 合并鼠标滚轮产生的离散 phase，避免滚动期间反复让整棵列表重新求值。
+    @State private var listInteractionController = ListInteractionSuppressionController()
     /// Repo List 窗口会话级事实源。
     ///
     /// Explore / Activity 的 View 会随 `selectedPage` 条件分支创建和销毁；这里只持有
@@ -569,35 +572,12 @@ struct RepoListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .toast(message: $toastMessage, icon: "doc.on.clipboard")
         .toast(message: $repoPinToastMessage, icon: "pin.fill")
-        .toast(message: $shareCompletionMessage, icon: "link.circle")
         .sheet(item: $gitHubStarListOAuthRestrictedRepo) { repo in
             GitHubStarListOAuthRestrictionSheet(repo: repo)
                 .appLocaleEnvironment()
         }
-        .sheet(item: $sharePresentation) { presentation in
-            RepoShareTaskSheet(
-                taskStore: shareTaskStore,
-                repoID: presentation.repoID,
-                onCancel: { shareTaskStore.cancel(repoID: presentation.repoID) },
-                onRetry: { retryShare(repoID: presentation.repoID) }
-            )
-            .id(presentation.repoID)
-            .appLocaleEnvironment()
-        }
         .sheet(item: $paywallContext) { context in
             ProPaywallSheet.hosted(context: context, dependencies: dependencies)
-        }
-        .sheet(item: $ruleEditorSheetItem) { item in
-            SmartCollectionRuleEditorSheet(
-                mode: item.mode,
-                onCancel: {
-                    ruleEditorSheetItem = nil
-                },
-                onSaved: {
-                    ruleEditorSheetItem = nil
-                }
-            )
-            .appLocaleEnvironment()
         }
         .sheet(item: $codeFlowSheetItem) { item in
             CodeFlowPanel(repo: item.repo)
@@ -609,21 +589,12 @@ struct RepoListView: View {
                 .id(item.id)
                 .appSheetRootEnvironment(dependencies)
         }
-        .onChange(of: shareTaskStore.latestCompletion) { _, completion in
-            guard let completion, sharePresentation?.repoID != completion.repoID else { return }
-            let key: String
-            switch completion.outcome {
-            case .success:
-                key = "repo.share.notification.successFormat"
-            case .failure:
-                key = "repo.share.notification.failureFormat"
-            }
-            shareCompletionMessage = String(format: String.l10n(key), completion.repoFullName)
-        }
         .onAppear {
             // Browser Plugin 请求可能先于主窗口恢复到达；窗口重新挂载时需要补消费
             // 已保存的 pendingRequest，否则用户关闭主窗口后点击 Open in Starcat 无响应。
             handleCompanionActionRequest(dependencies.companionActionDispatcher.pendingRequest)
+            // 提前懒加载 Explore 子 ViewModel（空间换时间），减少首次切到 Explore 的二次重建。
+            ensurePersistentExploreViewModels()
         }
         .onChange(of: dependencies.companionActionDispatcher.pendingRequest) { _, request in
             handleCompanionActionRequest(request)
@@ -987,19 +958,13 @@ struct RepoListView: View {
 
     /// Trending 页面 toolbar spec（W12 PR-4）：
     /// - leading 暂无（period picker 仍在中栏自绘 toolbar，period 是数据切片维度而非排序）；
-    /// - trailing 注入：[wiki / external / clone / share] +「多选按钮」。
-    ///   wiki / external / clone 派发 `selectedTrendingRepo` 单选项；多选按钮驱动
-    ///   `trendingMultiSelectionStore`，由 `TrendingView` 的行点击 toggle 选中状态。
-    /// - PR-4 followup：未登录态多选按钮 disable。批量 star/unstar 都需要 token，
-    ///   未登录直接 disable 比让用户点了再弹错误友好；如果 store 已经处于 active
-    ///   （比如登录后切到 trending 又登出），同帧把 store exit 兜底清掉 stale selection。
+    /// - trailing 只提供当前仓库的 external / clone 操作；分享位于详情 Hero；
+    ///   多选入口由 `TrendingView` 的中栏顶栏承载，与列表共享选择状态。
     @MainActor
     private func makeTrendingToolbarSpec() -> PageToolbarSpec {
-        let store = dependencies.trendingMultiSelectionStore
         let registry = dependencies.starredRegistry
-        let isAuthed = authSession.state.isAuthenticated
 
-        let trailing: AnyView = {
+        let trailing: AnyView? = {
             let selectionView: AnyView? = selectedTrendingRepo.map { repo in
                 let isStarred = registry.contains(ghRepoId: repo.ghRepoId)
                 let sel = ToolbarRepoSelection.from(
@@ -1014,22 +979,12 @@ struct RepoListView: View {
                         selectedRepoToolbarActions(
                             selection: sel,
                             codeFlowRepo: actionRepo.isPrivate ? nil : actionRepo,
-                            shareRepo: actionRepo,
-                            isShareAvailable: isStarred
+                            repoID: actionRepo.id
                         )
                     }
                 )
             }
-            return AnyView(
-                Group {
-                    selectionView
-                    MultiSelectButton(
-                        isActive: store.isActive,
-                        action: { store.toggle() },
-                        isDisabled: !isAuthed
-                    )
-                }
-            )
+            return selectionView
         }()
 
         return PageToolbarSpec(
@@ -1044,9 +999,7 @@ struct RepoListView: View {
     /// 2026-07-05：发现 / 热门 / 新发布 已接入统一多选，支持全部 6 种批量操作。
     @MainActor
     private func makeDiscoveryToolbarSpec() -> PageToolbarSpec {
-        let store = exploreMultiSelectionStore
         let registry = dependencies.starredRegistry
-        let isAuthed = authSession.state.isAuthenticated
 
         let trailing: AnyView? = {
             let selectionView: AnyView? = selectedDiscoveryRepo.map { repo in
@@ -1060,21 +1013,11 @@ struct RepoListView: View {
                     selectedRepoToolbarActions(
                         selection: selection,
                         codeFlowRepo: actionRepo.isPrivate ? nil : actionRepo,
-                        shareRepo: actionRepo,
-                        isShareAvailable: isStarred
+                        repoID: actionRepo.id
                     )
                 )
             }
-            return AnyView(
-                Group {
-                    selectionView
-                    MultiSelectButton(
-                        isActive: store.isActive,
-                        action: { store.toggle() },
-                        isDisabled: !isAuthed
-                    )
-                }
-            )
+            return selectionView
         }()
 
         return PageToolbarSpec(
@@ -1086,12 +1029,10 @@ struct RepoListView: View {
 
     /// Explore Weekly toolbar spec：
     /// - 单选动作来自 `WeeklySelectionService.selectedItem`;
-    /// - 多选按钮驱动 `weeklyMultiSelectionStore`,与 `WeeklyContentView` 行点击逻辑同源。
+    /// - 多选入口由 `WeeklyContentView` 的中栏顶栏承载。
     @MainActor
     private func makeWeeklyToolbarSpec() -> PageToolbarSpec {
-        let store = dependencies.weeklyMultiSelectionStore
         let registry = dependencies.starredRegistry
-        let isAuthed = authSession.state.isAuthenticated
 
         let selectionView: AnyView? = {
             guard let item = dependencies.weeklySelectionService.selectedItem else { return nil }
@@ -1108,43 +1049,20 @@ struct RepoListView: View {
                     selectedRepoToolbarActions(
                         selection: sel,
                         codeFlowRepo: item.isAvailable && !actionRepo.isPrivate ? actionRepo : nil,
-                        shareRepo: actionRepo,
-                        isShareAvailable: isStarred
+                        repoID: actionRepo.id
                     )
                 }
             )
         }()
 
-        let trailing = AnyView(
-            Group {
-                selectionView
-                if CuratedPublisherAccessPolicy.canAccess(userID: authSession.state.user?.id) {
-                    Button {
-                        openWindow(id: CuratedPublisherWindow.id)
-                    } label: {
-                        ToolbarIcon("star.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(Color(nsColor: .systemRed))
-                            .accessibilityLabel(Text("curatedPublisher.toolbar.open"))
-                    }
-                    .help("curatedPublisher.toolbar.open")
-                }
-                MultiSelectButton(
-                    isActive: store.isActive,
-                    action: { store.toggle() },
-                    isDisabled: !isAuthed
-                )
-            }
-        )
-
         return PageToolbarSpec(
             leadingPrimary: AnyView(globalFilterMenu()),
-            trailingPrimary: trailing,
+            trailingPrimary: selectionView,
             searchField: AnyView(smartSearchField())
         )
     }
 
-    /// Activity 页面 toolbar spec。Undo Star 分类支持多选。
+    /// Activity 页面 toolbar spec；Undo Star 的多选入口由其中栏顶栏承载。
     @MainActor
     private func makeActivityToolbarSpec() -> PageToolbarSpec {
         if selectedActivityCategory == .notification {
@@ -1156,7 +1074,6 @@ struct RepoListView: View {
             )
         }
         let registry = dependencies.starredRegistry
-        let isAuthed = authSession.state.isAuthenticated
 
         let selectionView: AnyView? = {
             guard let repo = selectedActivityItem?.repo else { return nil }
@@ -1170,59 +1087,24 @@ struct RepoListView: View {
                     selectedRepoToolbarActions(
                         selection: sel,
                         codeFlowRepo: repo.isPrivate ? nil : repo,
-                        shareRepo: repo,
-                        isShareAvailable: isStarred
+                        repoID: repo.id
                     )
                 }
             )
         }()
 
-        let trailing = AnyView(
-            Group {
-                selectionView
-                if selectedActivityCategory == .undoStar {
-                    let store = dependencies.undoStarMultiSelectionStore
-                    MultiSelectButton(
-                        isActive: store.isActive,
-                        action: { store.toggle() },
-                        isDisabled: !isAuthed
-                    )
-                }
-            }
-        )
-
         return PageToolbarSpec(
             leadingPrimary: AnyView(globalFilterMenu()),
-            trailingPrimary: trailing,
+            trailingPrimary: selectionView,
             searchField: AnyView(smartSearchField())
         )
     }
 
-    /// Manage 页面 toolbar：filter / multiSelect / external / clone / search。
-    /// 排序与 Stars 同步已迁到列表顶栏 `manageFilterBar`（对齐 Weekly / Activity）。
+    /// Manage 页面 toolbar：filter / external / clone / search。
+    /// 排序、Stars 同步与多选入口统一由列表顶栏 `manageFilterBar` 承载。
     @MainActor
     private func makeManageToolbarSpec() -> PageToolbarSpec {
-        let leading = AnyView(
-            Group {
-                Button {
-                    openSmartCollectionEditor()
-                } label: {
-                    ToolbarIcon("gearshape.circle")
-                }
-                .disabled(!canOpenSmartCollectionEditor)
-                .help("smartCollections.editor.help")
-
-                globalFilterMenu(includesStatusFilter: true)
-
-                // W12 PR-5：Manage 多选按钮直接驱动 manageMultiSelectionStore（替代原
-                // viewModel.toggleMultiSelectMode），与 trending/weekly/activity 同款机制。
-                // Manage 已登录是隐含前提（库内 100% 已 star），不传 isDisabled。
-                MultiSelectButton(
-                    isActive: dependencies.manageMultiSelectionStore.isActive,
-                    action: { dependencies.manageMultiSelectionStore.toggle() }
-                )
-            }
-        )
+        let leading = AnyView(globalFilterMenu(includesStatusFilter: true))
 
         let trailing: AnyView? = {
             guard let repo = viewModel.selectedRepo else { return nil }
@@ -1236,8 +1118,7 @@ struct RepoListView: View {
                     selectedRepoToolbarActions(
                         selection: selection,
                         codeFlowRepo: repo.isPrivate ? nil : repo,
-                        shareRepo: repo,
-                        isShareAvailable: isStarred
+                        repoID: repo.id
                     )
                 }
             )
@@ -1466,33 +1347,12 @@ struct RepoListView: View {
         }
     }
 
-    private var canOpenSmartCollectionEditor: Bool {
-        if case .userSmartCollection(let id) = viewModel.selection {
-            return viewModel.userSmartCollection(id: id) != nil
-        }
-        switch viewModel.selection {
-        case .allStars, .allLanguages, .untagged, .language, .tag:
-            return true
-        case .myProjects, .library, .trending, .smartCollectionsHome, .smartCollection,
-             .githubStarList, .githubStarListUngrouped:
-            return false
-        case .userSmartCollection:
-            return false
-        }
-    }
-
-    /// 当前选中 repo 的 toolbar 操作组。
-    ///
-    /// Share 已从详情 hero 迁到 toolbar。公开仓库始终可复制基础 HTTPS 链接；只有
-    /// AI 分享增强项继续要求登录且仓库已 Star。私有仓库不生成可被服务端抓取的链接。
-    /// Trending / Weekly 的临时 Repo 自身 `isStarred` 恒为 false，所以调用方仍用
-    /// `StarredRegistry` 派生 `isShareAvailable` 作为 AI 分享可用性。
+    /// 当前选中 repo 的外链 / Clone toolbar 操作组；分享由右侧详情 Hero 承载。
     @ViewBuilder
     private func selectedRepoToolbarActions(
         selection: ToolbarRepoSelection,
         codeFlowRepo: Repo?,
-        shareRepo: Repo,
-        isShareAvailable: Bool
+        repoID: Int64
     ) -> some View {
         let actionIdentity = toolbarActionIdentity(selection: selection, repo: codeFlowRepo)
         ExternalLinksMenu(
@@ -1500,32 +1360,12 @@ struct RepoListView: View {
             codeFlowRepo: codeFlowRepo,
             codebaseMemoryRepo: codeFlowRepo,
             onOpenCodeFlow: openCodeFlow(for:),
-            onOpenCodebaseMemory: openCodebaseMemory(for:)
+            onOpenCodebaseMemory: openCodebaseMemory(for:),
+            onCloneCopied: { toastKey in
+                RepoDetailToastRequest.post(repoID: repoID, messageKey: toastKey)
+            }
         )
         .id(actionIdentity)
-        CloneMenu(selection: selection) { toastKey in
-            RepoDetailToastRequest.post(repoID: shareRepo.id, messageKey: toastKey)
-        }
-        if !shareRepo.isPrivate,
-           let deepLink = RepositoryDeepLink(fullName: shareRepo.fullName, repositoryID: shareRepo.id) {
-            let canCreateAIShare = authSession.state.isAuthenticated && isShareAvailable
-            let targetRepo = toolbarShareRepo(shareRepo, isStarred: canCreateAIShare)
-            RepoShareMenu(
-                publicURL: deepLink.publicURL,
-                isSharing: shareTaskStore.isRunning(repoID: targetRepo.id),
-                isShared: shareTaskStore.isSuccessful(repoID: targetRepo.id),
-                canCreateAIShare: canCreateAIShare,
-                createAIShare: {
-                    presentOrStartShare(targetRepo)
-                },
-                onLinkCopied: {
-                    RepoDetailToastRequest.post(
-                        repoID: shareRepo.id,
-                        messageKey: "repo.share.link.copied"
-                    )
-                }
-            )
-        }
     }
 
     /// Toolbar 菜单由 AppKit 承载，SwiftUI 切换选中 repo 时可能复用旧 NSMenu action。
@@ -1533,86 +1373,6 @@ struct RepoListView: View {
     private func toolbarActionIdentity(selection: ToolbarRepoSelection, repo: Repo?) -> String {
         let repoIdentity = repo.map { "\($0.id):\($0.fullName)" } ?? "none"
         return "\(selection.fullName)|\(repoIdentity)"
-    }
-
-    /// Ephemeral repo 不持有 star 状态；传给分享流程前补齐真实状态，保持与旧 hero
-    /// `trailingActions` 的语义一致。
-    private func toolbarShareRepo(_ repo: Repo, isStarred: Bool) -> Repo {
-        var copy = repo
-        copy.isStarred = isStarred
-        return copy
-    }
-
-    /// 创建或恢复 repo 自己的分享任务。
-    ///
-    /// 先同步写入 task store 再设置 presentation，保证 Sheet 下一帧立即出现；任务持有
-    /// 点击时的 Repo 值快照，因此 selectedRepo 随后切换也不会改变请求目标。
-    @MainActor
-    private func presentOrStartShare(_ repo: Repo) {
-        do {
-            // 分享页依赖 AI 摘要内容；先做 Pro preflight，免费用户仍走统一付费墙。
-            try dependencies.entitlementGate.requirePro(.aiSummary)
-        } catch let error as EntitlementGateError {
-            paywallContext = ProPaywallContext(feature: error.feature, message: error.localizedDescription)
-            return
-        } catch {
-            paywallContext = ProPaywallContext(feature: .aiSummary, message: error.localizedDescription)
-            return
-        }
-
-        shareTaskStore.start(repo: repo, operations: shareOperations)
-        sharePresentation = RepoSharePresentation(repoID: repo.id)
-    }
-
-    /// 失败重试复用原任务保存的 Repo 快照，不读取当前列表选择。
-    @MainActor
-    private func retryShare(repoID: Int64) {
-        do {
-            try dependencies.entitlementGate.requirePro(.aiSummary)
-        } catch let error as EntitlementGateError {
-            paywallContext = ProPaywallContext(feature: error.feature, message: error.localizedDescription)
-            return
-        } catch {
-            paywallContext = ProPaywallContext(feature: .aiSummary, message: error.localizedDescription)
-            return
-        }
-
-        shareTaskStore.retry(repoID: repoID, operations: shareOperations)
-    }
-
-    /// 生产环境操作直接桥接既有 service。摘要读取必须走 cachedInsightFast，复用其
-    /// “当前语言优先、缺失时回退最近摘要”的规则，同时避免 makeSource/hash 的耗时准备。
-    @MainActor
-    private var shareOperations: RepoShareOperations {
-        RepoShareOperations(
-            cachedInsight: { repo in
-                try await dependencies.repoAIInsightService.cachedInsightFast(for: repo)
-            },
-            generateInsight: { repo in
-                (try await dependencies.repoAIInsightService.generateInsight(for: repo)).insight
-            },
-            createShare: { request in
-                try await dependencies.shareAPI.shareRepo(request: request)
-            }
-        )
-    }
-
-    private func openSmartCollectionEditor() {
-        let mode: SmartCollectionRuleEditorSheet.Mode
-        if case .userSmartCollection(let id) = viewModel.selection,
-           let collection = viewModel.userSmartCollection(id: id) {
-            mode = .edit(collection)
-        } else if let rule = viewModel.makeRuleFromCurrentManageFilters() {
-            mode = .create(defaultName: defaultSmartCollectionName, initialRule: rule)
-        } else {
-            return
-        }
-        ruleEditorSheetItem = SmartCollectionRuleEditorItem(mode: mode)
-    }
-
-    private var defaultSmartCollectionName: String {
-        // 创建时不用 sidebar 分类名（如「全部仓库」）当集合名，避免标题与侧边栏入口混淆。
-        String.l10n("smartCollections.new.defaultName")
     }
 
     /// 中栏主体内容。
@@ -1625,7 +1385,7 @@ struct RepoListView: View {
     private var contentBody: some View {
         @Bindable var vm = viewModel
 
-        Group {
+        ZStack(alignment: .topLeading) {
             if selectedPage == .trending {
                 ExploreView(
                     trendingRepository: trendingRepository,
@@ -1645,6 +1405,7 @@ struct RepoListView: View {
                     selectedWeeklyLanguage: $selectedWeeklyLanguage,
                     onRepoCountChange: { navigationMetrics.applyTrendingRepoCount($0) }
                 )
+                .transition(.opacity)
             } else if selectedPage == .activity {
                 ActivityView(
                     viewModel: $activityViewModel,
@@ -1662,11 +1423,14 @@ struct RepoListView: View {
                         }
                     }
                 )
+                .transition(.opacity)
             } else {
                 // Manage：顶栏（排序 + 同步）始终可见，排序作用于当前侧边栏分类子集。
                 manageCategoryContent(vm)
+                    .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: selectedPage)
     }
 
     /// 账号 / 用户数据库边界必须硬失效，禁止跨用户复用 Explore / Activity 快照。
@@ -1675,6 +1439,27 @@ struct RepoListView: View {
         trendingViewModel = nil
         weeklyViewModel = nil
         activityViewModel = nil
+    }
+
+    /// 提前懒加载 Explore 子 ViewModel（空间换时间）：首次切到 Explore 时 ViewModel 已就位，
+    /// 避免先渲染骨架/空态再二次重建视图树。init 只是赋值依赖，代价极小。
+    private func ensurePersistentExploreViewModels() {
+        if trendingViewModel == nil,
+           let trendingRepository,
+           let githubAPIClient {
+            trendingViewModel = TrendingViewModel(
+                repository: trendingRepository,
+                githubAPIClient: githubAPIClient
+            )
+        }
+        if weeklyViewModel == nil {
+            weeklyViewModel = WeeklyContentViewModel(
+                api: dependencies.weeklyAPI,
+                selectionService: dependencies.weeklySelectionService,
+                languageStore: dependencies.weeklyLanguageStore,
+                bulkRepository: dependencies.weeklyBulkRepository
+            )
+        }
     }
 
     /// Manage 全部分类共用：列表顶栏 + 下方内容（横幅 / 列表 / 骨架 / 空态）。
@@ -1793,6 +1578,16 @@ struct RepoListView: View {
             } else {
                 manageFilterBar(sortOption: $bindableVM.sortOption)
             }
+            if viewModel.selection != .smartCollectionsHome, !viewModel.languageFilterTitles.isEmpty {
+                // 系统标题会截断；所有仓库分类在中栏完整展示两层条件，包括智能集合详情。
+                Text(viewModel.languageFilterTitles.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, ManageListFilterBarMetrics.horizontalPadding)
+                    .padding(.bottom, ManageListFilterBarMetrics.bottomPadding)
+            }
             Divider()
         }
         // 顶栏背景透明，让外层 `detailHeroTintBackground` 光晕能透到标题 / 排序行背后。
@@ -1807,7 +1602,7 @@ struct RepoListView: View {
         }
     }
 
-    /// Manage 列表顶栏：当前分类内排序 + 同步于 + Stars 同步按钮（对齐 Weekly / Activity）。
+    /// Manage 列表顶栏：排序 + 同步于 + Stars 同步 + 多选；仅仓库列表分类使用。
     private func manageFilterBar(sortOption: Binding<RepoSortOption>) -> some View {
         HStack(spacing: 10) {
             UnifiedSortMenu(
@@ -1826,6 +1621,10 @@ struct RepoListView: View {
                     .foregroundStyle(.secondary)
             }
             StarsSyncButton()
+            MultiSelectButton(
+                isActive: dependencies.manageMultiSelectionStore.isActive,
+                action: { dependencies.manageMultiSelectionStore.toggle() }
+            )
         }
         .padding(.horizontal, ManageListFilterBarMetrics.horizontalPadding)
         .padding(.top, ManageListFilterBarMetrics.topPadding)
@@ -2083,6 +1882,30 @@ struct RepoListView: View {
         // 全局唯一，不会与 trending / weekly / activity 的 id 域冲突。
         return ScrollViewReader { proxy in
             List {
+                if let pinned = viewModel.temporaryPinnedRepo,
+                   !viewModel.items.contains(where: { $0.id == pinned.id }) {
+                    // 搜索 / 外部定位的临时置顶卡片：只做定位跳转，不参与多选 toggle，
+                    // 也不参与分页计数（它是独立于 items 的临时行）。
+                    // 一旦该 repo 后续被滚动加载进 items，就交给 ForEach 渲染，避免重复 id。
+                    Button {
+                        selection.wrappedValue = pinned.id
+                    } label: {
+                        ManageRepoRowContent(
+                            repo: pinned,
+                            viewModel: viewModel,
+                            aiSummaryAvailability: aiSummaryAvailability,
+                            isSelected: selection.wrappedValue == pinned.id
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .id(pinned.id)
+                    .contextMenu {
+                        repoContextMenu(for: pinned)
+                    }
+                }
                 ForEach(indexedItems) { item in
                     let repo = item.repo
                     Button {
@@ -2095,6 +1918,8 @@ struct RepoListView: View {
                             ))
                         } else {
                             selection.wrappedValue = repo.id
+                            // 点选普通列表卡片 = 离开「置顶定位」状态，清除临时置顶。
+                            viewModel.clearTemporaryPinnedRepo()
                         }
                     } label: {
                         // 行级状态 / badge 由独立子 View 观察，避免任意 Health/OpenSSF 快照更新
@@ -2151,6 +1976,13 @@ struct RepoListView: View {
             // 透出底层 `DetailHeroTintBackground`；系统 List 默认实色底会盖住顶栏光晕。
             .scrollContentBackground(.hidden)
             .alternatingRowBackgrounds()
+            .onScrollPhaseChange { _, newPhase in
+                listInteractionController.update(isActive: newPhase != .idle)
+            }
+            .environment(\.starcatListInteractionSuppressed, listInteractionController.isSuppressed)
+            .onDisappear {
+                listInteractionController.cancel()
+            }
             // 阅读状态 v2（2026-06-12）：订阅 .repoStatusDidChange，详情页改 status 后
             // HomeViewModel.statusMap 局部更新 → UnifiedRepoRow.readStatus 重渲染 → 角标即时刷新。
             // task 与 view lifetime 绑定（view 退出自动 cancel），不会泄漏 NotificationCenter observer。
@@ -2166,7 +1998,10 @@ struct RepoListView: View {
                 await observeAISummaryChanges()
             }
             // 知识库状态观察已上移到 HomeView：空库 / Smart Collections 总览时这里没有 List。
-            .task(id: viewModel.items.map(\.id)) {
+            .task(id: RepoBadgeCacheLoadIdentity(
+                itemsRevision: viewModel.itemsRevision,
+                itemCount: viewModel.items.count
+            )) {
                 await reloadVisibleBadgeCaches(forceReload: false)
             }
             .task {
@@ -2197,7 +2032,9 @@ struct RepoListView: View {
             .task(id: viewModel.repoListScrollRequestRevision) {
                 guard viewModel.repoListScrollRequestRevision > 0 else { return }
                 guard let id = selection.wrappedValue else { return }
-                guard viewModel.items.contains(where: { $0.id == id }) else { return }
+                // 目标可能是「已加载行」或「置顶卡片」；置顶卡片不在 items 里，也要能定位。
+                guard viewModel.items.contains(where: { $0.id == id })
+                        || viewModel.temporaryPinnedRepo?.id == id else { return }
                 await Task.yield()
                 if reduceMotion {
                     proxy.scrollTo(id, anchor: .center)
@@ -2243,9 +2080,36 @@ struct RepoListView: View {
 
     @MainActor
     private func reloadVisibleBadgeCaches(forceReload: Bool) async {
-        let repoIDs = viewModel.items.map(\.id)
+        let itemsRevision = viewModel.itemsRevision
+        let itemCount = viewModel.items.count
+        guard itemCount > 0 else {
+            badgeCacheLoadedItemsRevision = itemsRevision
+            badgeCacheLoadedItemCount = 0
+            badgeCacheVisibleRepoIDs.removeAll(keepingCapacity: true)
+            return
+        }
+
+        let startIndex: Int
+        if forceReload ||
+            badgeCacheLoadedItemsRevision != itemsRevision ||
+            badgeCacheLoadedItemCount > itemCount {
+            startIndex = 0
+        } else {
+            startIndex = badgeCacheLoadedItemCount
+        }
+        let repoIDs = viewModel.items.dropFirst(startIndex).map(\.id)
         guard !repoIDs.isEmpty else { return }
         await reloadBadgeCaches(for: repoIDs, forceReload: forceReload)
+        // `.task(id:)` 会在新页到来时取消旧任务。只有未取消的完整加载才能推进前缀，
+        // 否则下一任务必须从旧位置重试，避免首屏徽章因取消而永久缺失。
+        guard !Task.isCancelled else { return }
+        badgeCacheLoadedItemsRevision = itemsRevision
+        badgeCacheLoadedItemCount = itemCount
+        if startIndex == 0 {
+            badgeCacheVisibleRepoIDs = Set(repoIDs)
+        } else {
+            badgeCacheVisibleRepoIDs.formUnion(repoIDs)
+        }
     }
 
     @MainActor
@@ -2270,7 +2134,7 @@ struct RepoListView: View {
             guard let repoID = note.userInfo?["repoId"] as? Int64 else { continue }
             // 即使更新行当前不可见，也可能改变某个已缓存分类的筛选成员关系或排序。
             viewModel.invalidateDatabaseSnapshotsForHealthSignalChange()
-            guard viewModel.items.contains(where: { $0.id == repoID }) else { continue }
+            guard badgeCacheVisibleRepoIDs.contains(repoID) else { continue }
             await dependencies.repoHealthStore.loadCachedSnapshots(for: [repoID], forceReload: true)
         }
     }
@@ -2282,7 +2146,7 @@ struct RepoListView: View {
             guard !Task.isCancelled else { break }
             guard let repoID = note.userInfo?["repoId"] as? Int64 else { continue }
             viewModel.invalidateDatabaseSnapshotsForOpenSSFSignalChange()
-            guard viewModel.items.contains(where: { $0.id == repoID }) else { continue }
+            guard badgeCacheVisibleRepoIDs.contains(repoID) else { continue }
             await dependencies.openSSFScoreStore.loadCachedScores(for: [repoID], forceReload: true)
         }
     }
@@ -2469,24 +2333,6 @@ struct RepoListView: View {
     }
 
     private var manageNavigationPresentation: ManageNavigationPresentation {
-        let filters = viewModel.effectiveGlobalFilterState
-        var selectedLanguageTitles: [String] = []
-        switch filters.repoLanguageFilter {
-        case .all:
-            break
-        case .uncategorized:
-            selectedLanguageTitles.append(String.l10n("trending.language.uncategorized"))
-        case .language(let language):
-            selectedLanguageTitles.append(LanguageDisplayName.shortened(for: language))
-        }
-        for language in filters.globalFilterLanguages {
-            let title = LanguageDisplayName.shortened(for: language)
-            if !selectedLanguageTitles.contains(where: {
-                $0.caseInsensitiveCompare(title) == .orderedSame
-            }) {
-                selectedLanguageTitles.append(title)
-            }
-        }
         let selectedTagTitles = viewModel.tags
             .filter { viewModel.selectedTagIds.contains($0.id) }
             .map(\.name)
@@ -2497,7 +2343,7 @@ struct RepoListView: View {
         return ManageNavigationPresentation.make(
             selection: viewModel.selection,
             selectionTitle: localizedTitle(for: viewModel.selection),
-            selectedLanguageTitles: selectedLanguageTitles,
+            selectedLanguageTitles: viewModel.languageFilterTitles,
             selectedTagTitles: selectedTagTitles,
             searchTitle: searchTitle
         )
@@ -2517,13 +2363,21 @@ struct RepoListView: View {
             topics: dependencies.exploreCatalogStore.displayTopics,
             platforms: dependencies.exploreCatalogStore.displayPlatforms
         )
+        // toolbar 全局筛选语言追加到标题尾部，与左侧语言导航区分。
+        var thirdLevelTitle = presentation.thirdLevelTitle
+        let globalLanguageTitles = settings.globalFilterLanguages.map {
+            LanguageDisplayName.shortened(for: $0)
+        }
+        if !globalLanguageTitles.isEmpty {
+            thirdLevelTitle = ([thirdLevelTitle] + globalLanguageTitles).joined(separator: " · ")
+        }
         let prefix = [
             String.l10n("nav.trending"),
             selectedExploreMode.localizedTitle
         ].joined(separator: Self.navigationBreadcrumbSeparator)
         return highlightedNavigationTitle(
             prefix: prefix,
-            thirdLevelTitle: presentation.thirdLevelTitle
+            thirdLevelTitle: thirdLevelTitle
         )
     }
 
@@ -2742,12 +2596,8 @@ struct RepoListView: View {
     private func globalLanguageBinding(for language: String) -> Binding<Bool> {
         Binding(
             get: {
-                let filters = viewModel.effectiveGlobalFilterState
-                if case .language(let selectedLanguage) = filters.repoLanguageFilter,
-                   selectedLanguage.caseInsensitiveCompare(language) == .orderedSame {
-                    return true
-                }
-                return filters.globalFilterLanguages.contains {
+                // 全局筛选语言只看自己的多选字段，不再读左侧单选的 repoLanguageFilter。
+                return viewModel.effectiveGlobalFilterState.globalFilterLanguages.contains {
                     $0.caseInsensitiveCompare(language) == .orderedSame
                 }
             },
@@ -2847,8 +2697,7 @@ struct RepoListView: View {
                 }
             }
 
-            if viewModel.effectiveGlobalFilterState.repoLanguageFilter != .all
-                || !viewModel.effectiveGlobalFilterState.globalFilterLanguages.isEmpty {
+            if !viewModel.effectiveGlobalFilterState.globalFilterLanguages.isEmpty {
                 Button {
                     viewModel.clearLanguageFiltersFromUser()
                 } label: {
@@ -3047,6 +2896,8 @@ private struct ManageRepoRowContent: View {
     var body: some View {
         let project = viewModel.projectRelation(for: repo.id)
         let growth = viewModel.localStarGrowth30Days(for: repo.id)
+        // 知识库整栏都是已入库项，红心冗余；绿勾与探索一致，区分已/未 Star。
+        let isKnowledgeLibraryList = Self.isKnowledgeLibrarySelection(viewModel.selection)
         UnifiedRepoRow(
             card: repo.asCardData(
                 inlineMetadata: project.map(projectMetadata),
@@ -3059,12 +2910,23 @@ private struct ManageRepoRowContent: View {
             isSelected: isSelected,
             isPinned: viewModel.isRepoPinned(repo.id),
             semanticHit: viewModel.semanticHit(for: repo.id),
-            showStarredCheckmark: viewModel.selection == .myProjects,
+            showStarredCheckmark: viewModel.selection == .myProjects || isKnowledgeLibraryList,
+            showLibraryBadge: !isKnowledgeLibraryList,
             hasAISummary: aiSummaryAvailability.contains(repo.id)
         )
     }
 
-    /// 在 fullName 同行压成一个稳定徽章，避免为项目场景复制整张 Repo 卡片。
+    /// 与 `HomeViewModel.isKnowledgeLibrarySelection` 对齐：侧栏「知识库」+ 系统集合 library。
+    private static func isKnowledgeLibrarySelection(_ item: SidebarItem) -> Bool {
+        switch item {
+        case .library, .smartCollection(.library):
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 标题行用图标表达项目归属、颜色表达可见性，完整关系与权限只放进悬停提示。
     private func projectMetadata(_ project: UserProject) -> RepoCardInlineMetadata {
         let affiliation: String
         let systemImage: String
@@ -3084,19 +2946,29 @@ private struct ManageRepoRowContent: View {
         }
         let visibility = String.l10n("list.filter.project.visibility.\(project.visibility.rawValue)")
         let permission = String.l10n("list.filter.project.permission.\(project.permission.rawValue)")
+        let tint: RepoCardInlineMetadataTint
+        switch project.visibility {
+        case .public: tint = .secondary
+        case .private: tint = .orange
+        case .internal: tint = .purple
+        }
         return RepoCardInlineMetadata(
             systemImage: systemImage,
-            text: [affiliation, visibility, permission].joined(separator: " · ")
+            text: [affiliation, visibility, permission].joined(separator: " · "),
+            tint: tint,
+            iconOnly: true
         )
     }
 
     /// 30 天增长只来自本机已有历史；历史不足时 ViewModel 返回 nil，卡片不伪造 0。
+    /// 胶囊只放有符号数字，时间口径留在悬停提示，避免重复短语挤占列表宽度。
     private func growthMetadata(_ growth: Int) -> RepoCardInlineMetadata {
         let value = growth > 0 ? "+\(growth.formattedShort)" : growth.formattedShort
         return RepoCardInlineMetadata(
             systemImage: growth >= 0 ? "chart.line.uptrend.xyaxis" : "chart.line.downtrend.xyaxis",
-            text: String(format: String.l10n("project.card.growth30d"), value),
-            tint: growth > 0 ? .green : .secondary
+            text: value,
+            tint: growth > 0 ? .green : .secondary,
+            helpText: String(format: String.l10n("project.card.growth30d"), value)
         )
     }
 }

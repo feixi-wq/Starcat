@@ -4,8 +4,8 @@
 //
 //  Agent 独立 Workspace Window 的三栏内容视图。
 //
-//  本视图是所有内置 Agent 的唯一工作台壳子。三栏结构对齐 RAG 工作台：`HSplitView`
-//  承载 Agent rail / Run Surface / Artifact Inspector，左右栏可拖拽并跨窗口重开恢复。
+//  本视图是所有内置 Agent 的唯一工作台壳子。三栏结构对齐 RAG 工作台：原生
+//  Sidebar / Run Surface / Inspector 组合，左右栏可拖拽并跨窗口重开恢复。
 //  Agent 只提供定义与运行事实，页面结构保持统一，避免 Weekly / Repo Insight 等
 //  能力各自长出一套不可复用的 UI。
 //
@@ -15,21 +15,27 @@ import SwiftUI
 
 /// Agent 工作台三栏尺寸约束与持久化键。
 ///
-/// 与 RAG 工作台共用同一套 `HSplitView` 口径：左右栏可拖拽，中栏保留稳定阅读空间。
+/// 与 RAG 工作台共用同一套原生 Sidebar / Inspector 口径：左右栏可拖拽，中栏保留稳定阅读空间。
 /// 持久化值读取时必须钳制，避免旧 defaults 或手工改键后恢复出挤掉 Run Surface 的布局。
 enum AgentWorkspaceLayoutMetrics {
     static let leftMinimumWidth: CGFloat = 250
     static let leftIdealWidth: CGFloat = 312
     static let leftMaximumWidth: CGFloat = 380
 
+    // 这是窗口级宽度预算，不直接作为 Run Surface 的 frame 下限。NavigationSplitView
+    // 与 Inspector 会分别协商列宽；把 480pt 再挂到中栏会在最小窗口拖拽时形成冲突，
+    // 让系统通过裁切边缘列满足所有局部约束。
     static let runMinimumWidth: CGFloat = 480
 
     static let rightMinimumWidth: CGFloat = 320
-    static let rightIdealWidth: CGFloat = 420
+    // 首次打开保持紧凑；用户拖拽后的真实宽度由 Inspector 栏内测量写回并优先恢复。
+    static let rightDefaultWidth = rightMinimumWidth
     static let rightMaximumWidth: CGFloat = 520
 
-    static let leftWidthDefaultsKey = "AgentWorkspace.LeftColumnWidth"
-    static let rightWidthDefaultsKey = "AgentWorkspace.RightColumnWidth"
+    // Window Scene 与旧 AppKit 窗口的布局时序不同，左栏不能复用迁移前的宽度记录。
+    static let leftWidthDefaultsKey = "AgentWorkspace.SceneV2.LeftColumnWidth"
+    // v2 的 HSplitView 测量没有稳定落盘；v3 由原生 Inspector 在栏内直接写回真实宽度。
+    static let rightWidthDefaultsKey = "AgentWorkspace.SceneV3.RightColumnWidth"
 
     static func clampedLeftWidth(_ width: Double) -> CGFloat {
         min(max(CGFloat(width), leftMinimumWidth), leftMaximumWidth)
@@ -54,23 +60,6 @@ struct AgentRuntimeKnowledgeConfigurationSnapshot: Equatable {
         backendConfiguration = settings.ragBackendConfiguration
         retrievalSettings = settings.ragRetrievalSettings
         rerankConfiguration = settings.ragRerankConfiguration
-    }
-}
-
-/// 只测量 `HSplitView` 最终分配的实际栏宽；默认值 0 代表该栏当前未挂载或已折叠。
-private struct AgentWorkspaceLeftWidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct AgentWorkspaceRightWidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -107,10 +96,11 @@ struct AgentWorkspaceView: View {
     @AppStorage(AgentWorkspaceLayoutMetrics.leftWidthDefaultsKey)
     private var persistedLeftColumnWidth = Double(AgentWorkspaceLayoutMetrics.leftIdealWidth)
     @AppStorage(AgentWorkspaceLayoutMetrics.rightWidthDefaultsKey)
-    private var persistedRightColumnWidth = Double(AgentWorkspaceLayoutMetrics.rightIdealWidth)
+    private var persistedRightColumnWidth = Double(AgentWorkspaceLayoutMetrics.rightDefaultWidth)
     @State private var viewModel = AgentWorkspaceViewModel()
     @State private var composerContentHeight: CGFloat = 0
     @State private var isComposerContextExpanded = false
+    @State private var contextPickerInteractionController = ListInteractionSuppressionController()
     /// 拖动期间只更新布局测量值，停止变化后再落盘，避免每个 mouse-drag 事件都写 UserDefaults。
     @State private var lastMeasuredLeftColumnWidth: CGFloat?
     @State private var lastMeasuredRightColumnWidth: CGFloat?
@@ -125,7 +115,7 @@ struct AgentWorkspaceView: View {
     /// 运行中的 Runtime 必须保持冻结；设置变更延后到当前 run 结束再装配。
     @State private var hasPendingKnowledgeConfigurationRefresh = false
     @FocusState private var isContextPickerSearchFocused: Bool
-    let chromeState: WorkspaceChromeState
+    @Bindable var chromeState: WorkspaceChromeState
 
     private var restoredLeftColumnWidth: CGFloat {
         AgentWorkspaceLayoutMetrics.clampedLeftWidth(persistedLeftColumnWidth)
@@ -140,48 +130,51 @@ struct AgentWorkspaceView: View {
     }
 
     var body: some View {
-        HSplitView {
-            if !chromeState.isLeftColumnCollapsed {
-                agentRail
-                    .frame(
-                        minWidth: AgentWorkspaceLayoutMetrics.leftMinimumWidth,
-                        idealWidth: restoredLeftColumnWidth,
-                        maxWidth: AgentWorkspaceLayoutMetrics.leftMaximumWidth
-                    )
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(
-                                key: AgentWorkspaceLeftWidthPreferenceKey.self,
-                                value: proxy.size.width
-                            )
-                        }
+        NavigationSplitView(columnVisibility: $chromeState.leftColumnVisibility) {
+            agentRail
+                .navigationSplitViewColumnWidth(
+                    min: AgentWorkspaceLayoutMetrics.leftMinimumWidth,
+                    ideal: restoredLeftColumnWidth,
+                    max: AgentWorkspaceLayoutMetrics.leftMaximumWidth
+                )
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onChange(of: proxy.size.width, initial: true) { _, width in
+                                scheduleLeftWidthPersistence(width)
+                            }
                     }
+                }
+                // NavigationSplitView 的 Sidebar 是独立 preference 边界，尺寸不能再向
+                // 根视图上传；在列内直接监听 GeometryReader，才能可靠写回 @AppStorage。
+        } detail: {
+            GeometryReader { proxy in
+                runSurface
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
             }
-
-            runSurface
-                .frame(minWidth: AgentWorkspaceLayoutMetrics.runMinimumWidth)
-                .layoutPriority(1)
-
-            if !chromeState.isRightColumnCollapsed {
-                artifactInspector
-                    .frame(
-                        minWidth: AgentWorkspaceLayoutMetrics.rightMinimumWidth,
-                        idealWidth: restoredRightColumnWidth,
-                        maxWidth: AgentWorkspaceLayoutMetrics.rightMaximumWidth
-                    )
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(
-                                key: AgentWorkspaceRightWidthPreferenceKey.self,
-                                value: proxy.size.width
-                            )
-                        }
+            // 中栏只填充 NavigationSplitView 已分配的尺寸，不把内容固有宽度带回三栏协商；
+            // 否则在最小窗口拖动 Inspector 时，SwiftUI 会反复重算布局并导致主线程卡死。
+        }
+        // 任务检查器是语义明确的 trailing inspector。使用系统 Inspector 后，宽度
+        // 约束直接进入分栏控制器，不再依赖 HSplitView 对普通 idealWidth 的布局猜测。
+        .inspector(isPresented: $chromeState.isRightColumnPresented) {
+            artifactInspector
+                .inspectorColumnWidth(
+                    min: AgentWorkspaceLayoutMetrics.rightMinimumWidth,
+                    ideal: restoredRightColumnWidth,
+                    max: AgentWorkspaceLayoutMetrics.rightMaximumWidth
+                )
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onChange(of: proxy.size.width, initial: true) { _, width in
+                                scheduleRightWidthPersistence(width)
+                            }
                     }
-            }
+                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 6)
-        .padding(.bottom, 6)
         .background(Color(nsColor: .windowBackgroundColor))
         .defaultCursorShield()
         .task {
@@ -259,14 +252,7 @@ struct AgentWorkspaceView: View {
             hasPendingKnowledgeConfigurationRefresh = false
             configureAgentRuntime()
         }
-        .animation(.easeInOut(duration: 0.16), value: chromeState.isLeftColumnCollapsed)
         .animation(.easeInOut(duration: 0.16), value: chromeState.isRightColumnCollapsed)
-        .onPreferenceChange(AgentWorkspaceLeftWidthPreferenceKey.self) { width in
-            scheduleLeftWidthPersistence(width)
-        }
-        .onPreferenceChange(AgentWorkspaceRightWidthPreferenceKey.self) { width in
-            scheduleRightWidthPersistence(width)
-        }
         .onDisappear {
             // 用户可能拖完立即关闭窗口；同步提交最后测量值，不能依赖 debounce 任务来得及执行。
             persistLastMeasuredWidths()
@@ -591,7 +577,6 @@ struct AgentWorkspaceView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
     }
 
     /// 工作台胶囊标识（Beta / Preview 等），与左侧 Agent 列表行内 Preview 标识同构。
@@ -1275,6 +1260,12 @@ struct AgentWorkspaceView: View {
         let totalCount = viewModel.repositoryPickerTotalCount
         let matchCount = viewModel.repositoryPickerMatchCount
         let isTruncated = viewModel.isRepositoryPickerTruncated
+        // 行只接收本轮展示所需的值，避免滚动创建行时重复扫描选择数组或读取整个 ViewModel。
+        let selectedRepoIDs = Set(viewModel.selectedRepoContexts.map(\.id))
+        let selectionFull = selectedRepoIDs.count >= viewModel.maximumSelectedRepoContexts
+        let highlightedRepoID = candidates.indices.contains(viewModel.highlightedMentionIndex)
+            ? candidates[viewModel.highlightedMentionIndex].id
+            : nil
         return VStack(alignment: .leading, spacing: 0) {
             agentContextPickerHeader(totalCount: totalCount)
             Divider()
@@ -1340,14 +1331,34 @@ struct AgentWorkspaceView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                            agentContextPickerRow(candidate, index: index)
+                        ForEach(candidates) { candidate in
+                            let isSelected = selectedRepoIDs.contains(candidate.id)
+                            AgentContextPickerRepositoryRow(
+                                candidate: candidate,
+                                sources: viewModel.repositorySources(for: candidate.id),
+                                isSelected: isSelected,
+                                isHighlighted: candidate.id == highlightedRepoID,
+                                isEnabled: isSelected || !selectionFull,
+                                selectionLimit: viewModel.maximumSelectedRepoContexts,
+                                onToggle: { viewModel.toggleRepoContext(candidate) }
+                            )
+                            .equatable()
                         }
                     }
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onScrollPhaseChange { _, newPhase in
+                    contextPickerInteractionController.update(isActive: newPhase != .idle)
+                }
+                .environment(
+                    \.starcatListInteractionSuppressed,
+                    contextPickerInteractionController.isSuppressed
+                )
+                .onDisappear {
+                    contextPickerInteractionController.cancel()
+                }
             }
 
             if isTruncated {
@@ -1455,47 +1466,6 @@ struct AgentWorkspaceView: View {
                 }
                 viewModel.highlightedMentionIndex = 0
             }
-        )
-    }
-
-    private func agentContextPickerRow(_ candidate: RAGMentionCandidate, index: Int) -> some View {
-        let isSelected = viewModel.selectedRepoContexts.contains { $0.id == candidate.id }
-        let selectionFull = viewModel.selectedRepoContexts.count >= viewModel.maximumSelectedRepoContexts
-        let canToggle = isSelected || !selectionFull
-        return Button {
-            viewModel.toggleRepoContext(candidate)
-        } label: {
-            UnifiedCompactRepoRow(
-                fullName: candidate.fullName,
-                owner: candidate.owner,
-                ownerAvatarURL: candidate.ownerAvatar,
-                language: candidate.language,
-                starsCount: candidate.starsCount,
-                isChecked: isSelected,
-                isHighlighted: index == viewModel.highlightedMentionIndex,
-                isEnabled: canToggle
-            ) {
-                HStack(spacing: 4) {
-                    ForEach(viewModel.repositorySources(for: candidate.id).prefix(2), id: \.self) { source in
-                        Image(systemName: source.systemImage)
-                            .font(agentFont(.caption2))
-                            .foregroundStyle(.secondary)
-                            .help(source.title)
-                    }
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .disabled(!canToggle)
-        .help(
-            canToggle
-                ? Text(candidate.fullName)
-                : Text(String(
-                    format: String.l10n("agent.workspace.repositoryPicker.selectionLimit"),
-                    locale: locale,
-                    viewModel.maximumSelectedRepoContexts
-                ))
         )
     }
 
@@ -1914,7 +1884,7 @@ struct AgentWorkspaceView: View {
         interfaceScale.font(size: size, weight: weight)
     }
 
-    /// `HSplitView` 会在拖拽和窗口缩放时连续报告尺寸；静止 250ms 后才把最终值保存为下次窗口默认值。
+    /// 原生 Sidebar 与 Inspector 都会连续报告尺寸；静止 250ms 后才保存最终值。
     private func scheduleLeftWidthPersistence(_ measuredWidth: CGFloat) {
         guard !chromeState.isLeftColumnCollapsed,
               measuredWidth >= AgentWorkspaceLayoutMetrics.leftMinimumWidth else { return }

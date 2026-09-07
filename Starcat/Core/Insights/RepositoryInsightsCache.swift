@@ -14,6 +14,9 @@ enum RepositoryInsightsDataset: String, CaseIterable, Sendable {
     case recentActivity
     case commitActivity
     case contributors
+    case languages
+    /// History 的覆盖水位独立于最后一个 Star 事件日，随现有洞察 JSON 缓存持久化。
+    case starHistoryCoverage
     case communityProfile
     case releaseCadence
     case securityAdvisories
@@ -23,7 +26,7 @@ enum RepositoryInsightsDataset: String, CaseIterable, Sendable {
         switch self {
         case .activityCounts, .recentActivity:
             return 15 * 60
-        case .commitActivity, .contributors:
+        case .commitActivity, .contributors, .languages, .starHistoryCoverage:
             return 24 * 60 * 60
         case .communityProfile:
             return 3 * 24 * 60 * 60

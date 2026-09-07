@@ -8,50 +8,16 @@
 import AppKit
 import SwiftUI
 
-/// 侧栏会话行的展示条目。
-///
-/// 同一会话会在「置顶区 / 原分组 / 未分组」之间迁移。若 `ForEach` 只使用会话 UUID，
-/// `LazyVStack` 可能复用迁移前的缓存行，继续显示旧图标和旧位置；因此身份必须包含 placement。
-struct RAGConversationRailRowEntry: Identifiable {
-    enum Placement: Hashable {
-        case pinned
-        case ungrouped
-        case group(UUID)
-    }
-
-    struct ID: Hashable {
-        let conversationID: UUID
-        let placement: Placement
-    }
-
-    let conversation: RAGConversationSummary
-    let rowIndex: Int
-    let placement: Placement
-
-    var id: ID {
-        ID(conversationID: conversation.id, placement: placement)
-    }
-
-    static func rows(
-        from conversations: [RAGConversationSummary],
-        placement: Placement
-    ) -> [RAGConversationRailRowEntry] {
-        conversations.enumerated().map { index, conversation in
-            RAGConversationRailRowEntry(
-                conversation: conversation,
-                rowIndex: index,
-                placement: placement
-            )
-        }
-    }
-}
-
 struct RAGWorkspaceConversationRail: View {
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(\.ragSettingsNavigation) private var settingsNavigation
 
     @Bindable var viewModel: KnowledgeRAGWorkspaceViewModel
+    /// 把全局 selection 拆成行级状态，切换时只失效旧、新两行。
+    @State private var selectionStore = RAGConversationRailSelectionStore()
+    /// 「展开更多」分页状态是进程级单例：关闭工作台窗口重开不重置，仅应用重启归零。
+    private let expansionStore = RAGConversationRailExpansionStore.shared
     @State private var expandedGroupIDs: Set<UUID> = []
     @State private var conversationDropTarget: RAGConversationDropTarget?
     /// 正在拖拽的会话；源行压暗，避免系统 preview 与源行叠成残影。
@@ -62,9 +28,6 @@ struct RAGWorkspaceConversationRail: View {
     @State private var dropSettleTask: Task<Void, Never>?
     /// 取消拖拽时系统 preview `onDisappear` 不一定触发；用 mouseUp 兜底清掉压暗态。
     @State private var dragSessionBox = RAGConversationDragSessionBox()
-    @State private var isKnowledgeBaseHovered = false
-    @State private var isNewConversationHovered = false
-    @State private var hoveredConversationID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,7 +35,9 @@ struct RAGWorkspaceConversationRail: View {
                 HStack(spacing: 9) {
                     Image(systemName: "square.3.layers.3d.bottom.filled")
                         .font(iconFont(size: 24, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
+                        // 左上角品牌标识走独立双主题色（light #0E9488 / dark #2DD4BF），
+                        // 不随系统强调色变蓝；其余 accent 高亮保持不变。
+                        .foregroundStyle(Color("RAGWorkspaceBrand"))
                     VStack(alignment: .leading, spacing: 2) {
                         Text("rag.workspace.title")
                             .font(ragFont(.headline, weight: .semibold))
@@ -88,32 +53,27 @@ struct RAGWorkspaceConversationRail: View {
                 Button {
                     Task { await viewModel.newConversation() }
                 } label: {
-                    Label {
-                        Text("rag.workspace.newConversation")
-                            .foregroundStyle(.primary)
-                    } icon: {
-                        Image(systemName: "plus.circle.fill")
-                            .foregroundStyle(Color.accentColor)
+                    LocalHoverSurface(
+                        normalBackground: Color.accentColor.opacity(0.11),
+                        hoveredBackground: Color.accentColor.opacity(0.18),
+                        cornerRadius: 7
+                    ) {
+                        Label {
+                            Text("rag.workspace.newConversation")
+                                .foregroundStyle(.primary)
+                        } icon: {
+                            Image(systemName: "plus.circle.fill")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                            .font(ragFont(.callout, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
                     }
-                        .font(ragFont(.callout, weight: .semibold))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        // 默认与当前会话选中态使用同一淡蓝底；hover 仅加深背景，不缩放整行。
-                        .background(
-                            Color.accentColor.opacity(isNewConversationHovered ? 0.18 : 0.11),
-                            in: RoundedRectangle(cornerRadius: 7)
-                        )
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
                 .pointerStyle(.link)
-                .onHover { isNewConversationHovered = $0 }
-                .onDisappear { isNewConversationHovered = false }
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.15),
-                    value: isNewConversationHovered
-                )
             }
             .padding(14)
 
@@ -165,10 +125,7 @@ struct RAGWorkspaceConversationRail: View {
                     }
 
                     // 置顶会话直接顶到列表最前，不单独做「置顶」分组标题；靠 pin 图标区分即可。
-                    ForEach(RAGConversationRailRowEntry.rows(
-                        from: viewModel.pinnedConversations,
-                        placement: .pinned
-                    )) { entry in
+                    ForEach(viewModel.conversationRailPresentation.pinnedRows) { entry in
                         conversationRow(entry.conversation, rowIndex: entry.rowIndex)
                     }
 
@@ -176,18 +133,26 @@ struct RAGWorkspaceConversationRail: View {
                         groupSection(group)
                     }
 
-                    ForEach(RAGConversationRailRowEntry.rows(
-                        from: viewModel.unpinnedConversations(inGroupID: nil),
-                        placement: .ungrouped
-                    )) { entry in
+                    let ungroupedRows = viewModel.conversationRailPresentation.ungroupedRows
+                    ForEach(visibleBucketRows(ungroupedRows, groupID: nil)) { entry in
                         conversationRow(entry.conversation, rowIndex: entry.rowIndex)
+                    }
+                    if showsShowMoreButton(ungroupedRows, groupID: nil) {
+                        showMoreButton(groupID: nil)
                     }
                 }
                 .padding(.bottom, 12)
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
-        .onChange(of: viewModel.conversationGroups.map(\.id)) { _, ids in expandedGroupIDs.formUnion(ids) }
+        .onChange(of: viewModel.conversationRailPresentation.groupIDs) { _, ids in
+            expandedGroupIDs.formUnion(ids)
+        }
+        .background {
+            RAGWorkspaceConversationSelectionSynchronizer(
+                viewModel: viewModel,
+                selectionStore: selectionStore
+            )
+        }
         .onDisappear {
             dropSettleTask?.cancel()
             dropSettleTask = nil
@@ -213,44 +178,37 @@ struct RAGWorkspaceConversationRail: View {
                 settingsNavigation: settingsNavigation
             )
         } label: {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Label("rag.workspace.status.knowledgeBase", systemImage: "books.vertical")
-                        .font(ragFont(.callout, weight: .semibold))
-                    Spacer()
-                    Image(systemName: viewModel.isKnowledgeBaseEmpty ? "plus.circle" : "arrow.up.right.square")
-                        .font(iconFont(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
+            LocalHoverSurface(
+                normalBackground: Color(nsColor: .textBackgroundColor).opacity(0.58),
+                hoveredBackground: Color.accentColor.opacity(0.08),
+                cornerRadius: 8
+            ) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Label("rag.workspace.status.knowledgeBase", systemImage: "books.vertical")
+                            .font(ragFont(.callout, weight: .semibold))
+                        Spacer()
+                        Image(systemName: viewModel.isKnowledgeBaseEmpty ? "plus.circle" : "arrow.up.right.square")
+                            .font(iconFont(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    if viewModel.isKnowledgeBaseEmpty {
+                        Text("rag.workspace.status.knowledgeBaseEmpty")
+                            .font(ragFont(.caption2))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
-                if viewModel.isKnowledgeBaseEmpty {
-                    Text("rag.workspace.status.knowledgeBaseEmpty")
-                        .font(ragFont(.caption2))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+                // padding、背景和命中形状必须属于 Button label；如果放在 Button 外层，
+                // 留白区域虽然会显示 hover 和手型指针，却不会触发按钮 action。
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            // padding、背景和命中形状必须属于 Button label；如果放在 Button 外层，
-            // 留白区域虽然会显示 hover 和手型指针，却不会触发按钮 action。
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            // 默认保留知识库入口的灰底，hover 仅切换背景色，避免破坏侧栏布局稳定性。
-            .background(
-                isKnowledgeBaseHovered
-                    ? Color.accentColor.opacity(0.08)
-                    : Color(nsColor: .textBackgroundColor).opacity(0.58),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .pointerStyle(.link)
-        .onHover { isKnowledgeBaseHovered = $0 }
-        .onDisappear { isKnowledgeBaseHovered = false }
-        .animation(
-            reduceMotion ? nil : .easeOut(duration: 0.15),
-            value: isKnowledgeBaseHovered
-        )
         .help(
             Text(
                 viewModel.isKnowledgeBaseEmpty
@@ -279,12 +237,7 @@ struct RAGWorkspaceConversationRail: View {
                     viewModel.selectedGroupID = group.id
                 } label: {
                     HStack(spacing: 8) {
-                        // 固定 chevron.right + 旋转，避免换 symbol 时无过渡。
-                        Image(systemName: "chevron.right")
-                            .font(iconFont(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        // 不放展开/折叠 chevron：折叠状态由点击整行切换，图标列与普通会话行保持一致。
                         Image(systemName: "folder.fill")
                             .font(iconFont(size: 13, weight: .medium))
                             .foregroundStyle(isSelected ? Color.accentColor : .secondary)
@@ -294,10 +247,6 @@ struct RAGWorkspaceConversationRail: View {
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         Spacer(minLength: 4)
-                        // 计数只统计组内未置顶会话；置顶已上浮到顶部置顶区，避免展开后数字与实际条数对不上。
-                        Text("\(viewModel.unpinnedConversations(inGroupID: group.id).count)")
-                            .font(ragFont(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
                     .padding(.horizontal, 10)
@@ -322,6 +271,8 @@ struct RAGWorkspaceConversationRail: View {
                 .menuIndicator(.hidden)
                 .foregroundStyle(.secondary)
                 .help("rag.workspace.group.actions")
+                // 与会话行同款 32pt 菜单列：26pt 图标居中，保证「⋯」与上下行的「⋯」右对齐。
+                .frame(width: 32, height: 26)
                 .padding(.trailing, 6)
             }
             .background(isSelected ? Color.accentColor.opacity(0.11) : Color.clear)
@@ -349,184 +300,91 @@ struct RAGWorkspaceConversationRail: View {
             }
 
             if isExpanded {
-                ForEach(RAGConversationRailRowEntry.rows(
-                    from: viewModel.unpinnedConversations(inGroupID: group.id),
-                    placement: .group(group.id)
-                )) { entry in
-                    conversationRow(entry.conversation, rowIndex: entry.rowIndex)
-                        .padding(.leading, 14)
+                let groupRows = viewModel.conversationRailPresentation.rows(inGroupID: group.id)
+                ForEach(visibleBucketRows(groupRows, groupID: group.id)) { entry in
+                    // 分组内行不带气泡图标，也不再额外缩进：文字与根级会话行对齐。
+                    conversationRow(entry.conversation, rowIndex: entry.rowIndex, showsIcon: false)
                         // 仅淡入淡出：去掉 .move，降低松手时与 drag preview 的位移叠影。
                         .transition(reduceMotion ? .identity : .opacity)
                 }
+                if showsShowMoreButton(groupRows, groupID: group.id) {
+                    showMoreButton(groupID: group.id)
+                }
             }
         }
     }
 
-    func conversationRow(_ conversation: RAGConversationSummary, rowIndex: Int) -> some View {
-        let selected = conversation.id == viewModel.selectedConversationID
-        let isHovered = conversation.id == hoveredConversationID
+    func conversationRow(_ conversation: RAGConversationSummary, rowIndex: Int, showsIcon: Bool = true) -> some View {
         let isDragging = draggingConversationID == conversation.id
         let isSettling = settlingConversationID == conversation.id
-        return HStack(spacing: 0) {
-            Button {
-                Task { await viewModel.selectConversation(conversation.id) }
-            } label: {
-                HStack(alignment: .top, spacing: 9) {
-                    Image(systemName: conversation.isPinned ? "pin.fill" : "bubble.left")
-                        .font(iconFont(size: 13, weight: .medium))
-                        .foregroundStyle(
-                            conversation.isPinned
-                                ? Color.accentColor
-                                : (selected ? Color.accentColor : .secondary)
-                        )
-                        .frame(width: 18)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(conversation.title)
-                            .font(interfaceScale.font(
-                                RAGConversationTypography.text,
-                                weight: selected ? .semibold : .regular
-                            ))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text(String(conversation.updatedAt.prefix(10)))
-                            .font(ragFont(.caption2))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 4)
-                }
-                .contentShape(Rectangle())
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+        return RAGWorkspaceConversationRow(
+            viewModel: viewModel,
+            selectionState: selectionStore.state(for: conversation.id),
+            conversation: conversation,
+            rowIndex: rowIndex,
+            showsIcon: showsIcon,
+            isDragging: isDragging,
+            isSettling: isSettling,
+            onSelected: {
+                selectionStore.select(conversation.id)
+            },
+            onDragStarted: {
+                beginConversationDrag(conversation.id)
+            },
+            onDragEnded: {
+                // 成功路径由 settle 清理；取消路径以 mouseUp 兜底，这里再补一次。
+                endConversationDragIfCancelled(conversation.id)
             }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-            .pointerStyle(.link)
-
-            Menu {
-                Button(
-                    conversation.isPinned
-                        ? "rag.workspace.conversation.unpin"
-                        : "rag.workspace.conversation.pin"
-                ) {
-                    Task {
-                        await viewModel.setConversationPinned(
-                            id: conversation.id,
-                            isPinned: !conversation.isPinned
-                        )
-                    }
-                }
-                Button("rag.workspace.conversation.rename") {
-                    viewModel.presentRenameConversation(conversation)
-                }
-                Menu("rag.workspace.conversation.moveToGroup") {
-                    Button("rag.workspace.conversation.ungroup") {
-                        Task { await viewModel.moveConversation(id: conversation.id, toGroupID: nil) }
-                    }
-                    .disabled(conversation.groupID == nil)
-                    ForEach(viewModel.conversationGroups) { group in
-                        Button(group.title) {
-                            Task { await viewModel.moveConversation(id: conversation.id, toGroupID: group.id) }
-                        }
-                        .disabled(conversation.groupID == group.id)
-                    }
-                }
-                Button("common.delete", role: .destructive) {
-                    Task { await viewModel.deleteConversation(conversation.id) }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(iconFont(size: 13, weight: .medium))
-                    .frame(width: 26, height: 26)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .foregroundStyle(.secondary)
-            .help("rag.workspace.conversation.actions")
-            .padding(.trailing, 6)
-        }
-        // 选中态始终优先；hover 只加深或补充轻量 accent 背景，不改变行尺寸。
-        .background(conversationRowBackground(selected: selected, isHovered: isHovered, rowIndex: rowIndex))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .contentShape(RoundedRectangle(cornerRadius: 7))
-        .padding(.horizontal, 8)
-        // settling：源行全隐；dragging：压暗。取消拖拽必须清掉 dragging，否则文案会一直发灰。
-        .opacity(isSettling ? 0 : (isDragging ? 0.35 : 1))
-        .onHover { hovering in
-            if hovering {
-                hoveredConversationID = conversation.id
-            } else if hoveredConversationID == conversation.id {
-                hoveredConversationID = nil
-            }
-        }
-        .onDisappear {
-            if hoveredConversationID == conversation.id {
-                hoveredConversationID = nil
-            }
-            // 故意不在这里清 draggingConversationID：
-            // LazyVStack 离屏复用也会走 onDisappear，会把进行中的拖拽态误清掉。
-        }
-        .animation(
-            reduceMotion ? nil : .easeOut(duration: 0.15),
-            value: isHovered
         )
-        .draggable(conversation.id.uuidString) {
-            conversationDragPreview(conversation)
-                .onAppear {
-                    beginConversationDrag(conversation.id)
-                }
-                .onDisappear {
-                    // 成功路径由 settle 清理；取消路径以 mouseUp 兜底，这里再补一次。
-                    endConversationDragIfCancelled(conversation.id)
-                }
-        }
-    }
-
-    /// 精简拖拽预览：可见、轻量；去掉重阴影，减轻松手淡出拖尾感。
-    @ViewBuilder
-    private func conversationDragPreview(_ conversation: RAGConversationSummary) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: conversation.isPinned ? "pin.fill" : "bubble.left")
-                .font(iconFont(size: 13, weight: .medium))
-                .foregroundStyle(conversation.isPinned ? Color.accentColor : .secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(conversation.title)
-                    .font(interfaceScale.font(RAGConversationTypography.text, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(String(conversation.updatedAt.prefix(10)))
-                    .font(ragFont(.caption2))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 4)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(width: 220, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.94))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(
-            RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-        )
-        .opacity(0.92)
-    }
-
-    /// 会话行沿用选中态淡蓝底；普通 hover 再弱一档，保留选中与悬停的视觉层级。
-    private func conversationRowBackground(selected: Bool, isHovered: Bool, rowIndex: Int) -> Color {
-        if selected {
-            return Color.accentColor.opacity(isHovered ? 0.18 : 0.11)
-        }
-        if isHovered {
-            return Color.accentColor.opacity(0.08)
-        }
-        return rowIndex.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.045)
     }
 
     /// 解析 `dropDestination(for: String.self)` 的会话 UUID。
     private static func conversationID(fromDropItems items: [String]) -> UUID? {
         guard let raw = items.first else { return nil }
         return UUID(uuidString: raw)
+    }
+
+    // MARK: - 「展开更多」分页
+
+    /// 桶（未分组 / 单个分组）当前应展示的行数：用户展开数与「选中行保底可见数」取大者。
+    /// 选中行保底只影响本次切片，不写回 store，避免选中态悄悄抬高用户心智里的分页进度。
+    private func visibleBucketRows(
+        _ rows: [RAGConversationRailPresentation.Row],
+        groupID: UUID?
+    ) -> [RAGConversationRailPresentation.Row] {
+        let selectedIndex = rows.firstIndex { $0.conversation.id == viewModel.selectedConversationID }
+        var limit = expansionStore.userVisibleCount(groupID: groupID)
+        if let selectedIndex {
+            limit = max(limit, selectedIndex + 1)
+        }
+        return Array(rows.prefix(min(limit, rows.count)))
+    }
+
+    private func showsShowMoreButton(
+        _ rows: [RAGConversationRailPresentation.Row],
+        groupID: UUID?
+    ) -> Bool {
+        rows.count > visibleBucketRows(rows, groupID: groupID).count
+    }
+
+    private func showMoreButton(groupID: UUID?) -> some View {
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                expansionStore.expand(groupID: groupID)
+            }
+        } label: {
+            // 左缘 8(行外距) + 10(行内距) + 18(图标列) + 9(间距)：文案与上方会话行标题对齐。
+            Text("rag.workspace.conversation.showMore")
+                .font(ragFont(.caption))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 45)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .pointerStyle(.link)
     }
 
     private func updateDropTarget(_ target: RAGConversationDropTarget, isTargeted: Bool) {
@@ -568,7 +426,6 @@ struct RAGWorkspaceConversationRail: View {
     /// 先藏源行并 return drop；等系统 lift 淡出一小段后再改 `groupID`，减轻松手叠影。
     private func scheduleConversationDrop(conversationID: UUID, toGroupID groupID: UUID?) {
         conversationDropTarget = nil
-        hoveredConversationID = nil
         settlingConversationID = conversationID
         draggingConversationID = conversationID
         dragSessionBox.stop()
@@ -602,6 +459,57 @@ struct RAGWorkspaceConversationRail: View {
                 draggingConversationID = nil
             }
         }
+    }
+}
+
+/// 「展开更多」分页状态；进程级单例。
+///
+/// 需求约束：关闭工作台窗口再打开不得重置，只有整个 Starcat 重启才回到默认 5 条。
+/// 因此状态不能挂在 View 的 `@State` 上（窗口关闭即销毁），也不能写 UserDefaults
+/// （会跨启动残留），放在 App 进程单例里生命周期正好匹配。
+@MainActor
+@Observable
+final class RAGConversationRailExpansionStore {
+    static let shared = RAGConversationRailExpansionStore()
+
+    private static let initialVisibleCount = 5
+    private static let expandStep = 10
+
+    private var ungroupedVisibleCount = 0
+    private var visibleCountsByGroupID: [UUID: Int] = [:]
+
+    /// 用户在指定桶里已展开到的条数（含默认值），不会超过调用方的总量约束（视图侧 min）。
+    func userVisibleCount(groupID: UUID?) -> Int {
+        let stored = groupID.flatMap { visibleCountsByGroupID[$0] } ?? ungroupedVisibleCount
+        return max(stored, Self.initialVisibleCount)
+    }
+
+    func expand(groupID: UUID?) {
+        let next = userVisibleCount(groupID: groupID) + Self.expandStep
+        if let groupID {
+            visibleCountsByGroupID[groupID] = next
+        } else {
+            ungroupedVisibleCount = next
+        }
+    }
+}
+
+/// 单独观察会话选择和列表成员变化，避免这些读取把整个 `LazyVStack` 的 body 纳入依赖。
+/// 行点击会提前更新 selectionStore；这里负责 bootstrap、失败回退及外部选择变化的对齐。
+private struct RAGWorkspaceConversationSelectionSynchronizer: View {
+    @Bindable var viewModel: KnowledgeRAGWorkspaceViewModel
+    let selectionStore: RAGConversationRailSelectionStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onChange(of: viewModel.selectedConversationID, initial: true) { _, selectedID in
+                selectionStore.select(selectedID)
+            }
+            .onChange(of: viewModel.conversations.map(\.id), initial: true) { _, conversationIDs in
+                selectionStore.retainConversationIDs(conversationIDs)
+            }
     }
 }
 

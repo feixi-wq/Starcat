@@ -363,7 +363,7 @@ struct TrendingTests {
         let vm = TrendingViewModel(repository: stub, githubAPIClient: MockGitHubAPIClient())
 
         await vm.reload(cachePolicy: .respectTTL)
-        vm.loadMoreIfNeeded(currentIndex: 16, totalAvailable: cachedRepos.count)
+        await vm.loadMoreIfNeeded()
         let firstReads = await stub.storageReadCounts()
         let firstRevision = vm.reposRevision
 
@@ -391,12 +391,15 @@ struct TrendingTests {
 
         await vm.reload(cachePolicy: .respectTTL)
 
-        #expect(vm.repos.count == 45)
+        #expect(vm.totalCount == 45)
+        #expect(vm.repos.count == 20)
         #expect(vm.visibleLimit == 20)
-        vm.loadMoreIfNeeded(currentIndex: 16, totalAvailable: 45)
+        await vm.loadMoreIfNeeded()
         #expect(vm.visibleLimit == 40)
-        vm.loadMoreIfNeeded(currentIndex: 36, totalAvailable: 45)
+        #expect(vm.repos.count == 40)
+        await vm.loadMoreIfNeeded()
         #expect(vm.visibleLimit == 45)
+        #expect(vm.repos.count == 45)
     }
 
     @MainActor
@@ -765,11 +768,13 @@ struct TrendingTests {
     @Test("Trending prepared snapshot 命中不重复派生，新事实源只失效对应桶")
     func preparedSnapshotSkipsRepeatedDerivation() async {
         let pipeline = TrendingListPipeline()
-        let identity = TrendingQueryIdentity(period: .daily, language: .all)
+        let identity = TrendingQueryIdentity(period: .daily)
         let context = TrendingDerivationContext(
             sort: .recommended,
             filter: .all,
-            languagePreferences: ["Swift": 1]
+            languagePreferences: ["Swift": 1],
+            selectedLanguage: .all,
+            interestedLanguages: []
         )
         let repos = [
             makeTrendingRepo(fullName: "owner/a"),
@@ -787,7 +792,9 @@ struct TrendingTests {
         let sortedContext = TrendingDerivationContext(
             sort: .nameDesc,
             filter: .all,
-            languagePreferences: ["Swift": 1]
+            languagePreferences: ["Swift": 1],
+            selectedLanguage: .all,
+            interestedLanguages: []
         )
         _ = await pipeline.preparedSnapshot(for: identity, context: sortedContext)
         #expect(await pipeline.derivationCountForTesting() == 2)
@@ -804,13 +811,15 @@ struct TrendingTests {
     @Test("Trending prepared snapshot LRU 超过 12 项后淘汰最旧 context")
     func preparedSnapshotLRUEvictsOldestContext() async {
         let pipeline = TrendingListPipeline()
-        let identity = TrendingQueryIdentity(period: .daily, language: .all)
+        let identity = TrendingQueryIdentity(period: .daily)
         let repos = [makeTrendingRepo(fullName: "owner/a")]
         let contexts = (0...12).map { index in
             TrendingDerivationContext(
                 sort: .recommended,
                 filter: .all,
-                languagePreferences: ["Lang\(index)": Double(index)]
+                languagePreferences: ["Lang\(index)": Double(index)],
+                selectedLanguage: .all,
+                interestedLanguages: []
             )
         }
 
