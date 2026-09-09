@@ -12,12 +12,19 @@
 //  关键约束：
 //  - 模型能力不是所有 OpenAI-compatible 服务都会返回统一字段，因此能力 Picker 是用户可修正项。
 //  - 组件只负责展示和绑定，不直接修改 AppSettings；实际写入由父视图提供 Binding，便于测试和复用。
+//  - 滚动：用固定高度 AppKit 宿主包 SwiftUI `ScrollView + LazyVStack`。Form 只看到固定高度 NSView，
+//    不会对模型行跑 measureEstimates（避免 hang）；宿主吃掉纵向滚轮，避免整页跟着滚。
+//  - 分页：内存里已有全量目录，但 UI 按页挂载（`automaticListPagination`），展开时不一次构建数百行。
 //
 
+import AppKit
 import SwiftUI
 
 /// Provider 模型列表的受限高度展示组件。
 struct AIModelListView: View {
+
+    /// 每页挂载行数。视口只有约 4 行，40 足够滚动预取，又远小于 OpenRouter 级全量。
+    private static let pageSize = 40
 
     let profile: AIProviderProfile
     let enabledBinding: (AIModelDescriptor) -> Binding<Bool>
@@ -27,9 +34,9 @@ struct AIModelListView: View {
     let parametersBinding: (AIModelDescriptor) -> Binding<AIModelParameters?>
 
     @State private var query = ""
+    /// 当前已挂载到列表的前缀长度（对 `filteredModels` 切片）。
+    @State private var loadedCount = AIModelListView.pageSize
     /// 当前正在编辑参数的模型；nil 表示无 popover 显示。
-    /// 用 `.popover(item:)` 而非每行各自 isPresented 状态，避免点 A 行后再点 B 行
-    /// 出现"两个 popover 同时浮动 / 旧 popover 留尾巴"的视觉 bug。
     @State private var popoverModel: AIModelDescriptor?
 
     private var filteredModels: [AIModelDescriptor] {
@@ -40,6 +47,19 @@ struct AIModelListView: View {
                 || (model.ownedBy?.localizedCaseInsensitiveContains(trimmed) ?? false)
                 || model.capability.displayName.localizedCaseInsensitiveContains(trimmed)
         }
+    }
+
+    private var displayedModels: [AIModelDescriptor] {
+        Array(filteredModels.prefix(max(loadedCount, 0)))
+    }
+
+    private var hasMoreModels: Bool {
+        loadedCount < filteredModels.count
+    }
+
+    /// 筛选 / provider / 目录规模变化时重置分页身份。
+    private var paginationIdentity: String {
+        "\(profile.id)#\(query)#\(profile.models.count)"
     }
 
     var body: some View {
@@ -54,6 +74,12 @@ struct AIModelListView: View {
                 .padding(.top, 8)
         }
         .padding(.top, 4)
+        .onAppear {
+            syncLoadedCountToFilter()
+        }
+        .onChange(of: paginationIdentity) { _, _ in
+            syncLoadedCountToFilter()
+        }
     }
 
     private var header: some View {
@@ -84,23 +110,60 @@ struct AIModelListView: View {
     }
 
     private var modelScroll: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if filteredModels.isEmpty {
-                    Text("settings.ai.modelList.empty")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                } else {
-                    ForEach(filteredModels) { model in
-                        modelRow(model)
-                        if model.id != filteredModels.last?.id {
-                            Divider()
+        AIModelFixedHeightHost(height: modelScrollHeight) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if displayedModels.isEmpty {
+                        Text("settings.ai.modelList.empty")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    } else {
+                        ForEach(Array(displayedModels.enumerated()), id: \.element.id) { index, model in
+                            AIModelListRow(
+                                model: model,
+                                isEnabled: enabledBinding(model),
+                                capability: capabilityBinding(model),
+                                isCustomized: modelHasCustomizedParameters(model),
+                                popoverItem: popoverBinding(model: model),
+                                parameters: nonNullParametersBinding(for: model),
+                                onResetParameters: {
+                                    parametersBinding(model).wrappedValue = nil
+                                },
+                                onOpenParameters: {
+                                    popoverModel = model
+                                }
+                            )
+                            .automaticListPagination(
+                                appearingIndex: index,
+                                visibleItemCount: displayedModels.count,
+                                loadedItemCount: loadedCount,
+                                hasMore: hasMoreModels,
+                                isLoading: false,
+                                identity: paginationIdentity
+                            ) {
+                                loadMoreModels()
+                            }
+
+                            if index < displayedModels.count - 1 {
+                                Divider()
+                            }
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .automaticListPaginationFill(
+                    visibleItemCount: displayedModels.count,
+                    loadedItemCount: loadedCount,
+                    hasMore: hasMoreModels,
+                    isLoading: false,
+                    identity: paginationIdentity
+                ) {
+                    loadMoreModels()
+                }
             }
+            .scrollIndicators(.automatic)
         }
         .frame(height: modelScrollHeight)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -108,31 +171,196 @@ struct AIModelListView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(.quaternary)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    /// HOM-126 follow-up (dong4j 反馈 2026-06-07，截图：2 个模型 → 列表底部留大片空白)：
-    /// 列表高度自适应——按当前可见行数算出实际所需高度，行数不超过 4 时正好贴合内容、
-    /// 不留空白；超过 4 时锁定为 4 行高度并出现滚动。
-    ///
-    /// 行高估算：modelRow 默认是双行 label（name + owner）
-    ///   - Text(name) body ≈ 13pt
-    ///   - Text(owner) caption ≈ 11pt
-    ///   - VStack spacing 2pt
-    ///   - .padding(.vertical, 7) 上下各 7pt = 14pt
-    ///   - 单行 row 高度 ≈ 13 + 2 + 11 + 14 ≈ 40pt
-    /// 加上行间 Divider 1pt 和少量缓冲，取 `perRowHeight = 44pt`，能稳定容纳"双行 label"
-    /// 不被裁切；单行 label（无 owner）row 会稍显富余，但视觉留白与双行 row 协调。
+    /// HOM-126 follow-up：行数 ≤ 4 时贴合内容；超过 4 时锁定高度并内部滚动。
     private var modelScrollHeight: CGFloat {
-        // 空状态（无匹配）也给一行高度，避免折叠成 0 让 ScrollView 完全消失
         let visibleRows = filteredModels.isEmpty ? 1 : min(filteredModels.count, 4)
         let perRowHeight: CGFloat = 44
         let dividerHeight: CGFloat = 1
         return CGFloat(visibleRows) * perRowHeight + CGFloat(max(0, visibleRows - 1)) * dividerHeight
     }
 
-    private func modelRow(_ model: AIModelDescriptor) -> some View {
+    private func syncLoadedCountToFilter() {
+        loadedCount = min(Self.pageSize, filteredModels.count)
+    }
+
+    private func loadMoreModels() {
+        guard hasMoreModels else { return }
+        loadedCount = min(loadedCount + Self.pageSize, filteredModels.count)
+    }
+
+    private func modelHasCustomizedParameters(_ model: AIModelDescriptor) -> Bool {
+        guard let parameters = parametersBinding(model).wrappedValue else { return false }
+        return !parameters.isEffectivelyDefault(for: model.capability)
+    }
+
+    private func popoverBinding(model: AIModelDescriptor) -> Binding<AIModelDescriptor?> {
+        Binding(
+            get: { popoverModel?.id == model.id ? popoverModel : nil },
+            set: { newValue in
+                popoverModel = newValue
+            }
+        )
+    }
+
+    private func nonNullParametersBinding(for model: AIModelDescriptor) -> Binding<AIModelParameters> {
+        let nullable = parametersBinding(model)
+        return Binding(
+            get: { nullable.wrappedValue ?? AIModelParameters.defaults(for: model.capability) },
+            set: { newValue in
+                if newValue.isEffectivelyDefault(for: model.capability) {
+                    if nullable.wrappedValue != nil {
+                        nullable.wrappedValue = nil
+                    }
+                    return
+                }
+                if let current = nullable.wrappedValue, current.isEffectivelyEqual(to: newValue) {
+                    return
+                }
+                nullable.wrappedValue = newValue
+            }
+        )
+    }
+}
+
+/// Form 内固定高度宿主：只暴露固定 intrinsic height，内部交给 SwiftUI ScrollView 懒加载。
+///
+/// 查：`docs/7-工具与脚本/Swift-学习索引.md` → `NSViewRepresentable`。
+private struct AIModelFixedHeightHost<Content: View>: NSViewRepresentable {
+    var height: CGFloat
+    var content: Content
+
+    init(height: CGFloat, @ViewBuilder content: () -> Content) {
+        self.height = height
+        self.content = content()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> AIModelFixedHeightView {
+        let container = AIModelFixedHeightView()
+        container.fixedHeight = height
+        context.coordinator.attach(content, to: container)
+        return container
+    }
+
+    func updateNSView(_ container: AIModelFixedHeightView, context: Context) {
+        container.fixedHeight = height
+        context.coordinator.attach(content, to: container)
+    }
+
+    @MainActor
+    final class Coordinator {
+        private var host: NSHostingView<AnyView>?
+
+        func attach(_ view: Content, to container: AIModelFixedHeightView) {
+            let root = AnyView(view)
+            if let host {
+                host.rootView = root
+                return
+            }
+            let created = NSHostingView(rootView: root)
+            created.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(created)
+            NSLayoutConstraint.activate([
+                created.topAnchor.constraint(equalTo: container.topAnchor),
+                created.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                created.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                created.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ])
+            host = created
+        }
+    }
+}
+
+/// 固定高度容器：用本地滚轮监视把纵向滚动锁在内部 SwiftUI ScrollView，避免外层 Form 抢事件。
+private final class AIModelFixedHeightView: NSView {
+    var fixedHeight: CGFloat = 0 {
+        didSet {
+            guard abs(oldValue - fixedHeight) >= 0.5 else { return }
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    private var scrollMonitor: Any?
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(
+            width: NSView.noIntrinsicMetric,
+            height: fixedHeight > 0 ? fixedHeight : NSView.noIntrinsicMetric
+        )
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        rebuildScrollMonitor()
+    }
+
+    override func removeFromSuperview() {
+        tearDownScrollMonitor()
+        super.removeFromSuperview()
+    }
+
+    deinit {
+        tearDownScrollMonitor()
+    }
+
+    private func rebuildScrollMonitor() {
+        tearDownScrollMonitor()
+        guard window != nil else { return }
+        // Local monitor 在命中测试前拦截：指针在本列表内时吃掉纵向滚轮并转给内部 ScrollView。
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, let window = self.window, event.window == window else { return event }
+            let localPoint = self.convert(event.locationInWindow, from: nil)
+            guard self.bounds.contains(localPoint) else { return event }
+            guard abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) else { return event }
+            guard let innerScrollView = self.firstDescendantScrollView() else { return event }
+
+            let saved = innerScrollView.nextResponder
+            innerScrollView.nextResponder = nil
+            innerScrollView.scrollWheel(with: event)
+            innerScrollView.nextResponder = saved
+            return nil
+        }
+    }
+
+    private func tearDownScrollMonitor() {
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+            self.scrollMonitor = nil
+        }
+    }
+
+    private func firstDescendantScrollView() -> NSScrollView? {
+        var stack: [NSView] = subviews
+        while let view = stack.popLast() {
+            if let scrollView = view as? NSScrollView {
+                return scrollView
+            }
+            stack.append(contentsOf: view.subviews)
+        }
+        return nil
+    }
+}
+
+/// 单行模型控件。拆成独立 View，避免父列表 body 因其它行状态变化整表重建时重复量测。
+private struct AIModelListRow: View {
+    let model: AIModelDescriptor
+    @Binding var isEnabled: Bool
+    @Binding var capability: AIModelCapability
+    let isCustomized: Bool
+    @Binding var popoverItem: AIModelDescriptor?
+    @Binding var parameters: AIModelParameters
+    let onResetParameters: () -> Void
+    let onOpenParameters: () -> Void
+
+    var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            Toggle(isOn: enabledBinding(model)) {
+            Toggle(isOn: $isEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.name)
                         .lineLimit(1)
@@ -149,92 +377,34 @@ struct AIModelListView: View {
 
             Spacer(minLength: 8)
 
-            // 能力是目录标签：Chat/Embedding 参与任务路由，其余（含 Unknown）仅分类。
-            // 保持 macOS 原生 popup Picker 样式；菜单项带 SF Symbol。
-            Picker("", selection: capabilityBinding(model)) {
-                ForEach(AIModelCapability.allCases) { capability in
-                    Label(capability.displayName, systemImage: capability.systemImage)
-                        .tag(capability)
+            Picker("", selection: $capability) {
+                ForEach(AIModelCapability.allCases) { item in
+                    Label(item.displayName, systemImage: item.systemImage)
+                        .tag(item)
                 }
             }
             .labelsHidden()
             .frame(width: 148)
 
-            // HOM-68 follow-up v9 (dong4j 反馈 2026-06-05 23:35)：
-            // 齿轮按钮 → 弹出模型参数编辑 popover。锚定到 plain Button 而不是
-            // 整行，避免点击其它区域（toggle / capability picker）误触发 popover。
-            // 已覆盖参数的模型 SF Symbol 显示 .fill 变体 + tint orange，给个轻量
-            // "这个模型已自定义"视觉提示，与 popover header 的"已自定义"角标呼应。
-            // 「已自定义」按语义判断：打开弹窗误写回的默认值副本不算覆盖。
-            let isCustomized = modelHasCustomizedParameters(model)
-            Button {
-                popoverModel = model
-            } label: {
+            Button(action: onOpenParameters) {
                 Image(systemName: isCustomized ? "gearshape.fill" : "gearshape")
                     .foregroundStyle(isCustomized ? Color.orange : Color.secondary)
                     .imageScale(.medium)
             }
             .buttonStyle(.plain)
-            // HOM-68 follow-up v10 (dong4j 反馈 2026-06-05 23:55)：项目强制规则
-            // (docs/3-设计/详细设计/07-UI交互设计.md §1.2)——所有 .buttonStyle(.plain) 必
-            // 须紧跟 .focusEffectDisabled() 抑制 macOS 15+ 默认蓝色 focus ring。
             .focusEffectDisabled()
             .help("settings.ai.modelList.parametersHelp")
+            .popover(item: $popoverItem, arrowEdge: .trailing) { focused in
+                AIModelParametersPopover(
+                    model: focused,
+                    parameters: $parameters,
+                    hasOverride: isCustomized,
+                    onReset: onResetParameters
+                )
+                .appLocaleEnvironment()
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .popover(item: popoverBinding(model: model), arrowEdge: .trailing) { focused in
-            AIModelParametersPopover(
-                model: focused,
-                parameters: nonNullParametersBinding(for: focused),
-                hasOverride: modelHasCustomizedParameters(focused),
-                onReset: {
-                    parametersBinding(focused).wrappedValue = nil
-                }
-            )
-            .appLocaleEnvironment()
-        }
-    }
-
-    /// 实时读 binding：落库为默认值副本时也不算自定义。
-    private func modelHasCustomizedParameters(_ model: AIModelDescriptor) -> Bool {
-        guard let parameters = parametersBinding(model).wrappedValue else { return false }
-        return !parameters.isEffectivelyDefault(for: model.capability)
-    }
-
-    /// 把 `popoverModel` 收窄成"只在等于本行 model 时为非 nil"的 Binding——这样
-    /// `.popover(item:)` 只挂在该 model 对应的行上，不会被同列表内别的行复用。
-    private func popoverBinding(model: AIModelDescriptor) -> Binding<AIModelDescriptor?> {
-        Binding(
-            get: { popoverModel?.id == model.id ? popoverModel : nil },
-            set: { newValue in
-                popoverModel = newValue
-            }
-        )
-    }
-
-    /// 把 nullable 的 `Binding<AIModelParameters?>` 提升成 popover 需要的非空
-    /// `Binding<AIModelParameters>`：getter 在 nil 时返回 capability 默认（不写回）；
-    /// setter 仅在用户改出默认语义时 materialize。打开 popover 时 Slider/TextField
-    /// 常会把当前显示值写回——若仍等于 capability 默认，必须保持 / 清回 `nil`，
-    /// 否则会误标「已自定义」。
-    private func nonNullParametersBinding(for model: AIModelDescriptor) -> Binding<AIModelParameters> {
-        let nullable = parametersBinding(model)
-        return Binding(
-            get: { nullable.wrappedValue ?? AIModelParameters.defaults(for: model.capability) },
-            set: { newValue in
-                if newValue.isEffectivelyDefault(for: model.capability) {
-                    // 误写回默认值，或用户改回默认：清掉覆盖。
-                    if nullable.wrappedValue != nil {
-                        nullable.wrappedValue = nil
-                    }
-                    return
-                }
-                if let current = nullable.wrappedValue, current.isEffectivelyEqual(to: newValue) {
-                    return
-                }
-                nullable.wrappedValue = newValue
-            }
-        )
     }
 }

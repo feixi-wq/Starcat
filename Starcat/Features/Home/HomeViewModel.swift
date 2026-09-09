@@ -278,8 +278,18 @@ final class HomeViewModel {
     /// W4-4 D2：原始 fetch 结果（未经 filter / sort）。
     /// `items` 是 rawItems 的派生 — sort / filter 改变时只需重跑 `applyView()` 而不必重 fetch。
     /// 私有：不暴露给 UI，保持单向流: rawItems → applyView → items → UI。
+    ///
+    /// 分面 revision 只在 **ID 序列真变** 时递增：SWR 后台拉到相同批次时仍会
+    /// `rawItems = fetched`，若无条件 +1，内存路径（智能集合等）的
+    /// `sidebarTagCounts` 会立刻变成 nil，标签墙长期停在「—」。
     private var rawItems: [Repo] = [] {
-        didSet { sidebarFacetDerivedRevision &+= 1 }
+        didSet {
+            let unchanged = oldValue.count == rawItems.count
+                && zip(oldValue, rawItems).allSatisfy { $0.id == $1.id }
+            if !unchanged {
+                sidebarFacetDerivedRevision &+= 1
+            }
+        }
     }
 
     /// 当前详情选中的 repo **ID**（不是 Repo 值）。
@@ -453,8 +463,8 @@ final class HomeViewModel {
 
     /// 已提交的搜索词。
     ///
-    /// `SmartSearchField` 内部保存实时输入草稿；只有用户按 Return 或点击清空时，才通过
-    /// `submitSearch(_:)` 写入这里。这样普通 FTS5 和 AI 语义搜索都不会在每个字符输入时触发。
+    /// 该状态继续服务保存的智能集合和历史列表过滤；主窗口的新搜索入口已经统一到
+    /// Search Center，不再由 toolbar 输入框逐字符写入这里。
     var searchQuery: String = ""
 
     /// 搜索提交序号。
@@ -536,10 +546,20 @@ final class HomeViewModel {
         let derivedRevision: Int
         let isLoading: Bool
 
-        /// 标签计数忽略自身勾选；只改标签时旧数字仍有效，语言计数仍按完整身份刷新。
+        /// 标签计数忽略自身勾选；只改标签时旧数字仍有效。
         var tagCountQuery: Self {
             var query = self
             query.filters.selectedTagIDs = []
+            return query
+        }
+
+        /// 语言计数忽略左侧单选语言；切换语言时复用仍有效的数字，避免闪回占位符。
+        ///
+        /// 全局多选语言保存在 `selectedLanguages`，这里故意只清空 `language`，
+        /// 因为全局语言、标签和其他筛选仍会真实改变这组计数。
+        var languageCountQuery: Self {
+            var query = self
+            query.filters.language = .all
             return query
         }
     }
@@ -567,18 +587,38 @@ final class HomeViewModel {
     }
 
     /// 复用仍有效的标签计数，避免每次勾选都经历「数字 → 占位 → 同一个数字」。
+    /// 无标签范围只禁用交互，数字仍展示全账号 Star 标签总量，避免置灰时误显示为 0。
     var sidebarTagCounts: [String: Int]? {
+        guard canFilterByTags else { return tagCounts }
         guard let snapshot = sidebarFacetSnapshot,
               snapshot.query.tagCountQuery == sidebarFacetQuery.tagCountQuery else { return nil }
         return snapshot.counts.tags
     }
 
+    /// 复用仍有效的语言计数，避免每次切换左侧语言都经历「数字 → 横杠 → 同一个数字」。
+    var sidebarLanguageStats: [LanguageStat]? {
+        guard let snapshot = sidebarFacetSnapshot,
+              snapshot.query.languageCountQuery == sidebarFacetQuery.languageCountQuery else { return nil }
+        return snapshot.counts.languages
+    }
+
+    /// “全部语言”与逐语言行共用同一份有效性判断，避免一处保留数字、另一处仍闪横杠。
+    var sidebarLanguageTotal: Int? {
+        sidebarLanguageStats.map { $0.reduce(0) { $0 + $1.count } }
+    }
+
     /// 仅用于数字区域的宽度上界，不作为当前筛选计数展示。
     private(set) var sidebarTagCountUpperBounds: [String: Int] = [:]
 
-    /// 未分类的定义就是没有标签，因此禁用标签过滤，而不是偷偷改到全部仓库。
+    /// 当前范围不允许用标签筛选时禁用交互，但仍展示全账号 Star 标签总量（置灰），
+    /// 避免「智能集合首页 / 未分类」误显示成空墙或全 0。
     var canFilterByTags: Bool {
-        selection != .untagged && selection != .smartCollection(.noTags)
+        switch selection {
+        case .untagged, .smartCollectionsHome, .smartCollection(.noTags):
+            return false
+        default:
+            return true
+        }
     }
 
     /// SwiftUI task(id:) 会取消上一请求；返回时再核对身份，拦住不响应取消的数据库读取。
@@ -665,7 +705,7 @@ final class HomeViewModel {
         var otherCount = 0
         var interestedCountByLowercased: [String: Int] = [:]
 
-        for stat in sidebarFacetCounts?.languages ?? [] {
+        for stat in sidebarLanguageStats ?? [] {
             let name = stat.language
             if name.isEmpty {
                 uncategorizedCount = stat.count
@@ -848,7 +888,7 @@ final class HomeViewModel {
         didSet {
             guard oldValue != repoLanguageFilter else { return }
             guard !isHydratingManageFilters, !isApplyingGlobalFilterState else { return }
-            reloadOrApplyCurrentManageView()
+            reloadOrApplyCurrentManageView(preservingSidebarLanguageCounts: true)
         }
     }
 
@@ -1292,7 +1332,7 @@ final class HomeViewModel {
         } else {
             filters.repoLanguageFilter = filter
         }
-        applyPersistentGlobalFilterState(filters)
+        applyPersistentGlobalFilterState(filters, preservingSidebarLanguageCounts: true)
     }
 
     /// 旧版 `.language(...)` 导航恢复：直接落到左侧单选语言筛选，不碰全局多选。
@@ -1307,7 +1347,7 @@ final class HomeViewModel {
             filters.repoLanguageFilter = .uncategorized
         }
 
-        applyPersistentGlobalFilterState(filters)
+        applyPersistentGlobalFilterState(filters, preservingSidebarLanguageCounts: true)
     }
 
     /// 全局语言仍跨分类保留；只有新集合与局部语言互斥时，才将局部选择恢复为「全部」。
@@ -1334,7 +1374,7 @@ final class HomeViewModel {
     func clearSidebarLanguageFilter() {
         var filters = persistentGlobalFilterState
         filters.repoLanguageFilter = .all
-        applyPersistentGlobalFilterState(filters)
+        applyPersistentGlobalFilterState(filters, preservingSidebarLanguageCounts: true)
     }
 
     /// 两层条件分别命名，避免全局多选覆盖局部单选的可见提示。
@@ -1394,8 +1434,12 @@ final class HomeViewModel {
     }
 
     /// 批量写入真实筛选时只触发一次重查，避免十个 didSet 依次启动十份分页任务。
-    private func applyPersistentGlobalFilterState(_ filters: GlobalRepoFilterState) {
+    private func applyPersistentGlobalFilterState(
+        _ filters: GlobalRepoFilterState,
+        preservingSidebarLanguageCounts: Bool = false
+    ) {
         let previous = effectiveGlobalFilterState
+        let wasTemporaryFilterActive = temporaryGlobalFilterSession != nil
         isApplyingGlobalFilterState = true
         temporaryGlobalFilterSession = nil
         hideArchived = filters.hideArchived
@@ -1411,7 +1455,11 @@ final class HomeViewModel {
         isApplyingGlobalFilterState = false
 
         if effectiveGlobalFilterState != previous {
-            reloadOrApplyCurrentManageView()
+            // 结束临时筛选会话可能同时改变其它条件，此时旧语言计数不再保证有效。
+            reloadOrApplyCurrentManageView(
+                preservingSidebarLanguageCounts:
+                    preservingSidebarLanguageCounts && !wasTemporaryFilterActive
+            )
         }
     }
 
@@ -1757,7 +1805,7 @@ final class HomeViewModel {
     /// 普通列表走数据库分页后，继续调用 `applyView()` 只会重排当前已加载页，
     /// 不能得到“全量排序后的第一页”。因此这里按模式分流：普通列表重查第一页，
     /// 智能集合/语义搜索等复杂路径仍走旧的内存派生。
-    private func reloadOrApplyCurrentManageView() {
+    private func reloadOrApplyCurrentManageView(preservingSidebarLanguageCounts: Bool = false) {
         let actionGeneration = reloadCoordinator.beginAction()
         guard currentRepoListScopeForDatabasePaging() != nil, !isSearching else {
             let task = Task { [weak self] in
@@ -1773,7 +1821,7 @@ final class HomeViewModel {
                       self.reloadCoordinator.isCurrent(generation: actionGeneration)
                 else { return }
                 PerformanceTracer.shared.trace(.manageDerive) {
-                    self.applyView()
+                    self.applyView(preservingSidebarLanguageCounts: preservingSidebarLanguageCounts)
                 }
             }
             reloadCoordinator.installActionTask(task, generation: actionGeneration)
@@ -2841,9 +2889,6 @@ final class HomeViewModel {
             AppLog.ui.notice("[switch-cat] T5 bg fetch done +\(Self.msSinceT0, format: .fixed(precision: 1))ms")
             #endif
 
-            self.isLoading = false
-            self.isRefreshing = false
-
             switch outcome {
             case .success(let result):
                 let fetched = result.repos
@@ -2896,6 +2941,7 @@ final class HomeViewModel {
                 if idsIdentical && statusIdentical && libraryIdentical && wikiIdentical && !mustReapplyView {
                     // 静默更新底层引用（rawItems / statusMap 是 private 属性，不参与视图重建）。
                     // 不动 items / itemsRevision → 不触发 SwiftUI re-render，避免第二波动画。
+                    // ID 序列未变时 rawItems.didSet 不再抬高分面 revision，侧栏数字可保留。
                     self.rawItems = fetched
                     self.statusMap = fetchedStatusMap
                     self.libraryStateMap = fetchedLibraryStateMap
@@ -2918,8 +2964,13 @@ final class HomeViewModel {
                     AppLog.ui.notice("[switch-cat] T6 applyView done after bg fetch +\(Self.msSinceT0, format: .fixed(precision: 1))ms")
                     #endif
                 }
+                // 等 rawItems / applyView 落定后再关 loading，避免分面任务对着旧候选集算完又被冲掉。
+                self.isLoading = false
+                self.isRefreshing = false
             case .failure(let error):
                 self.semanticHitMap = [:]
+                self.isLoading = false
+                self.isRefreshing = false
                 let friendly = UserFacingError.map(
                     error,
                     operation: String.l10n("diagnostics.operation.loadStars"),
@@ -3444,8 +3495,10 @@ final class HomeViewModel {
     /// **R-07（2026-06-15）**：算出 filteredSorted 后切片到 items；resetPage = true
     /// 把 currentPage 重置回 1（典型场景：切分类 / 排序 / 过滤），false 时保留
     /// （典型场景：SWR / forceRefresh 数据变化，preserveScrollPosition）。
-    private func applyView(resetPage: Bool = true) {
-        sidebarFacetDerivedRevision &+= 1
+    private func applyView(
+        resetPage: Bool = true,
+        preservingSidebarLanguageCounts: Bool = false
+    ) {
         let wasDeepScrolledToEnd = !resetPage && !hasMore && items.count > Self.pageSize
         let newFilteredSorted = computeFilteredSorted()
         visibleRepoTotalCount = newFilteredSorted.count
@@ -3459,7 +3512,15 @@ final class HomeViewModel {
             if let id = selectedRepoID, !newFilteredSorted.contains(where: { $0.id == id }) {
                 selectedRepoID = nil
             }
+            // 不要在 no-op 时抬高 derivedRevision：loadFromCache / 重复 applyView
+            // 否则会冲掉智能集合等内存路径刚算好的标签数字，侧栏停在「—」。
             return
+        }
+
+        // 语言分面本来就排除左侧单选语言；仅这一个条件变化时，旧语言数字仍然有效。
+        // 真正改了可见列表才递增，避免无意义失效。
+        if !preservingSidebarLanguageCounts {
+            sidebarFacetDerivedRevision &+= 1
         }
 
         filteredSorted = newFilteredSorted

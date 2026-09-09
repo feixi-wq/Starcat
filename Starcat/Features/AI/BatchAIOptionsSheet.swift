@@ -41,6 +41,23 @@ struct BatchAIOptionsSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.locale) private var locale
+    @Environment(AppSettings.self) private var settings
+
+    private var tagSuggestionRangeText: String {
+        AITagSuggestionCountPolicy.displayRange(
+            minimum: settings.aiTagSuggestionMinCount,
+            maximum: settings.aiTagSuggestionMaxCount
+        )
+    }
+
+    private var tagsActionDescription: String {
+        String(
+            format: String.l10n("batchAI.generateTags.action.tags.descFormat"),
+            locale: locale,
+            settings.clampedAITagSuggestionCounts.minimum,
+            settings.clampedAITagSuggestionCounts.maximum
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -66,7 +83,7 @@ struct BatchAIOptionsSheet: View {
             )
             summaryCard(
                 title: String.l10n("batchAI.generateTags.action.tags"),
-                value: "3–8",
+                value: tagSuggestionRangeText,
                 icon: "tag",
                 tint: .blue
             )
@@ -126,8 +143,9 @@ struct BatchAIOptionsSheet: View {
                     OptionCard(
                         icon: "tag",
                         title: "batchAI.generateTags.action.tags",
-                        subtitle: "batchAI.generateTags.action.tags.desc",
-                        isSelected: true,
+                        subtitle: tagsActionDescription,
+                        // 与 options.actions 对齐；写死 true 会掩盖「标签未进 actions」的预检异常。
+                        isSelected: options.actions.contains(.tags),
                         isDisabled: true,
                         onToggle: {}
                     )
@@ -139,6 +157,7 @@ struct BatchAIOptionsSheet: View {
         .frame(width: 640, height: 424, alignment: .top)
         .background(panelBackground)
         .overlay(panelBorder)
+        .onAppear(perform: ensureTagsActionSelected)
     }
 
     private var sessionPanel: some View {
@@ -151,11 +170,7 @@ struct BatchAIOptionsSheet: View {
                 value: pendingCount.formatted(.number.locale(locale)),
                 icon: "magnifyingglass"
             )
-            sessionFact(
-                title: String.l10n("batchAI.options.tagsPerRepository"),
-                value: "3–8",
-                icon: "tag"
-            )
+            tagSuggestionCountEditor
             sessionFact(
                 title: String.l10n("batchAI.options.selectedActions"),
                 value: selectedActionCount.formatted(.number.locale(locale)),
@@ -236,7 +251,33 @@ struct BatchAIOptionsSheet: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
             Text(verbatim: value)
-                .font(interfaceScale.font(.bodyEmphasis).monospacedDigit())
+                .font(interfaceScale.font(.caption).weight(.semibold).monospacedDigit())
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+    }
+
+    /// 右侧「每仓库标签」区间：短芯片 + popover，即时写回 Settings，与标签分类设置同源。
+    private var tagSuggestionCountEditor: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "slider.horizontal.3")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text("settings.autoTidy.tagSuggestionCount")
+                .font(interfaceScale.font(.caption))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            AITagSuggestionCountRangeControl(
+                minimum: settings.aiTagSuggestionMinCount,
+                maximum: settings.aiTagSuggestionMaxCount,
+                style: .compact
+            ) { minimum, maximum in
+                settings.applyAITagSuggestionCounts(minimum: minimum, maximum: maximum)
+            }
+            .layoutPriority(0)
         }
     }
 
@@ -267,7 +308,7 @@ struct BatchAIOptionsSheet: View {
             OptionCard(
                 icon: "doc.text",
                 title: "batchAI.options.action.summary",
-                subtitle: "batchAI.options.action.summary.desc",
+                subtitle: String.l10n("batchAI.options.action.summary.desc"),
                 isSelected: options.actions.contains(.summary),
                 onToggle: { toggleAction(.summary) }
             )
@@ -277,7 +318,7 @@ struct BatchAIOptionsSheet: View {
                 OptionCard(
                     icon: "chevron.left.forwardslash.chevron.right",
                     title: "ai.assistant.summary.options.codeContext.title",
-                    subtitle: "ai.assistant.summary.options.codeContext.subtitle",
+                    subtitle: String.l10n("ai.assistant.summary.options.codeContext.subtitle"),
                     isSelected: options.actions.contains(.summary)
                         && options.codeContextEnabledOverride == true,
                     isDisabled: !options.actions.contains(.summary) || !canPrepareCodeContext,
@@ -289,9 +330,11 @@ struct BatchAIOptionsSheet: View {
                 OptionCard(
                     icon: "network",
                     title: "ai.assistant.summary.options.externalSearch.title",
-                    subtitle: hasUsableExternalSearchProvider
-                        ? "ai.assistant.summary.options.externalSearch.subtitle"
-                        : "ai.assistant.summary.options.externalSearch.unavailable",
+                    subtitle: String.l10n(
+                        hasUsableExternalSearchProvider
+                            ? "ai.assistant.summary.options.externalSearch.subtitle"
+                            : "ai.assistant.summary.options.externalSearch.unavailable"
+                    ),
                     isSelected: options.actions.contains(.summary)
                         && options.externalContextEnabledOverride == true,
                     isDisabled: !options.actions.contains(.summary) || !hasUsableExternalSearchProvider,
@@ -341,8 +384,7 @@ struct BatchAIOptionsSheet: View {
     // MARK: - 辅助
 
     private var selectedActionCount: Int {
-        // 自动应用只是建议落库策略，不应计入 AI 实际执行的任务数量。
-        1 + (options.actions.contains(.summary) ? 1 : 0)
+        options.selectedOperationStepCount
     }
 
     private var estimatedMinutes: Int {
@@ -355,11 +397,28 @@ struct BatchAIOptionsSheet: View {
     }
 
     private func toggleAction(_ action: BatchAIAction) {
-        if options.actions.contains(action) {
-            options.actions.remove(action)
-        } else {
-            options.actions.insert(action)
+        // 生成标签是手动批量整理的固定主任务，不允许从 actions 里摘掉。
+        guard action != .tags else {
+            ensureTagsActionSelected()
+            return
         }
+        // 显式 copy-assign：Binding 嵌套 Set 的 in-place mutate 在部分宿主下可能丢写回。
+        var actions = options.actions
+        if actions.contains(action) {
+            actions.remove(action)
+        } else {
+            actions.insert(action)
+        }
+        actions.insert(.tags)
+        options.actions = actions
+    }
+
+    /// 打开配置页时保证 `.tags` 在预检集合里，与「标签固定开启」的产品语义一致。
+    private func ensureTagsActionSelected() {
+        guard !options.actions.contains(.tags) else { return }
+        var actions = options.actions
+        actions.insert(.tags)
+        options.actions = actions
     }
 
     private func percentString(_ v: Double) -> String {
@@ -389,7 +448,7 @@ private struct OptionCard: View {
 
     let icon: String
     let title: LocalizedStringKey
-    let subtitle: LocalizedStringKey
+    let subtitle: String
     let isSelected: Bool
     var isDisabled: Bool = false
     var isNested: Bool = false
@@ -409,7 +468,7 @@ private struct OptionCard: View {
                     Text(title)
                         .font(interfaceScale.font(.rowTitle))
                         .foregroundStyle(.primary)
-                    Text(subtitle)
+                    Text(verbatim: subtitle)
                         .font(interfaceScale.font(.caption))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

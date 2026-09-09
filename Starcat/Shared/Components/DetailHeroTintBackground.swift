@@ -59,7 +59,9 @@ struct DetailHeroTintBackground: View {
         .frame(height: gradientHeight)
         .opacity(overallOpacity)
         .allowsHitTesting(false)
-        // 绘制进 titlebar / toolbar 透明区域；不扩其它边，避免影响底部 batch bar inset。
+        // 这是一张顶部从透明开始的程序化渐变，必须与内容区共用连续坐标。
+        // macOS 26 的 backgroundExtensionEffect 会镜像透明边缘，反而在安全区交界处
+        // 形成一条无色带；只忽略顶部安全区既能延伸进 toolbar，也不会影响其它边。
         .ignoresSafeArea(edges: .top)
     }
 }

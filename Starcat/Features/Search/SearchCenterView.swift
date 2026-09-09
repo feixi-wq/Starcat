@@ -25,7 +25,6 @@ struct SearchCenterView: View {
     @Environment(HomeViewModel.self) private var homeViewModel
     @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(\.starcatInterfaceScale) private var interfaceScale
-    @FocusState private var isSearchFocused: Bool
     /// SEARCH-RICH 2026-06-14：从 `Repo?` 改为 `RepositoryCandidate?` —— 弹窗
     /// 新增需要展示 `remoteExtras`（disabled / isTemplate / score）以及 sort 模式
     /// 来决定是否渲染匹配度，单纯的 `Repo` 不够用，必须把整张候选传进去。
@@ -119,7 +118,6 @@ struct SearchCenterView: View {
             .transition(reduceMotion ? .opacity : .opacity)
         }
         .defaultCursorShield()
-        .onAppear { focusSearchFieldOnAppear() }
         .sheet(item: $remoteDetailCandidate) { candidate in
             // 把 sort 模式一并传入：仅在 bestMatch 时才渲染匹配度，否则
             // score 字段对当前结果排序无解释力（按 stars / forks / updated
@@ -245,36 +243,23 @@ struct SearchCenterView: View {
     }
 
     private var searchHeader: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("search.searchField.placeholder", text: $viewModel.query)
-                .textFieldStyle(.plain)
-                .font(interfaceScale.font(.iconLarge))
-                .focused($isSearchFocused)
-                .onSubmit { Task { await viewModel.submit() } }
-
-            if !viewModel.query.isEmpty {
-                Button { viewModel.clear() } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+        // Border Beam 只替换输入外观；scope、Provider、提交与结果状态仍由
+        // SearchCenterViewModel 驱动，避免视觉组件反向持有搜索业务。
+        BorderBeamSearchField(
+            text: $viewModel.query,
+            prompt: Text("search.searchField.placeholder"),
+            accessibilityLabel: Text("search.searchField.placeholder"),
+            autofocusOnAppear: true,
+            onSubmit: { submittedQuery in
+                if submittedQuery.isEmpty {
+                    viewModel.clear()
+                } else {
+                    Task { await viewModel.submit() }
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
             }
-        }
-        .padding(.horizontal, 18)
+        )
+        .padding(.horizontal, 12)
         .frame(height: 58)
-    }
-
-    private func focusSearchFieldOnAppear() {
-        Task { @MainActor in
-            // SearchCenterView 作为 overlay 淡入时，首个 onAppear 可能早于 TextField
-            // 真正进入可接收 first responder 的窗口层级；让出一轮主线程后再申请焦点，
-            // 避免 SwiftUI 吞掉这次 focus 赋值，保证打开全局搜索后可直接输入。
-            await Task.yield()
-            isSearchFocused = true
-        }
     }
 
     private var scopePicker: some View {
@@ -293,6 +278,9 @@ struct SearchCenterView: View {
                 .focusEffectDisabled()
             }
             Spacer()
+            if shouldShowSemanticIndexControl {
+                semanticIndexControl
+            }
             if filtersAvailable {
                 Button {
                     isFilterDrawerPresented.toggle()
@@ -310,6 +298,64 @@ struct SearchCenterView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 46)
+    }
+
+    /// “全部 / 本地”都会执行本地语义 Provider，因此只在这两个 scope 暴露索引刷新。
+    /// GitHub / Web 不读取本地向量，显示按钮会错误暗示刷新能影响远端结果。
+    private var shouldShowSemanticIndexControl: Bool {
+        viewModel.scope == .all || viewModel.scope == .local
+    }
+
+    /// 复用项目统一刷新控件，并沿用旧 SmartSearchField 已有的进度文案。
+    /// 索引状态继续由 HomeViewModel 单一持有，避免 Search Center 再造一套并发状态。
+    private var semanticIndexControl: some View {
+        HStack(spacing: 6) {
+            if homeViewModel.isSemanticIndexing,
+               let progress = homeViewModel.semanticIndexProgress {
+                Text(verbatim: "\(progress.processed)/\(progress.total)")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            SyncIconButton(
+                isRefreshing: homeViewModel.isSemanticIndexing,
+                disabled: homeViewModel.isSemanticIndexing || viewModel.isSearching,
+                tooltip: semanticIndexTooltip,
+                action: refreshSemanticIndex
+            )
+            .accessibilityLabel(Text("search.semantic.refreshIndex"))
+        }
+    }
+
+    private var semanticIndexTooltip: String {
+        guard homeViewModel.isSemanticIndexing,
+              let progress = homeViewModel.semanticIndexProgress else {
+            return String.l10n("search.semantic.refreshIndex")
+        }
+        return String(
+            format: String.l10n("search.semantic.indexingProgressFormat"),
+            progress.processed,
+            progress.total
+        )
+    }
+
+    private func refreshSemanticIndex() {
+        guard dependencies.entitlementGate.isProUser else {
+            viewModel.paywallContext = ProPaywallContext(
+                feature: .semanticSearch,
+                message: String.l10n("search.paywall.semantic.upgrade")
+            )
+            return
+        }
+
+        Task {
+            await homeViewModel.refreshSemanticIndex()
+            // 刷新完成后重跑当前已提交查询；成功时立即纳入新向量，失败时则让
+            // LocalSemanticSearchProvider 把可执行错误展示在结果区，而不是静默无效。
+            guard !viewModel.lastSubmittedQuery.isEmpty else { return }
+            await viewModel.submit()
+        }
     }
 
     /// scope 栏 Filters / 历史区 Clear all 共用的右侧胶囊样式。
@@ -637,16 +683,8 @@ struct SearchCenterView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear.frame(height: 8)
             }
-            .overlay(alignment: .bottomLeading) {
-                if let message = viewModel.errorMessages.first {
-                    Label(message, systemImage: "exclamationmark.triangle")
-                        .font(interfaceScale.font(.caption))
-                        .foregroundStyle(.orange)
-                        .padding(10)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding()
-                }
-            }
+            // Provider 失败提示已迁到 `webResultFooter` 右侧，避免结果列表底角
+            // 玻璃胶囊挡住末行 hover / 与底部状态栏抢视线。
         }
     }
 
@@ -851,22 +889,30 @@ struct SearchCenterView: View {
 
     private func shouldShowSourceIndicator(_ source: SearchResultSourceIndicator?) -> Bool {
         guard let source else { return false }
+        if case .semantic = source {
+            // 语义标记不仅用于“全部”聚合来源，还要在“本地”范围明确证明向量
+            // Provider 确实参与了召回；关键词-only 本地结果仍保持无标记的低噪音样式。
+            return viewModel.scope == .all || viewModel.scope == .local
+        }
         if viewModel.scope == .all { return true }
         if viewModel.scope == .web {
             switch source {
             case .web, .externalProvider(_):
                 return true
-            case .local, .github:
+            case .local, .semantic, .github:
                 return false
             }
         }
         return false
     }
 
-    /// 同一 repo 可能同时命中本地与 GitHub。优先显示「本地」，因为它已经是用户库内对象；
-    /// 纯远端候选才显示 GitHub，避免单卡出现多来源图标造成噪音。
+    /// 同一 repo 可能命中多个 Provider。语义命中优先显示 sparkles，让用户能确认
+    /// 向量召回是否生效；其余本地结果显示磁盘，纯远端候选才显示 GitHub。
     private func repositorySourceIndicator(for candidate: RepositoryCandidate) -> SearchResultSourceIndicator? {
-        if candidate.sources.contains(.localKeyword) || candidate.sources.contains(.localSemantic) {
+        if candidate.sources.contains(.localSemantic) {
+            return .semantic
+        }
+        if candidate.sources.contains(.localKeyword) {
             return .local
         }
         if candidate.sources.contains(.github) {
@@ -884,6 +930,7 @@ struct SearchCenterView: View {
 
     private enum SearchResultSourceIndicator {
         case local
+        case semantic
         case github
         case web
         case externalProvider(ExternalSearchProviderID)
@@ -913,6 +960,9 @@ struct SearchCenterView: View {
             switch source {
             case .local:
                 Image(systemName: "internaldrive")
+                    .font(.system(size: 11, weight: .semibold))
+            case .semantic:
+                Image(systemName: "sparkles")
                     .font(.system(size: 11, weight: .semibold))
             case .github:
                 Image("github")
@@ -944,6 +994,7 @@ struct SearchCenterView: View {
         private var tint: Color {
             switch source {
             case .local: return .secondary
+            case .semantic: return .secondary
             case .github: return .primary
             case .web: return .blue
             case .externalProvider(let provider):
@@ -954,6 +1005,7 @@ struct SearchCenterView: View {
         private var helpText: Text {
             switch source {
             case .local: return Text("search.scope.local")
+            case .semantic: return Text("search.mode.semantic")
             case .github: return Text(verbatim: "GitHub")
             case .web: return Text("search.scope.web")
             case .externalProvider(let provider):
@@ -1074,25 +1126,35 @@ struct SearchCenterView: View {
 
     /// 浮层底部 footer。按 scope 分支渲染：
     ///
-    /// - **`.web`**（仅网页）：左侧"X 条 · Y.Ys"汇总 chip + 右侧 rate limit chip
+    /// - **`.web`**（仅网页）：左侧"X 条 · Y.Ys"汇总 chip + 右侧错误 / rate limit
     /// - **`.all`**（聚合）：左侧多段 chip"本地 N · GitHub M · 网页 K"（按 provider
-    ///   命中数依次展示）+ 右侧 rate limit chip（仅当 web 参与且已加载）
-    /// - **`.local` / `.github`**：不渲染 footer
+    ///   命中数依次展示）+ 右侧错误 chip + rate limit chip（仅当 web 参与且已加载）
+    /// - **`.local` / `.github`**：默认不渲染；若有 provider 失败则仍渲染右侧错误
     ///
     /// 关键约束（不要回退）：
     /// - footer 渲染条件 = "至少有一个 chip 可显示"：
     ///   - 至少一个 provider 已加载（resultCounts 非空），或
-    ///   - rate limit chip 可显示（webMetadata.rateLimit 非 nil）
-    /// - rate limit 三字段缺一不全 → 右侧 chip 不显示（左侧 metadata 仍渲染）
-    /// - remaining ≤ 0 时右侧 chip 切换到"额度用尽 · HH:mm 重置"
+    ///   - rate limit chip 可显示（webMetadata.rateLimit 非 nil），或
+    ///   - 至少一个 provider 失败（footerErrors 非空）
+    /// - 右侧顺序固定：错误 chip → 限流 chip（限流贴最右，避免错误出现时跳位）
+    /// - rate limit 三字段缺一不全 → 限流 chip 不显示（左侧 metadata / 错误仍渲染）
+    /// - remaining ≤ 0 时右侧限流 chip 切换到"额度用尽 · HH:mm 重置"
     @ViewBuilder
     private var webResultFooter: some View {
         let counts = viewModel.resultCounts
         let rateLimit = viewModel.webMetadata?.rateLimit
-        if !counts.isEmpty || rateLimit != nil {
+        let errors = viewModel.footerErrors
+        if !counts.isEmpty || rateLimit != nil || !errors.isEmpty {
             HStack(spacing: 8) {
                 leadingSummaryContent(counts: counts)
                 Spacer(minLength: 8)
+                if !errors.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(errors) { error in
+                            footerErrorChip(error)
+                        }
+                    }
+                }
                 if let rateLimit {
                     rateLimitChip(rateLimit)
                 }
@@ -1101,6 +1163,25 @@ struct SearchCenterView: View {
             .padding(.vertical, 6)
             .background(Color.primary.opacity(0.025))
         }
+    }
+
+    /// 右侧紧凑错误 chip：短标签可扫读，完整失败句只挂系统 tooltip。
+    /// 规格对齐 sourceCountChip（captionSmall + capsule），颜色用 warning 橙区分计数。
+    private func footerErrorChip(_ error: SearchFooterError) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(interfaceScale.font(.captionSmall, weight: .semibold))
+            // shortLabel 已是 `String.l10n` 结果，必须 verbatim，避免再被当 key 查找。
+            Text(verbatim: error.shortLabel)
+                .font(interfaceScale.font(.captionSmall, weight: .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Color.orange.opacity(0.12), in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
+        .help(error.fullMessage)
     }
 
     /// 左侧汇总区。根据当前 scope 选择渲染策略：

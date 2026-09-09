@@ -14,6 +14,42 @@ import SwiftUI
 /// 将不可变历史快照投影成 HTML；不触发网络请求，也不访问用户数据库。
 @MainActor
 enum ReadmeStarHistoryHTMLRenderer {
+    /// 无可用缓存时使用固定结构占位，避免短 README 底部在网络等待期间完全空白。
+    ///
+    /// 骨架不包含仓库数据，也不触发图表脚本；外层 `aria-busy` 让辅助功能知道该区域
+    /// 尚未就绪，内部纯装饰块从可访问性树中隐藏。
+    static func renderLoading() -> String {
+        let chartTitle = text("readme.starHistory.chartTitle")
+        return """
+        <section class="starcat-star-history starcat-star-history-loading" aria-label="\(chartTitle)" aria-busy="true">
+          <div class="starcat-star-history-card starcat-star-history-skeleton" aria-hidden="true">
+            <div class="starcat-star-history-skeleton-header">
+              <span class="starcat-star-history-skeleton-block starcat-star-history-skeleton-avatar"></span>
+              <div class="starcat-star-history-skeleton-copy">
+                <span class="starcat-star-history-skeleton-block starcat-star-history-skeleton-kicker"></span>
+                <span class="starcat-star-history-skeleton-block starcat-star-history-skeleton-title"></span>
+                <span class="starcat-star-history-skeleton-block starcat-star-history-skeleton-description"></span>
+                <span class="starcat-star-history-skeleton-block starcat-star-history-skeleton-tag"></span>
+              </div>
+              <span class="starcat-star-history-skeleton-block starcat-star-history-skeleton-total"></span>
+            </div>
+            <div class="starcat-star-history-skeleton-block starcat-star-history-skeleton-chart"></div>
+            <div class="starcat-star-history-skeleton-metrics">
+              <span class="starcat-star-history-skeleton-block"></span>
+              <span class="starcat-star-history-skeleton-block"></span>
+              <span class="starcat-star-history-skeleton-block"></span>
+              <span class="starcat-star-history-skeleton-block"></span>
+            </div>
+            <div class="starcat-star-history-skeleton-block starcat-star-history-skeleton-journey"></div>
+            <div class="starcat-star-history-skeleton-footer">
+              <span class="starcat-star-history-skeleton-block"></span>
+              <span class="starcat-star-history-skeleton-block"></span>
+            </div>
+          </div>
+        </section>
+        """
+    }
+
     static func render(
         snapshot: StarHistorySnapshot,
         model: StarHistoryChartRenderModel,
@@ -24,7 +60,7 @@ enum ReadmeStarHistoryHTMLRenderer {
     ) -> String? {
         let points = snapshot.points.filter { $0.count >= 0 }.sorted { $0.date < $1.date }
         let hasChart = points.count >= 2 && points.first!.date < points.last!.date && model.renderedPoints.count >= 2
-        guard snapshot.range == .all, hasChart || repo.starsCount == 0 else { return nil }
+        guard snapshot.range == .all, repo.starsCount > 0, hasChart else { return nil }
 
         let createdAt = repo.createdAt.flatMap(ISO8601DateFormatter.githubDate(from:))
         let journey = ReadmeStarJourney(snapshot: snapshot, repo: repo)
@@ -108,9 +144,9 @@ enum ReadmeStarHistoryHTMLRenderer {
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return "<p class=\"starcat-star-history-description\" title=\"\(escape(value))\">\(escape(value))</p>"
         } ?? ""
-        // 本机快照写入时间不代表服务端数据更新；优先使用对应这批历史的 generatedAt。
+        // 官方历史的 generatedAt 才代表这批曲线的更新时间，Repo metadata 时间不能替代。
         let generatedAt = snapshot.coverage?.generatedAt
-            ?? points.filter { $0.source == .ghArchive }.compactMap(\.fetchedAt).max()
+            ?? points.filter { $0.source == .githubHistory }.compactMap(\.fetchedAt).max()
         let historyUpdated = format("readme.starHistory.updatedFormat", generatedAt.map { dateText($0, locale: locale) } ?? "—")
         // 只接收 App 已准备好的图片数据，避免 WebView 再发远程请求；缺图由 ViewModel 异步补齐。
         let avatarImage = avatarDataURI.map {

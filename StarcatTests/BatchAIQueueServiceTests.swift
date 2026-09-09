@@ -18,6 +18,79 @@ import Testing
 @MainActor
 struct BatchAIQueueServiceTests {
 
+    @Test("重启后恢复未确认标签且不会自动重复调用 AI")
+    func restoresPendingReviewWithoutCallingProvider() async throws {
+        let database = try InMemoryDatabaseManager(userId: 1)
+        let draftRepository = GRDBAIOrganizationDraftRepository(database: database)
+        let provider = ImmediateBatchAIInsightProvider(suggestions: Self.sampleSuggestions)
+        let service = makeService(
+            insightProvider: provider,
+            database: database,
+            tagRepository: GRDBTagRepository(database: database),
+            repoTagRepository: GRDBRepoTagRepository(database: database),
+            draftRepository: draftRepository
+        )
+        let repo = Self.makeTestRepos(ids: [77])[0]
+
+        #expect(service.start(repos: [repo], options: BatchAIQueueOptions()))
+        await waitUntilStopped(service)
+        #expect(provider.generationCount == 1)
+        #expect(service.pendingTagReviewCount == 1)
+
+        let restoredService = makeService(
+            insightProvider: provider,
+            database: database,
+            tagRepository: GRDBTagRepository(database: database),
+            repoTagRepository: GRDBRepoTagRepository(database: database),
+            draftRepository: draftRepository
+        )
+        await restoredService.restoreDraftIfNeeded()
+
+        #expect(provider.generationCount == 1)
+        #expect(!restoredService.isRunning)
+        #expect(restoredService.pendingTagReviewCount == 1)
+        #expect(restoredService.jobs.first?.suggestedTags == Self.sampleSuggestions)
+        #expect(restoredService.discardCurrentSession())
+        for _ in 0..<50 {
+            if try await draftRepository.loadDraft(kind: .batchTags) == nil { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(try await draftRepository.loadDraft(kind: .batchTags) == nil)
+    }
+
+    @Test("账号切换中断请求但保留未开始和未确认草稿")
+    func accountSwitchPreservesEntireManualDraft() async throws {
+        let database = try InMemoryDatabaseManager(userId: 1)
+        let draftRepository = GRDBAIOrganizationDraftRepository(database: database)
+        let provider = BlockingBatchAIInsightProvider()
+        let service = makeService(
+            insightProvider: provider,
+            database: database,
+            tagRepository: GRDBTagRepository(database: database),
+            repoTagRepository: GRDBRepoTagRepository(database: database),
+            draftRepository: draftRepository
+        )
+        let repos = Self.makeTestRepos(ids: Array(1...6))
+
+        #expect(service.start(repos: repos, options: BatchAIQueueOptions()))
+        await provider.waitUntilGenerationStarts()
+        await service.resetForAccountChange()
+
+        let restoredService = makeService(
+            insightProvider: provider,
+            database: database,
+            tagRepository: GRDBTagRepository(database: database),
+            repoTagRepository: GRDBRepoTagRepository(database: database),
+            draftRepository: draftRepository
+        )
+        await restoredService.restoreDraftIfNeeded()
+
+        #expect(restoredService.jobs.count == repos.count)
+        #expect(restoredService.jobs.contains { $0.status == .queued })
+        #expect(restoredService.jobs.filter { $0.status == .failed }.allSatisfy { $0.failure == .interrupted })
+        #expect(provider.generationCount <= 5)
+    }
+
     @Test("终止会保留失败结果，明确放弃后才允许下一批启动")
     func cancelKeepsFailureUntilDiscardAndAllowsRestart() async throws {
         let provider = BlockingBatchAIInsightProvider()
@@ -52,7 +125,7 @@ struct BatchAIQueueServiceTests {
     @Test("配置错误在创建 jobs 前拒绝整批")
     func configurationFailureRejectsBatchBeforeEnqueue() throws {
         let provider = BlockingBatchAIInsightProvider()
-        provider.validationError = RepoAIInsightError.missingAPIKey
+        provider.validationError = RepoAIInsightError.missingAPIKey(String.l10n("ai.taskName.tagRecommendation"))
         let service = try makeService(insightProvider: provider)
         var repo = Repo.makeMinimal(owner: "acme", name: "demo")
         repo.id = 303
@@ -119,6 +192,47 @@ struct BatchAIQueueServiceTests {
         #expect(service.selectedRepoIDsForTagApplication == [repo.id])
         #expect(service.selectedTagReviewRepositoryCount == 1)
         #expect(try await repoTagRepository.fetchTags(forRepo: repo.id).isEmpty)
+    }
+
+    @Test("标签任务返回空建议时直接进入失败，不自动重复消耗配额")
+    func emptyTagSuggestionsBecomeFailure() async throws {
+        let provider = ImmediateBatchAIInsightProvider(suggestions: [])
+        let service = try makeService(insightProvider: provider)
+        var repo = Repo.makeMinimal(owner: "acme", name: "empty-tags")
+        repo.id = 512
+        var options = BatchAIQueueOptions()
+        options.actions = [.tags]
+        options.autoApplyTags = false
+
+        #expect(service.start(repos: [repo], options: options))
+        await waitUntilStopped(service)
+
+        let job = try #require(service.jobs.first)
+        #expect(job.status == .failed)
+        #expect(job.failure == .recommendationValidation(.emptyTagSuggestions))
+        #expect(job.attempts == 1)
+        #expect(BatchAIQueuePresentationStore.primaryState(for: job) == .failed)
+        #expect(service.failedCount == 1)
+        #expect(service.completedCount == 0)
+    }
+
+    @Test("只生成摘要时允许标签建议为空")
+    func summaryOnlyAllowsEmptyTagSuggestions() async throws {
+        let provider = ImmediateBatchAIInsightProvider(suggestions: [])
+        let service = try makeService(insightProvider: provider)
+        var repo = Repo.makeMinimal(owner: "acme", name: "summary-only")
+        repo.id = 513
+        var options = BatchAIQueueOptions()
+        options.actions = [.summary]
+
+        #expect(service.start(repos: [repo], options: options))
+        await waitUntilStopped(service)
+
+        let job = try #require(service.jobs.first)
+        #expect(job.status == .completed)
+        #expect(job.failure == nil)
+        #expect(service.completedCount == 1)
+        #expect(service.failedCount == 0)
     }
 
     @Test("待确认建议区分已有标签和需要新建的标签")
@@ -315,6 +429,42 @@ struct BatchAIQueueServiceTests {
         #expect(service.finishManualSessionIfResolved())
         #expect(service.jobs.isEmpty)
         #expect(service.options == nil)
+    }
+
+    @Test("批量应用合并 onTagsChanged，结束后 isApplying 为 false")
+    func bulkApplyCoalescesTagsChangedNotification() async throws {
+        let provider = ImmediateBatchAIInsightProvider(suggestions: Self.sampleSuggestions)
+        let database = try InMemoryDatabaseManager()
+        let tagRepository = GRDBTagRepository(database: database)
+        let repoTagRepository = GRDBRepoTagRepository(database: database)
+        let service = makeService(
+            insightProvider: provider,
+            database: database,
+            tagRepository: tagRepository,
+            repoTagRepository: repoTagRepository
+        )
+        var first = Repo.makeMinimal(owner: "acme", name: "lock-first")
+        first.id = 530
+        var second = Repo.makeMinimal(owner: "acme", name: "lock-second")
+        second.id = 531
+        try await database.insertRepoFixture(id: first.id, owner: "acme", name: "lock-first")
+        try await database.insertRepoFixture(id: second.id, owner: "acme", name: "lock-second")
+        var options = BatchAIQueueOptions()
+        options.actions = [.tags]
+
+        #expect(service.start(repos: [first, second], options: options))
+        await waitUntilStopped(service)
+        service.selectAllTagReviewRepositories()
+
+        var tagsChangedCount = 0
+        service.onTagsChanged = { tagsChangedCount += 1 }
+        await service.applySelectedTagReviewRepositories()
+
+        // 旧实现每仓成功都回调一次；会话级合并后整批只应刷新 Sidebar 一次。
+        #expect(tagsChangedCount == 1)
+        #expect(!service.isApplyingSuggestedTags)
+        #expect(service.jobs.allSatisfy { $0.tagReviewState == .applied })
+        #expect(service.selectedTagReviewRepositoryCount == 0)
     }
 
     @Test("摘要上下文开关作为本次任务参数传给 Provider")
@@ -682,13 +832,15 @@ struct BatchAIQueueServiceTests {
         insightProvider: any BatchAIInsightProviding,
         database: InMemoryDatabaseManager,
         tagRepository: any TagRepositoryProtocol,
-        repoTagRepository: any RepoTagRepositoryProtocol
+        repoTagRepository: any RepoTagRepositoryProtocol,
+        draftRepository: (any AIOrganizationDraftRepositoryProtocol)? = nil
     ) -> BatchAIQueueService {
         BatchAIQueueService(
             insightService: insightProvider,
             tagRepository: tagRepository,
             repoTagRepository: repoTagRepository,
-            aiSummaryRepository: GRDBAISummaryRepository(database: database)
+            aiSummaryRepository: GRDBAISummaryRepository(database: database),
+            draftRepository: draftRepository
         )
     }
 
@@ -756,9 +908,78 @@ struct AIChatTaskSelectionTests {
             keychain: keychain
         )
 
-        #expect(throws: RepoAIInsightError.missingAPIKey) {
+        #expect(throws: RepoAIInsightError.missingAPIKey(String.l10n("ai.taskName.tagRecommendation"))) {
             try service.ensureGenerationClientsReady(includeSummary: false, includeTags: true)
         }
+    }
+
+    @Test("只勾标签时不因摘要任务未配置而失败")
+    func tagsOnlyPreflightIgnoresMissingSummaryTask() throws {
+        let (settings, keychain, profileID) = try makeSettings()
+        try keychain.storeAIKey("sk-test-tags", forProvider: profileID)
+
+        var tagsTask = settings.aiTagsTask
+        tagsTask.providerID = profileID
+        tagsTask.modelID = "chat-model"
+        settings.aiTagsTask = tagsTask
+
+        // 摘要故意指向不存在的 Provider，模拟「只配了标签、没配摘要」。
+        var summaryTask = settings.aiSummaryTask
+        summaryTask.providerID = "missing-summary-provider"
+        summaryTask.modelID = ""
+        settings.aiSummaryTask = summaryTask
+
+        let database = try InMemoryDatabaseManager()
+        let insight = RepoAIInsightService(
+            summaryRepository: GRDBAISummaryRepository(database: database),
+            readmeRepository: ReadmeRepository(database: database),
+            settings: settings,
+            keychain: keychain
+        )
+        let batch = BatchAIQueueService(
+            insightService: insight,
+            tagRepository: GRDBTagRepository(database: database),
+            repoTagRepository: GRDBRepoTagRepository(database: database),
+            aiSummaryRepository: GRDBAISummaryRepository(database: database)
+        )
+
+        var tagsOnly = BatchAIQueueOptions()
+        tagsOnly.actions = [.tags]
+        #expect(batch.configurationIssue(for: tagsOnly) == nil)
+
+        var tagsAndSummary = BatchAIQueueOptions()
+        tagsAndSummary.actions = [.tags, .summary]
+        #expect(batch.configurationIssue(for: tagsAndSummary) != nil)
+        #expect(
+            batch.configurationIssue(for: tagsAndSummary)?
+                .contains(String.l10n("ai.taskName.summary")) == true
+        )
+    }
+
+    @Test("缺少摘要配置时 missingAPIKey 文案必须带任务名")
+    func missingAPIKeyMessageIncludesTaskName() throws {
+        let (settings, keychain, profileID) = try makeSettings()
+        var summaryTask = settings.aiSummaryTask
+        summaryTask.providerID = profileID
+        summaryTask.modelID = "chat-model"
+        settings.aiSummaryTask = summaryTask
+
+        let database = try InMemoryDatabaseManager()
+        let service = RepoAIInsightService(
+            summaryRepository: GRDBAISummaryRepository(database: database),
+            readmeRepository: ReadmeRepository(database: database),
+            settings: settings,
+            keychain: keychain
+        )
+
+        let taskName = String.l10n("ai.taskName.summary")
+        #expect(throws: RepoAIInsightError.missingAPIKey(taskName)) {
+            try service.ensureGenerationClientsReady(includeSummary: true, includeTags: false)
+        }
+        let message = RepoAIInsightError.missingAPIKey(taskName).localizedDescription
+        #expect(message.contains(taskName))
+        // 旧万能句不再作为 missingAPIKey 的展示文案。
+        #expect(message != String.l10n("ai.insight.error.missingAPIKey"))
     }
 
     private func makeSettings(
@@ -855,6 +1076,7 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
     let suggestions: [AITagSuggestion]
     private(set) var lastCodeContextEnabledOverride: Bool?
     private(set) var lastExternalContextEnabledOverride: Bool?
+    private(set) var generationCount = 0
 
     init(suggestions: [AITagSuggestion]) {
         self.suggestions = suggestions
@@ -877,6 +1099,7 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
         codeContextEnabledOverride: Bool?,
         externalContextEnabledOverride: Bool?
     ) async throws -> RepoAIInsightGeneration {
+        generationCount += 1
         lastCodeContextEnabledOverride = codeContextEnabledOverride
         lastExternalContextEnabledOverride = externalContextEnabledOverride
         return RepoAIInsightGeneration(
@@ -958,7 +1181,7 @@ private final class SelectiveBatchAIInsightProvider: BatchAIInsightProviding {
                   !alreadyFailedRepoIDs.contains(repo.id) {
             // 每个仓库只失败一次（永久错误不消耗重试次数），重试后走成功路径。
             alreadyFailedRepoIDs.insert(repo.id)
-            throw RepoAIInsightError.missingAPIKey
+            throw RepoAIInsightError.missingAPIKey(String.l10n("ai.taskName.tagRecommendation"))
         }
         return RepoAIInsightGeneration(
             insight: RepoAIInsight(
@@ -1045,7 +1268,11 @@ private final class StaggeredBatchAIInsightProvider: BatchAIInsightProviding {
                 strengths: [],
                 risks: [],
                 minimalExample: nil,
-                suggestedTags: [],
+                // 本测试只验证 Worker 的即时回写；标签任务必须给出有效结果，
+                // 否则会按生产规则进入失败态，反而污染并发时序断言。
+                suggestedTags: includeTags
+                    ? [AITagSuggestion(name: "Test", confidence: 0.9, reason: "test fixture")]
+                    : [],
                 model: "test-model",
                 generatedAt: ISO8601DateFormatter.shared.string(from: .now),
                 contextMetadata: nil,
@@ -1124,7 +1351,9 @@ private final class ConcurrentBatchAIInsightProvider: BatchAIInsightProviding {
                 strengths: [],
                 risks: [],
                 minimalExample: nil,
-                suggestedTags: [],
+                suggestedTags: includeTags
+                    ? [AITagSuggestion(name: "Test", confidence: 0.9, reason: "test fixture")]
+                    : [],
                 model: "test-model",
                 generatedAt: ISO8601DateFormatter.shared.string(from: .now),
                 contextMetadata: nil,

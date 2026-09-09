@@ -37,72 +37,62 @@ final class WorkspaceChromeState {
     }
 }
 
-/// 放在 `NSTitlebarAccessoryViewController` 内的窗口级图标按钮组。
-struct WorkspaceTitlebarControls: View {
+/// Agent / RAG 工作台共用的原生窗口工具栏内容。
+///
+/// 按钮必须作为单个系统 `ControlGroup` 交给 toolbar，不能再使用 titlebar accessory
+/// 或自绘 glass。这样 Agent 的两个按钮与 RAG 的三个按钮会生成相同的原生 item 结构。
+struct WorkspaceToolbarContent: ToolbarContent {
 
     @Bindable var chromeState: WorkspaceChromeState
     let onPinnedChange: (Bool) -> Void
-    /// RAG 工作台专用：右上角齿轮打开配置；Agent 不传则不显示。
+    /// RAG 工作台传入设置动作；Agent 不传时复用同一组工具栏，只少一个按钮。
     var onSettings: (() -> Void)? = nil
 
-    var body: some View {
-        HStack(spacing: 6) {
-            controlButton(
-                systemImage: "inset.filled.rightthird.rectangle",
-                isActive: chromeState.isRightColumnCollapsed,
-                helpKey: chromeState.isRightColumnCollapsed
-                    ? "workspace.chrome.showRight"
-                    : "workspace.chrome.hideRight"
-            ) {
-                chromeState.isRightColumnCollapsed.toggle()
-            }
+    @ToolbarContentBuilder
+    var body: some ToolbarContent {
+        // macOS 会把 `.primaryAction` 固定在 leading。把 SwiftUI `Spacer` 作为独立原生
+        // toolbar item，系统会将它映射为 flexible space，把后续 automatic 组推到最右侧。
+        ToolbarItem(placement: .automatic) {
+            Spacer()
+        }
 
-            controlButton(
-                systemImage: chromeState.isPinned ? "pin.circle.fill" : "pin.circle",
-                isActive: chromeState.isPinned,
-                helpKey: chromeState.isPinned
-                    ? "workspace.chrome.unpin"
-                    : "workspace.chrome.pin"
-            ) {
-                chromeState.isPinned.toggle()
-                onPinnedChange(chromeState.isPinned)
-            }
+        ToolbarItem(placement: .automatic) {
+            ControlGroup {
+                Button {
+                    chromeState.isRightColumnCollapsed.toggle()
+                } label: {
+                    Image(systemName: "inset.filled.rightthird.rectangle")
+                }
+                .foregroundStyle(chromeState.isRightColumnCollapsed ? Color.accentColor : .secondary)
+                .help(
+                    chromeState.isRightColumnCollapsed
+                        ? LocalizedStringKey("workspace.chrome.showRight")
+                        : LocalizedStringKey("workspace.chrome.hideRight")
+                )
 
-            if let onSettings {
-                controlButton(
-                    systemImage: "gearshape",
-                    isActive: false,
-                    helpKey: "rag.workspace.settings.open"
-                ) {
-                    onSettings()
+                Button {
+                    chromeState.isPinned.toggle()
+                    onPinnedChange(chromeState.isPinned)
+                } label: {
+                    Image(systemName: chromeState.isPinned ? "pin.circle.fill" : "pin.circle")
+                }
+                .foregroundStyle(chromeState.isPinned ? Color.accentColor : .secondary)
+                .help(
+                    chromeState.isPinned
+                        ? LocalizedStringKey("workspace.chrome.unpin")
+                        : LocalizedStringKey("workspace.chrome.pin")
+                )
+
+                if let onSettings {
+                    Button {
+                        onSettings()
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .foregroundStyle(.secondary)
+                    .help(LocalizedStringKey("rag.workspace.settings.open"))
                 }
             }
         }
-        .padding(.trailing, 10)
-        // NSTitlebarAccessoryViewController 不会可靠地从 SwiftUI 内容推导尺寸。
-        // 按钮数可变（Agent 3 / RAG 4），用 fixedSize 避免末尾按钮被裁掉。
-        .fixedSize(horizontal: true, vertical: false)
-        .frame(height: 32, alignment: .trailing)
-        // titlebar accessory 是独立 hosting 树，不继承主窗口 locale。
-        .appLocaleEnvironment()
-    }
-
-    private func controlButton(
-        systemImage: String,
-        isActive: Bool,
-        helpKey: LocalizedStringKey,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .foregroundStyle(isActive ? Color.accentColor : .secondary)
-        .background(isActive ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
-        .help(helpKey)
     }
 }

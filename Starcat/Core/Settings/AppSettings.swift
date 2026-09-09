@@ -79,7 +79,7 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 /// 设计：把"字段 + 方向"合并成枚举 case，UI 用单层 Picker 就能列全，无需嵌套 Menu。
 /// 默认 `.starredAtDesc` — 最近 star 的在最前，与之前隐式行为一致。
 enum RepoSortOption: String, CaseIterable, Identifiable {
-    /// 默认：最近 star 在前（All Stars / 星标列表）。
+    /// 最近 Star 在前（All Stars / 星标列表默认）。
     case starredAtDesc
     /// 最早 star 在前。
     case starredAtAsc
@@ -110,8 +110,8 @@ enum RepoSortOption: String, CaseIterable, Identifiable {
 
     /// Manage 列表实际展示的排序项。
     ///
-    /// `starredAtDesc` 继续作为星标列表"默认"：按最近 star 排序，但不再把
-    /// "最近星标/最早星标"暴露成独立产品概念。知识库相关排序紧随其后。
+    /// `starredAtDesc` 继续作为星标列表默认值，但菜单明确展示为“最近星标”，
+    /// 避免与按 `library_updated_at` 排序的“最近加入知识库”混淆。
     static let manageOptions: [RepoSortOption] = [
         .starredAtDesc,
         .libraryUpdatedAtDesc,
@@ -134,9 +134,9 @@ enum RepoSortOption: String, CaseIterable, Identifiable {
     /// 本地化显示名（Picker 菜单项用 `Text(verbatim:)` 渲染，走 `String.l10n`）。
     var localizedTitle: String {
         switch self {
-        case .starredAtDesc: return String.l10n("settings.sort.starredAtDesc")
+        case .starredAtDesc: return String.l10n("settings.sort.recentlyStarred")
         case .starredAtAsc:  return String.l10n("settings.sort.starredAtAsc")
-        case .libraryUpdatedAtDesc: return String.l10n("settings.sort.libraryUpdatedAtDesc")
+        case .libraryUpdatedAtDesc: return String.l10n("settings.sort.recentlyAddedToLibrary")
         case .nameAsc:       return String.l10n("settings.sort.nameAsc")
         case .nameDesc:      return String.l10n("settings.sort.nameDesc")
         case .starsDesc:     return String.l10n("settings.sort.starsDesc")
@@ -153,9 +153,9 @@ enum RepoSortOption: String, CaseIterable, Identifiable {
     /// 本地化显示名（SwiftUI `Label` / `LocalizedStringKey` 场景）。
     var displayName: LocalizedStringKey {
         switch self {
-        case .starredAtDesc: return "settings.sort.starredAtDesc"
+        case .starredAtDesc: return "settings.sort.recentlyStarred"
         case .starredAtAsc:  return "settings.sort.starredAtAsc"
-        case .libraryUpdatedAtDesc: return "settings.sort.libraryUpdatedAtDesc"
+        case .libraryUpdatedAtDesc: return "settings.sort.recentlyAddedToLibrary"
         case .nameAsc:       return "settings.sort.nameAsc"
         case .nameDesc:      return "settings.sort.nameDesc"
         case .starsDesc:     return "settings.sort.starsDesc"
@@ -984,6 +984,33 @@ final class AppSettings {
         didSet { persistJSON(key: Keys.aiTagsTask, value: aiTagsTask) }
     }
 
+    /// 每仓库 AI 标签推荐最少数量（与最多数量组成区间，默认 1）。
+    ///
+    /// 请通过 `applyAITagSuggestionCounts` 写入，以保证与最大值一起钳制。
+    var aiTagSuggestionMinCount: Int {
+        didSet { defaults.set(aiTagSuggestionMinCount, forKey: Keys.aiTagSuggestionMinCount) }
+    }
+
+    /// 每仓库 AI 标签推荐最多数量（默认 3，上限 8）。
+    var aiTagSuggestionMaxCount: Int {
+        didSet { defaults.set(aiTagSuggestionMaxCount, forKey: Keys.aiTagSuggestionMaxCount) }
+    }
+
+    /// 当前已钳制的标签推荐数量区间，供提示词占位符与本地截断共用。
+    var clampedAITagSuggestionCounts: (minimum: Int, maximum: Int) {
+        AITagSuggestionCountPolicy.clamp(
+            minimum: aiTagSuggestionMinCount,
+            maximum: aiTagSuggestionMaxCount
+        )
+    }
+
+    /// 同时写入最少 / 最多推荐数，并钳制到 1…8 且保证 min ≤ max。
+    func applyAITagSuggestionCounts(minimum: Int, maximum: Int) {
+        let clamped = AITagSuggestionCountPolicy.clamp(minimum: minimum, maximum: maximum)
+        aiTagSuggestionMinCount = clamped.minimum
+        aiTagSuggestionMaxCount = clamped.maximum
+    }
+
     /// Embedding 任务模型配置。
     var aiEmbeddingTask: AIModelTaskConfiguration {
         didSet { persistJSON(key: Keys.aiEmbeddingTask, value: aiEmbeddingTask) }
@@ -1249,7 +1276,7 @@ final class AppSettings {
         didSet { persistBool(key: Keys.globalSearchShortcutEnabled, value: globalSearchShortcutEnabled) }
     }
 
-    /// 列表 toolbar 常规搜索快捷键，默认 Shift+Command+F。展开 SmartSearchField 并聚焦输入框。
+    /// Search Center 本地范围快捷键，默认 Shift+Command+F。
     var regularSearchShortcut: KeyboardShortcutConfiguration {
         didSet { persistJSON(key: Keys.regularSearchShortcut, value: regularSearchShortcut) }
     }
@@ -1794,7 +1821,20 @@ final class AppSettings {
             embeddingModel: resolvedAIEmbeddingModel
         )
         let profiles = Self.decodeJSON([AIProviderProfile].self, key: Keys.aiProviderProfiles, defaults: defaults) ?? []
-        self.aiProviderProfiles = profiles.isEmpty ? [defaultProfile] : profiles
+        // 历史脏数据（重复 id / 超大目录）会在设置页勾选模型时卡死主线程；启动时只做去重+截断。
+        let sanitizedProfiles = profiles.isEmpty
+            ? [defaultProfile]
+            : profiles.map { $0.sanitizedForStorage() }
+        self.aiProviderProfiles = sanitizedProfiles
+        // init 里不能调实例方法（其余 stored 属性尚未齐），且 didSet 也不会触发；
+        // 若消毒改写了内容，直接写 UserDefaults，避免每次冷启动重复处理同一份脏 JSON。
+        if !profiles.isEmpty, sanitizedProfiles != profiles {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let data = try? encoder.encode(sanitizedProfiles) {
+                defaults.set(String(decoding: data, as: UTF8.self), forKey: Keys.aiProviderProfiles)
+            }
+        }
         let defaultSummaryTask = Self.makeDefaultTask(
             task: .summary,
             profileID: defaultProfile.id,
@@ -1828,6 +1868,16 @@ final class AppSettings {
             persistedTagsTask,
             defaults: defaults
         )
+        let persistedTagMin = defaults.object(forKey: Keys.aiTagSuggestionMinCount) as? Int
+            ?? AITagSuggestionCountPolicy.defaultMinimum
+        let persistedTagMax = defaults.object(forKey: Keys.aiTagSuggestionMaxCount) as? Int
+            ?? AITagSuggestionCountPolicy.defaultMaximum
+        let clampedTagCounts = AITagSuggestionCountPolicy.clamp(
+            minimum: persistedTagMin,
+            maximum: persistedTagMax
+        )
+        self.aiTagSuggestionMinCount = clampedTagCounts.minimum
+        self.aiTagSuggestionMaxCount = clampedTagCounts.maximum
         self.aiEmbeddingTask = Self.decodeJSON(AIModelTaskConfiguration.self, key: Keys.aiEmbeddingTask, defaults: defaults) ?? defaultEmbeddingTask
         // HOM-68 follow-up：翻译任务首次升级时与摘要使用同一 provider+model，
         // 参数走 translationDefault（低温度 + 高 maxToken），用户可在设置页改。
@@ -2203,6 +2253,8 @@ final class AppSettings {
         aiProviderProfiles = [defaultProfile]
         aiSummaryTask = Self.makeDefaultTask(task: .summary, profileID: defaultProfile.id, modelName: chatModel)
         aiTagsTask = Self.makeDefaultTask(task: .tags, profileID: defaultProfile.id, modelName: chatModel)
+        aiTagSuggestionMinCount = AITagSuggestionCountPolicy.defaultMinimum
+        aiTagSuggestionMaxCount = AITagSuggestionCountPolicy.defaultMaximum
         aiEmbeddingTask = Self.makeDefaultTask(task: .embedding, profileID: defaultProfile.id, modelName: embeddingModel)
         aiTranslationTask = Self.makeDefaultTask(task: .translation, profileID: defaultProfile.id, modelName: chatModel)
         aiFullTranslationPrompt = AIDefaultPrompts.fullTranslation
@@ -2457,14 +2509,19 @@ final class AppSettings {
     /// 只升级仍等于已发布旧默认值的标签 Prompt，保留用户选择的 Provider / Model / 参数。
     ///
     /// 标签任务整份配置持久化在同一个 JSON key 下；若仅修改 `AIDefaultPrompts.tags`，
-    /// 老用户会永久继续使用“每次生成 3...8 个”的旧 Prompt。反过来，直接覆盖整份配置
-    /// 又会破坏用户自定义 Prompt。本迁移用完整值相等判断区分两者，并在命中时只替换
-    /// `prompt` 字段。编码失败时返回内存中的新值，下次启动仍可重试持久化。
+    /// 老用户会永久继续使用旧 Prompt（含允许 Untagged 空结果的 V2）。反过来，直接覆盖
+    /// 整份配置又会破坏用户自定义 Prompt。本迁移用完整值相等判断区分两者，并在命中时
+    /// 只替换 `prompt` 字段。编码失败时返回内存中的新值，下次启动仍可重试持久化。
     private static func migrateLegacyDefaultTagsPromptIfNeeded(
         _ task: AIModelTaskConfiguration,
         defaults: UserDefaults
     ) -> AIModelTaskConfiguration {
-        guard task.prompt == AIDefaultPrompts.legacyTagsV1 else { return task }
+        let legacyPrompts: [AIPromptConfiguration] = [
+            AIDefaultPrompts.legacyTagsV1,
+            AIDefaultPrompts.legacyTagsV2,
+            AIDefaultPrompts.legacyTagsV3
+        ]
+        guard legacyPrompts.contains(task.prompt) else { return task }
 
         var migrated = task
         migrated.prompt = AIDefaultPrompts.tags
@@ -2653,6 +2710,8 @@ final class AppSettings {
         static let aiProviderProfiles = "settings.ai.providerProfiles.v2"
         static let aiSummaryTask = "settings.ai.task.summary.v2"
         static let aiTagsTask = "settings.ai.task.tags.v2"
+        static let aiTagSuggestionMinCount = "settings.ai.tagSuggestion.minCount.v1"
+        static let aiTagSuggestionMaxCount = "settings.ai.tagSuggestion.maxCount.v1"
         static let aiEmbeddingTask = "settings.ai.task.embedding.v2"
         static let aiTranslationTask = "settings.ai.task.translation.v2"  // HOM-68 follow-up
         static let aiFullTranslationPrompt = "settings.ai.prompt.translation.full.v1"
@@ -2761,6 +2820,8 @@ final class AppSettings {
             aiProviderProfiles,
             aiSummaryTask,
             aiTagsTask,
+            aiTagSuggestionMinCount,
+            aiTagSuggestionMaxCount,
             aiEmbeddingTask,
             aiTranslationTask,
             aiFullTranslationPrompt,

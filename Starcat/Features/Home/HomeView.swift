@@ -274,12 +274,23 @@ struct HomeView: View {
             telemetryManager: telemetryManager
         ))
         _translationVM = State(initialValue: ReadmeTranslationViewModel(service: readmeTranslationService))
+        var searchProviders: [any SearchProvider] = [
+            LocalKeywordSearchProvider(repository: repository, noteRepository: repoNoteRepository)
+        ]
+        if let semanticSearchService {
+            searchProviders.append(LocalSemanticSearchProvider(
+                repository: repository,
+                noteRepository: repoNoteRepository,
+                semanticSearchService: semanticSearchService
+            ))
+        }
+        searchProviders.append(GitHubRepositorySearchProvider(
+            client: githubAPIClient,
+            noteRepository: repoNoteRepository
+        ))
+        searchProviders.append(ExternalSearchWebProvider())
         _searchCenterViewModel = State(initialValue: SearchCenterViewModel(
-            coordinator: SearchCoordinator(providers: [
-                LocalKeywordSearchProvider(repository: repository, noteRepository: repoNoteRepository),
-                GitHubRepositorySearchProvider(client: githubAPIClient, noteRepository: repoNoteRepository),
-                ExternalSearchWebProvider()
-            ]),
+            coordinator: SearchCoordinator(providers: searchProviders),
             historyRepository: searchHistoryRepository,
             includeWebInAll: {
                 AppSettings.shared.externalSearchIncludeInAll
@@ -861,8 +872,8 @@ struct HomeView: View {
     }
 
     /// 搜索指引以“用户打开搜索入口”为通过条件；真实搜索提交路径仍会发同一完成事件。
-    private func presentSearchCenterForGettingStarted() {
-        searchCenterViewModel.present()
+    private func presentSearchCenterForGettingStarted(scope: SearchScope? = nil) {
+        searchCenterViewModel.present(scope: scope)
         NotificationCenter.default.post(name: .gettingStartedDidUseSearch, object: nil)
     }
 
@@ -1325,8 +1336,8 @@ struct HomeView: View {
                     onStartGitHubStarListAIGrouping: {
                         startGitHubStarListAIGrouping()
                     },
-                    onOpenSearchCenter: {
-                        presentSearchCenterForGettingStarted()
+                    onOpenSearchCenter: { scope in
+                        presentSearchCenterForGettingStarted(scope: scope)
                     },
                     onOpenKnowledgeRAGWorkspace: {
                         openKnowledgeRAGWorkspaceForGettingStarted()
@@ -1508,12 +1519,6 @@ struct HomeView: View {
         // user id 没变（如 unauthenticated ↔ awaitingUserCode 中间态、authenticated(A) 内部刷新）
         // → 不动任何业务状态，避免误清缓存导致 UI 无谓重渲。
         guard oldUserID != newUserID else { return }
-
-        // AI Lists 建议和队列快照都属于账号作用域。真正换账号或登出时立即取消旧请求，
-        // 并在 runLoop 退出后清掉内存态，避免旧账号建议出现在新账号审核页。
-        Task { @MainActor in
-            await dependencies.batchAIQueueService.resetForAccountChange()
-        }
 
         if let newUser = newState.user {
             // 登录态变化统一走 `handleAuthenticatedEntry`（区分会话恢复 vs 真换账号）。

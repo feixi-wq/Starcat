@@ -503,6 +503,44 @@ struct RepoRepositoryTests {
         #expect(hits.count == 5)
     }
 
+    @Test("searchAllLocalFTS 能命中未 Star 的本地缓存仓")
+    func searchAllLocalFTS_includesUnstarredCachedRepos() async throws {
+        let (repo, _) = try makeRepo()
+        try await seedDataset(repo)
+
+        let privateProject = GitHubRepoDTO(
+            id: 9001,
+            name: "starcat-api",
+            fullName: "starcat-app/starcat-api",
+            owner: GitHubUserDTO(
+                id: 2, login: "starcat-app", name: nil, avatarUrl: nil,
+                publicRepos: nil, followers: nil, following: nil,
+                bio: nil, company: nil, location: nil, email: nil,
+                blog: nil, twitterUsername: nil, htmlUrl: nil
+            ),
+            description: "Private aggregate API",
+            language: "Go",
+            stargazersCount: 0, forksCount: 0, watchersCount: 0,
+            topics: nil, license: nil, homepage: nil,
+            htmlUrl: "https://github.com/starcat-app/starcat-api",
+            cloneUrl: nil, sshUrl: nil,
+            isPrivate: true, fork: false, archived: false,
+            pushedAt: nil, createdAt: nil, updatedAt: nil,
+            openIssuesCount: nil, defaultBranch: nil,
+            disabled: nil, isTemplate: nil, score: nil
+        )
+        // 我的项目同步路径：元数据进 repos，但 is_starred 保持 false。
+        _ = try await repo.upsertExternalRepoForLibrary(repoDTO: privateProject, syncedAt: Date())
+
+        let starredOnly = try await repo.searchFTS(query: "starcat-api")
+        #expect(starredOnly.isEmpty, "历史 Stars FTS 不应召回未 Star 仓")
+
+        let localHits = try await repo.searchAllLocalFTS(query: "starcat-api")
+        #expect(localHits.map(\.id) == [9001])
+        #expect(localHits.first?.isStarred == false)
+        #expect(localHits.first?.isPrivate == true)
+    }
+
     @Test("searchKnowledgeFTS 只返回知识库范围命中")
     func searchKnowledgeFTSRestrictsToLibraryScope() async throws {
         let (repo, db) = try makeRepo()
@@ -1001,8 +1039,8 @@ struct RepoRepositoryTests {
         #expect(try await repo.fetchListCount(scope: .allStars, filters: .empty) == 3)
     }
 
-    @Test("项目卡片 30 天增长批量读取本机历史且历史不足不伪造零")
-    func projectGrowthUsesMergedLocalHistory() async throws {
+    @Test("项目卡片 30 天增长只读取官方缓存且历史不足不伪造零")
+    func projectGrowthUsesOfficialCachedHistory() async throws {
         let (repo, db) = try makeRepo()
         try await db.insertRepoFixture(id: 71)
         try await db.insertRepoFixture(id: 72)
@@ -1012,11 +1050,11 @@ struct RepoRepositoryTests {
                     INSERT INTO repo_star_history_points (
                         repo_id, observed_on, stars_count, source, precision, fetched_at
                     ) VALUES
-                        (71, '2026-06-20', 10, 'local_snapshot', 'snapshot', '2026-06-20T12:00:00Z'),
-                        (71, '2026-07-10', 999, 'gh_archive', 'estimated', '2026-07-10T11:00:00Z'),
-                        (71, '2026-07-10', 15, 'local_snapshot', 'snapshot', '2026-07-10T12:00:00Z'),
-                        (71, '2026-07-29', 25, 'local_snapshot', 'snapshot', '2026-07-29T12:00:00Z'),
-                        (72, '2026-07-29', 5, 'local_snapshot', 'snapshot', '2026-07-29T12:00:00Z')
+                        (71, '2026-06-20', 10, 'github_history', 'reconstructed', '2026-06-20T12:00:00Z'),
+                        (71, '2026-07-10', 999, 'local_snapshot', 'snapshot', '2026-07-10T11:00:00Z'),
+                        (71, '2026-07-10', 15, 'github_history', 'reconstructed', '2026-07-10T12:00:00Z'),
+                        (71, '2026-07-29', 25, 'github_history', 'reconstructed', '2026-07-29T12:00:00Z'),
+                        (72, '2026-07-29', 5, 'github_history', 'reconstructed', '2026-07-29T12:00:00Z')
                     """
             )
         }

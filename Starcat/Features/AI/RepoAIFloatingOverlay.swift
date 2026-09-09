@@ -290,16 +290,3 @@ extension Notification.Name {
     /// 外部入口只展开对应 repo 的详情页底部面板，不重复发起生成。
     static let repoAIInlineOpenRequested = Notification.Name("StarcatRepoAIInlineOpenRequested")
 }
-
-private extension View {
-    /// 详情页浮层的玻璃态容器。单独收口，避免后续调阴影 / 边框时改散在多处。
-    func glassPanel(cornerRadius: CGFloat, shadowOpacity: Double) -> some View {
-        background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: .black.opacity(shadowOpacity), radius: 18, x: 0, y: 10)
-    }
-}

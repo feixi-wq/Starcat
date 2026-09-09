@@ -186,8 +186,8 @@ struct StarcatApp: App {
             #endif
         }
 
-        // 两个 AI 工作台必须和主窗口一样由 SwiftUI Window Scene 承载：只有这样
-        // NavigationSplitView 的原生 Sidebar 才能贯穿 toolbar 并包住交通灯。
+        // 两个 AI 工作台继续由 SwiftUI Window Scene 承载，但隐藏重复标题栏，让业务 Header
+        // 直接贴到窗口顶部；交通灯由 hiddenTitleBar 保留，分栏控制统一放回内容 Header。
         Window("rag.workspace.window.title", id: KnowledgeRAGWorkspaceWindowController.sceneID) {
             KnowledgeRAGWorkspaceSceneHost(coordinator: AIWorkspaceSceneCoordinator.shared)
         }
@@ -828,18 +828,6 @@ struct DebugMenuCommands: Commands {
             )
 
             Divider()
-
-            Button("Open Agent Workspace") {
-                guard let dependencies else { return }
-                // Debug 入口仍走正式工作台控制器，避免调试菜单形成第二套窗口与门禁语义。
-                AgentWorkspaceWindowController.show(dependencies: dependencies)
-            }
-            .disabled(dependencies == nil)
-
-            Button("Border Beam Search Lab") {
-                // 独立实验窗口：验收 BorderBeamKit line 搜索条，不改正式 SmartSearchField。
-                BorderBeamSearchLabWindowController.show()
-            }
 
             Button("ambient.menu.openRepos") {
                 if let dependencies {

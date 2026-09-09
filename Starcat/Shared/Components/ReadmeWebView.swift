@@ -1538,7 +1538,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 if (payload["isNearBottom"] as? NSNumber)?.boolValue == true,
                    !didReportApproachingBottom {
                     didReportApproachingBottom = true
-                    // 只在文档端确认接近底部后才启动数据层；短 README 也要等 document-end。
+                    // 首帧预加载未启动或被取消时仍可兜底；Coordinator 每份文档只上报一次。
                     Task { @MainActor in
                         self.onApproachingBottom()
                     }
@@ -1823,7 +1823,7 @@ private struct ReadmeFindBar: View {
         .padding(.vertical, 8)
         // 不能顶满详情栏铺一条矩形：宿主顶部是圆角，材质会跟着切圆，底边却仍是直角。
         // 四角同一套 continuous 圆角，并与字号浮窗留白对齐。
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .starcatInteractiveGlassSurface(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.16), lineWidth: 1)
@@ -1950,7 +1950,7 @@ private struct ReadmeFloatingToolbar: View {
             )
         }
         .padding(isExpanded ? 4 : 3)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: isExpanded ? 12 : 10, style: .continuous))
+        .starcatInteractiveGlassSurface(.thinMaterial, in: RoundedRectangle(cornerRadius: isExpanded ? 12 : 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: isExpanded ? 12 : 10, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.16), lineWidth: 1)
@@ -2021,7 +2021,7 @@ private struct ReadmeBackToTopButton: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.secondary)
                 .frame(width: 30, height: 30)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .starcatInteractiveGlassSurface(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(Color.secondary.opacity(0.16), lineWidth: 1)

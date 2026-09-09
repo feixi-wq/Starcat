@@ -95,9 +95,8 @@ final class AppDependencies {
     let projectReadmeAPI: ReadmeAPI
     /// HOM-201 P0-2（2026-06-14）：README "已知不存在" 共享会话状态。
     ///
-    /// 由所有 `ReadmeViewModel`（manage 全局 VM + active/weekly 各 Shell 局部 VM）
-    /// 共用同一实例，让"manage 命中 404 → 切到 active 看同 repo"等跨场景路径
-    /// 短路掉重复的 GitHub 请求。详见 `ReadmeAvailability.swift`。
+    /// 由所有 `ReadmeViewModel` 共用同一实例。2026-09-09 起自动 load 不再据此短路
+    /// GitHub；仍注入以便写入 / 查询一致性。详见 `ReadmeAvailability.swift`。
     let readmeAvailability: ReadmeAvailability
     /// HOM-201 P0-3（2026-06-14）：README 网络刷新 in-flight 去重器。
     ///
@@ -312,8 +311,8 @@ final class AppDependencies {
     /// 探索发现与榜单查询客户端。
     /// 构造期不发网络请求；Explore 入口按用户筛选懒加载发现 / 热门 / 新发布数据。
     let discoveryAPI: DiscoveryAPI
-    /// 公共仓库星标历史客户端；业务路由已迁到独立 History 服务。
-    /// 本期仍复用 Discovery 设置中的聚合地址与公共 API Key，不扩大设置模型。
+    /// 旧 History 服务配置客户端仅为现有“服务”设置兼容保留；星标历史数据已直连 GitHub。
+    /// 不在本次数据层迁移中改动设置 UI，后续可随旧客户端退役单独移除该入口。
     let starHistoryAPI: StarHistoryAPI
 
     /// Wiki 探测结果磁盘 JSON 缓存（2026-06-15）。
@@ -1149,13 +1148,15 @@ final class AppDependencies {
 
         // HOM-52：批量整理服务装在 AI insight + 标签 + 标签关联 + AI 摘要 Repo 之后。
         // 注：onTagsChanged 由 HomeView 在 environment 注入后挂接，刷新 Sidebar 计数。
+        let aiOrganizationDraftRepository = GRDBAIOrganizationDraftRepository(database: db)
         let batchSvc = BatchAIQueueService(
             insightService: aiInsight,
             tagRepository: tagRepo,
             repoTagRepository: repoTagRepo,
             aiSummaryRepository: summaryRepo,
             entitlementGate: self.entitlementGate,
-            notificationService: notificationService
+            notificationService: notificationService,
+            draftRepository: aiOrganizationDraftRepository
         )
         self.batchAIQueueService = batchSvc
 
@@ -1163,7 +1164,8 @@ final class AppDependencies {
             repoRepository: repo,
             listService: self.githubStarListSyncService,
             insightService: aiInsight,
-            entitlementGate: self.entitlementGate
+            entitlementGate: self.entitlementGate,
+            draftRepository: aiOrganizationDraftRepository
         )
 
         // HOM-126：自动后台 AI 整理调度器。
@@ -1347,10 +1349,9 @@ final class AppDependencies {
         self.starHistoryAPI = starHistoryAPIInstance
         let repoStarHistoryRepository = GRDBRepoStarHistoryRepository(
             database: db,
-            api: starHistoryAPIInstance,
             projectRepository: userProjectRepository,
-            oauthStargazersAPI: api,
-            githubAppStargazersAPI: projectAPIClient
+            oauthHistoryAPI: api,
+            githubAppHistoryAPI: projectAPIClient
         )
         self.repoStarHistoryRepository = repoStarHistoryRepository
         let discoveryRepo = DiscoveryRepository(api: discoveryAPIInstance, database: db)
@@ -1820,6 +1821,10 @@ final class AppDependencies {
     func switchUserDatabase(to userId: Int64?) async throws {
         let previousUserId = database.currentUserId
         if previousUserId != userId {
+            // 两套人工 AI 草稿都属于账号作用域。必须在 reopen 前等旧请求退出，随后再从
+            // 新账号库恢复；把屏障放在数据库所有者内部，避免 View 生命周期竞态。
+            await batchAIQueueService.resetForAccountChange()
+            await githubStarListAIGroupingSession.resetForAccountChange()
             // 屏障从清理前一直保持到 reopen 结束；新请求会等待并在 end 后重新读取 Token。
             await repositoryMetricsClient.beginDatabaseScopeChange()
             await repositoryInsightsCache.clearTransientState()
@@ -1841,6 +1846,10 @@ final class AppDependencies {
             userID: database.currentUserId,
             databaseRevision: databaseScopeRevision
         )
+        if userId != nil {
+            await batchAIQueueService.restoreDraftIfNeeded()
+            await githubStarListAIGroupingSession.restoreDraftIfNeeded()
+        }
     }
 
     // MARK: - 本机恢复出厂

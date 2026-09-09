@@ -188,6 +188,7 @@ struct KnowledgeRAGWorkspaceSceneRoot: View {
             // Window Scene 声明的标题按系统 bundle 语言解析，不跟随 App 内语言设置；
             // 用 navigationTitle 在 SwiftUI 更新周期里按 LocaleStore 选择重新解析。
             .navigationTitle(windowTitle)
+            .toolbar(removing: .title)
             .frame(
                 minWidth: KnowledgeRAGWorkspaceWindowMetrics.minimumContentSize.width,
                 minHeight: KnowledgeRAGWorkspaceWindowMetrics.minimumContentSize.height
@@ -199,20 +200,18 @@ struct KnowledgeRAGWorkspaceSceneRoot: View {
                 )
             }
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    WorkspaceTitlebarControls(
-                        chromeState: chromeState,
-                        onPinnedChange: { isPinned in
-                            windowReference.window?.level = isPinned ? .floating : .normal
-                        },
-                        onSettings: {
-                            AppDelegate.openSettingsWindow(target: "rag.inference")
-                        }
-                    )
-                }
+                WorkspaceToolbarContent(
+                    chromeState: chromeState,
+                    onPinnedChange: { isPinned in
+                        windowReference.window?.level = isPinned ? .floating : .normal
+                    },
+                    onSettings: {
+                        AppDelegate.openSettingsWindow(target: "rag.inference")
+                    }
+                )
             }
-            // 与主窗口相同：让原生 Sidebar 表面贯穿 window toolbar，包住交通灯。
-            .toolbarBackground(.hidden, for: .windowToolbar)
+            // 让内容表面延伸进系统 toolbar，中栏与 Inspector 顶部保持为同一条连续区域。
+            .starcatWindowToolbarChrome(extendsContentTintIntoToolbar: true)
             .onAppear {
                 KnowledgeRAGWorkspaceWindowController.registerActiveViewModel(viewModel)
             }
@@ -1692,7 +1691,8 @@ private struct KnowledgeRAGBrowserView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 42)
-        .background(.regularMaterial)
+        // 折叠后这一行承担导航 chrome，而非正文卡片；macOS 26 使用系统玻璃，旧系统保留原 Material。
+        .starcatGlassSurface(.regularMaterial, in: Rectangle())
         .overlay(alignment: .bottom) { Divider() }
         .opacity(knowledgeHeroCollapseProgress)
         .offset(y: -8 * (1 - knowledgeHeroCollapseProgress))

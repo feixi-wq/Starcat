@@ -51980,6 +51980,52 @@
         }
       }
     },
+    "ai.insight.error.emptyTagSuggestions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI did not return any valid tag suggestions. Retry, or check the selected model if the problem persists."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 未返回任何有效标签建议，请重试；若持续发生，请检查所选模型。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 未回傳任何有效標籤建議，請重試；若持續發生，請檢查所選模型。"
+          }
+        }
+      }
+    },
+    "ai.insight.error.invalidGitHubListSuggestions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI returned group suggestions, but none passed validation. Retry, or check the group rules if the problem persists."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 返回了分组建议，但校验后没有可用结果，请重试；若持续发生，请检查分组规则。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 回傳了分組建議，但校驗後沒有可用結果，請重試；若持續發生，請檢查分組規則。"
+          }
+        }
+      }
+    },
     "ai.insight.error.invalidJSON" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -52202,6 +52248,52 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "尚未設定 AI 服務的 API Key。請先到「設定 → AI」新增服務商並填寫 API Key，再產生摘要。"
+          }
+        }
+      }
+    },
+    "ai.insight.error.missingAPIKeyFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No AI API key is configured for “%@”. Open Settings → AI, add a provider and API key for this task, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」尚未配置 API Key。请先到「设置 → AI」为该任务选择服务商并填写 API Key，然后再试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」尚未設定 API Key。請先到「設定 → AI」為該任務選擇服務商並填寫 API Key，然後再試。"
+          }
+        }
+      }
+    },
+    "ai.insight.error.missingTaskProviderFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No usable AI provider is configured for “%@”. Open Settings → AI, add a provider and model for this task, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」尚未配置可用的 AI 服务。请先到「设置 → AI」为该任务添加服务商并选择模型，然后再试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「%@」尚未設定可用的 AI 服務。請先到「設定 → AI」為該任務新增服務商並選擇模型，然後再試。"
           }
         }
       }
@@ -77888,6 +77980,23 @@
         }
       }
     },
+    "batchAI.generateTags.action.tags.descFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Generate %lld–%lld high-confidence tags for each repository."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为每个仓库生成 %lld–%lld 个高置信度标签。"
+          }
+        }
+      }
+    },
     "batchAI.generateTags.startFormat" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -77901,6 +78010,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "开始生成（%lld）"
+          }
+        }
+      }
+    },
+    "batchAI.generateTags.start" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start Generating"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始生成"
           }
         }
       }
@@ -80579,6 +80705,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "全部完成"
+          }
+        }
+      }
+    },
+    "batchAI.panel.interruptedByAppExit" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interrupted when Starcat exited. Retry manually to continue."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat 退出时任务被中断，请手动重试后继续。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat 結束時任務遭中斷，請手動重試後繼續。"
           }
         }
       }
@@ -256382,6 +256530,118 @@
         }
       }
     },
+    "readme.emptyFooterStatus" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "لا يوجد README بعد"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine README"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No README yet"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aún sin README"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pas encore de README"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Belum ada README"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun README ancora"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "README はまだありません"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "아직 README 없음"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nog geen README"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak README"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ainda sem README"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пока нет README"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Henüz README yok"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поки немає README"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chưa có README"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无 README"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暫無 README"
+          }
+        }
+      }
+    },
     "readme.export.savePanel.title" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -298235,6 +298495,74 @@
         }
       }
     },
+    "search.footer.error.github" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub 失败"
+          }
+        }
+      }
+    },
+    "search.footer.error.localKeyword" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local search failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地搜索失败"
+          }
+        }
+      }
+    },
+    "search.footer.error.semantic" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semantic search failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语义搜索失败"
+          }
+        }
+      }
+    },
+    "search.footer.error.web" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Web search failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网页搜索失败"
+          }
+        }
+      }
+    },
     "search.github.anonymous" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -310557,6 +310885,40 @@
         }
       }
     },
+    "settings.ai.prompt.placeholder.minTags" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Minimum tag count from Settings (Tags)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置里「标签分类」的最少推荐数。"
+          }
+        }
+      }
+    },
+    "settings.ai.prompt.placeholder.maxTags" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maximum tag count from Settings (Tags)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置里「标签分类」的最多推荐数。"
+          }
+        }
+      }
+    },
     "settings.ai.prompt.placeholder.license" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -320448,6 +320810,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "AI 推荐并直接应用标签；启用阈值后，仅应用达到置信度要求的标签。"
+          }
+        }
+      }
+    },
+    "settings.autoTidy.tagSuggestionCount" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tags per repository"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每仓库推荐标签数"
+          }
+        }
+      }
+    },
+    "settings.autoTidy.tagSuggestionCount.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Untagged repos get at least the minimum; results are capped at the maximum. Default 1–3, up to 8."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未打标仓库至少生成最少数量，结果最多保留最多数量。默认 1–3，可调至 8。"
+          }
+        }
+      }
+    },
+    "settings.autoTidy.tagSuggestionCount.min" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Minimum"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最少"
+          }
+        }
+      }
+    },
+    "settings.autoTidy.tagSuggestionCount.max" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maximum"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多"
           }
         }
       }
@@ -379589,6 +380019,232 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "最高 OpenSSF"
+          }
+        }
+      }
+    },
+    "settings.sort.recentlyAddedToLibrary" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "المضافة مؤخرًا إلى المكتبة"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kürzlich zur Bibliothek hinzugefügt"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recently Added to Library"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Añadidos recientemente a la biblioteca"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Récemment ajoutés à la bibliothèque"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Baru Ditambahkan ke Perpustakaan"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiunti di recente alla libreria"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近ライブラリに追加"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "최근 라이브러리에 추가"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recent aan bibliotheek toegevoegd"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnio dodane do biblioteki"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adicionados Recentemente à Biblioteca"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недавно добавленные в библиотеку"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kütüphaneye En Son Eklenen"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нещодавно додані до бібліотеки"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mới thêm vào thư viện"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近加入知识库"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近加入知識庫"
+          }
+        }
+      }
+    },
+    "settings.sort.recentlyStarred" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "المميّزة بنجمة مؤخرًا"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kürzlich mit Stern markiert"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recently Starred"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Estrellados recientemente"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajoutés récemment aux favoris"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Baru diberi bintang"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stellati di recente"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近スターした順"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "최근 별표한 순"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recent met ster gemarkeerd"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnio oznaczone gwiazdką"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Com Estrela Recentemente"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недавно отмеченные звёздочкой"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Yakın Zamanda Yıldızlanan"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нещодавно позначені зіркою"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mới gắn sao"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近星标"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近標星"
           }
         }
       }
@@ -490841,6 +491497,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "GitHub 授权已失效，请重新登录。"
+          }
+        }
+      }
+    },
+    "githubStarLists.aiGrouping.applyFailure.interrupted" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The update was interrupted when Starcat exited. Retry to reconcile it with GitHub."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat 退出时更新被中断，请重试以与 GitHub 状态对齐。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat 結束時更新遭中斷，請重試以與 GitHub 狀態對齊。"
           }
         }
       }

@@ -12,7 +12,7 @@ import Testing
 @MainActor
 @Suite("README Star History")
 struct ReadmeStarHistoryPreviewTests {
-    @Test("接近底部后先显示 SQLite 缓存，再等待后台刷新")
+    @Test("首次进入 README 后先显示 SQLite 缓存，再等待后台刷新")
     func cachedHistoryAppearsBeforeRefreshCompletes() async {
         let gate = ReadmeStarHistoryLoadGate()
         let cached = Self.snapshot(state: .cached)
@@ -41,6 +41,111 @@ struct ReadmeStarHistoryPreviewTests {
 
         await gate.release()
         await load.value
+    }
+
+    @Test("无缓存时先显示骨架，官方历史返回后原地替换")
+    func loadingSkeletonIsReplacedByOfficialHistory() async {
+        let gate = ReadmeStarHistoryLoadGate()
+        let repository = ReadmeStarHistoryRepositoryStub(
+            cachedSnapshot: Self.snapshot(points: [], state: .cached),
+            refreshSnapshot: Self.snapshot(state: .fresh),
+            refreshGate: gate
+        )
+        let viewModel = ReadmeStarHistoryViewModel(
+            repository: repository,
+            projectVisibilityProvider: { _ in .public }
+        )
+
+        let load = Task {
+            await viewModel.loadIfNeeded(
+                repo: Self.repo(),
+                databaseScopeRevision: 1,
+                locale: Locale(identifier: "en")
+            )
+        }
+        await gate.waitUntilBlocked()
+
+        #expect(viewModel.renderState.html?.contains("starcat-star-history-skeleton") == true)
+        #expect(viewModel.renderState.html?.contains(#"aria-busy="true""#) == true)
+
+        await gate.release()
+        await load.value
+
+        #expect(viewModel.renderState.html?.contains("starcat-star-history-line") == true)
+        #expect(viewModel.renderState.html?.contains("starcat-star-history-skeleton") == false)
+    }
+
+    @Test("无缓存且远端无可用历史时移除骨架")
+    func terminalEmptyHistoryRemovesLoadingSkeleton() async {
+        let empty = Self.snapshot(points: [], state: .unavailable)
+        let repository = ReadmeStarHistoryRepositoryStub(
+            cachedSnapshot: empty,
+            refreshSnapshot: empty
+        )
+        let viewModel = ReadmeStarHistoryViewModel(
+            repository: repository,
+            projectVisibilityProvider: { _ in .public }
+        )
+
+        await viewModel.loadIfNeeded(
+            repo: Self.repo(),
+            databaseScopeRevision: 1,
+            locale: Locale(identifier: "en")
+        )
+
+        #expect(viewModel.renderState.html == nil)
+    }
+
+    @Test("首帧预加载与底部兜底共享同一次加载")
+    func repeatedLoadForSameIdentityDoesNotDuplicateRequests() async {
+        let gate = ReadmeStarHistoryLoadGate()
+        let repository = ReadmeStarHistoryRepositoryStub(
+            cachedSnapshot: Self.snapshot(points: [], state: .cached),
+            refreshSnapshot: Self.snapshot(state: .fresh),
+            refreshGate: gate
+        )
+        let viewModel = ReadmeStarHistoryViewModel(
+            repository: repository,
+            projectVisibilityProvider: { _ in .public }
+        )
+        let repo = Self.repo()
+        let locale = Locale(identifier: "en")
+
+        let preload = Task {
+            await viewModel.loadIfNeeded(repo: repo, databaseScopeRevision: 1, locale: locale)
+        }
+        await gate.waitUntilBlocked()
+        await viewModel.loadIfNeeded(repo: repo, databaseScopeRevision: 1, locale: locale)
+        await gate.release()
+        await preload.value
+        await viewModel.loadIfNeeded(repo: repo, databaseScopeRevision: 1, locale: locale)
+
+        #expect(await repository.cachedRanges() == [.all])
+        #expect(await repository.refreshRanges() == [.all])
+    }
+
+    @Test("零 Star 仓库不读取缓存、不请求远端且不展示卡片")
+    func zeroStarRepositorySkipsHistoryEntirely() async {
+        let repository = ReadmeStarHistoryRepositoryStub(
+            cachedSnapshot: Self.snapshot(state: .cached),
+            refreshSnapshot: Self.snapshot(state: .fresh)
+        )
+        let viewModel = ReadmeStarHistoryViewModel(
+            repository: repository,
+            projectVisibilityProvider: { _ in .public }
+        )
+        var repo = Self.repo()
+        repo.starsCount = 0
+
+        await viewModel.loadIfNeeded(
+            repo: repo,
+            databaseScopeRevision: 1,
+            locale: Locale(identifier: "en")
+        )
+
+        #expect(viewModel.renderState.html == nil)
+        #expect(await repository.cachedRanges().isEmpty)
+        #expect(await repository.refreshRanges().isEmpty)
     }
 
     @Test("Internal 仓库不读取历史缓存也不请求远端")
@@ -121,8 +226,8 @@ struct ReadmeStarHistoryPreviewTests {
         #expect(viewModel.renderState.html == nil)
     }
 
-    @Test("README 只展示至少两个 GH Archive 全历史点")
-    func visibilityRequiresPublicAllRangeGHArchivePoints() {
+    @Test("README 只展示至少两个 GitHub 官方历史点")
+    func visibilityRequiresPublicOfficialHistoryPoints() {
         let repo = Self.repo()
 
         #expect(ReadmeStarHistoryVisibilityPolicy.shouldDisplay(
@@ -134,13 +239,20 @@ struct ReadmeStarHistoryPreviewTests {
             repo: repo,
             projectVisibility: nil,
             snapshot: Self.snapshot(
-                points: Self.points(source: .localSnapshot, precision: .snapshot),
+                points: Self.points(source: .ghArchive, precision: .estimated),
                 state: .cached
             )
         ))
         #expect(!ReadmeStarHistoryVisibilityPolicy.shouldDisplay(
             repo: repo,
             projectVisibility: .private,
+            snapshot: Self.snapshot(state: .cached)
+        ))
+        var zeroStarRepo = repo
+        zeroStarRepo.starsCount = 0
+        #expect(!ReadmeStarHistoryVisibilityPolicy.shouldDisplay(
+            repo: zeroStarRepo,
+            projectVisibility: .public,
             snapshot: Self.snapshot(state: .cached)
         ))
     }
@@ -179,15 +291,15 @@ struct ReadmeStarHistoryPreviewTests {
             StarHistoryPoint(
                 date: StarHistoryDateCodec.date(from: "2026-07-23")!,
                 count: 0,
-                source: .ghArchive,
-                precision: .estimated,
+                source: .githubHistory,
+                precision: .reconstructed,
                 fetchedAt: StarHistoryDateCodec.date(from: "2026-09-06")
             ),
             StarHistoryPoint(
                 date: StarHistoryDateCodec.date(from: "2026-09-06")!,
                 count: 1_165,
-                source: .ghArchive,
-                precision: .estimated,
+                source: .githubHistory,
+                precision: .reconstructed,
                 fetchedAt: StarHistoryDateCodec.date(from: "2026-09-06")
             )
         ]
@@ -262,7 +374,7 @@ struct ReadmeStarHistoryPreviewTests {
         #expect(metrics.periodDays == 90)
         #expect(abs(try #require(metrics.dailyAverage) - 12_340.0 / 90) < 0.000001)
         #expect(abs(try #require(metrics.growthRate) - 12_340.0 / 38_155) < 0.000001)
-        #expect(metrics.isEstimated)
+        #expect(!metrics.isEstimated)
         #expect(!metrics.sinceCreated)
     }
 
@@ -316,8 +428,8 @@ struct ReadmeStarHistoryPreviewTests {
         let created = try #require(StarHistoryDateCodec.date(from: createdDay))
         let first = try #require(StarHistoryDateCodec.date(from: "2026-08-18"))
         let last = try #require(StarHistoryDateCodec.date(from: "2026-09-07"))
-        let points = [StarHistoryPoint(date: first, count: 752, source: .ghArchive, precision: .estimated),
-                      StarHistoryPoint(date: last, count: 1_165, source: .ghArchive, precision: .estimated)]
+        let points = [StarHistoryPoint(date: first, count: 752, source: .githubHistory, precision: .reconstructed),
+                      StarHistoryPoint(date: last, count: 1_165, source: .githubHistory, precision: .reconstructed)]
         let snapshot = Self.snapshot(points: points, state: .fresh)
         let repository = ReadmeStarHistoryRepositoryStub(cachedSnapshot: snapshot, refreshSnapshot: snapshot)
         let viewModel = ReadmeStarHistoryViewModel(repository: repository, projectVisibilityProvider: { _ in .public })
@@ -357,8 +469,8 @@ struct ReadmeStarHistoryPreviewTests {
     }
 
     private nonisolated static func points(
-        source: StarHistorySource = .ghArchive,
-        precision: StarHistoryPrecision = .estimated
+        source: StarHistorySource = .githubHistory,
+        precision: StarHistoryPrecision = .reconstructed
     ) -> [StarHistoryPoint] {
         [
             StarHistoryPoint(
@@ -416,14 +528,7 @@ private actor ReadmeStarHistoryRepositoryStub: RepoStarHistoryRepositoryProtocol
         return cachedSnapshot
     }
 
-    func recordLocalSnapshot(
-        repoId: Int64,
-        starsCount: Int,
-        observedAt: Date,
-        fetchedAt: Date
-    ) async throws {}
-
-    func replaceRemotePoints(repoId: Int64, points: [StarHistoryPoint]) async throws {}
+    func replaceOfficialPoints(repoId: Int64, points: [StarHistoryPoint]) async throws {}
 
     func refresh(
         repo: Repo,

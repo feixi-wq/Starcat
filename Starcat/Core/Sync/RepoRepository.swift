@@ -74,13 +74,6 @@ struct GRDBRepoRepository {
             for dto in dtos {
                 var repo = Self.repoFromDTO(dto.repo, starredAt: dto.starredAt, cachedAt: cachedAtISO)
                 try repo.save(db)
-                try GRDBRepoStarHistoryRepository.saveLocalSnapshot(
-                    repoId: dto.repo.id,
-                    starsCount: dto.repo.stargazersCount,
-                    observedAt: syncedAt,
-                    fetchedAt: syncedAt,
-                    db: db
-                )
 
                 var starred = StarredRepo(
                     repoId: dto.repo.id,
@@ -201,13 +194,6 @@ struct GRDBRepoRepository {
         return try await database.writer.write { db in
             var repo = Self.repoFromDTO(repoDTO, starredAt: resolvedStarredAt, cachedAt: cachedAtISO, isStarred: true)
             try repo.save(db)
-            try GRDBRepoStarHistoryRepository.saveLocalSnapshot(
-                repoId: repoDTO.id,
-                starsCount: repoDTO.stargazersCount,
-                observedAt: syncedAt,
-                fetchedAt: syncedAt,
-                db: db
-            )
 
             var starred = StarredRepo(
                 repoId: repoDTO.id,
@@ -239,13 +225,6 @@ struct GRDBRepoRepository {
                 repo.starredAt = existing.starredAt
             }
             try repo.save(db)
-            try GRDBRepoStarHistoryRepository.saveLocalSnapshot(
-                repoId: repo.id,
-                starsCount: repo.starsCount,
-                observedAt: syncedAt,
-                fetchedAt: syncedAt,
-                db: db
-            )
             return repo
         }
     }
@@ -262,13 +241,6 @@ struct GRDBRepoRepository {
             saved.starredAt = existing?.isStarred == true ? existing?.starredAt : nil
             saved.cachedAt = cachedAtISO
             try saved.save(db)
-            try GRDBRepoStarHistoryRepository.saveLocalSnapshot(
-                repoId: saved.id,
-                starsCount: saved.starsCount,
-                observedAt: syncedAt,
-                fetchedAt: syncedAt,
-                db: db
-            )
             return saved
         }
     }
@@ -512,14 +484,31 @@ struct GRDBRepoRepository {
     /// SQLite FTS5 的 `bm25()` 返回**负数**，越小（越负）越相关。`ASC` 把最负的（最相关）
     /// 排第一；BM25 同分时回落 `starred_at` 让新 star 在前。
     ///
-    /// 空 query 直接退化为全量；用户输入由 caller 用 `FTSQuery.sanitize` 转义，避免 FTS5
+    /// 空 query 直接退化为已 Star 全量；用户输入由 caller 用 `FTSQuery.sanitize` 转义，避免 FTS5
     /// 语法错误（如 `"`、`*`、`-` 等元字符）。
     func searchFTS(query: String) async throws -> [Repo] {
+        try await searchFTS(query: query, starredOnly: true)
+    }
+
+    /// Search Center 本地表：不限 `is_starred`，覆盖我的项目私仓等已缓存行。
+    func searchAllLocalFTS(query: String) async throws -> [Repo] {
+        try await searchFTS(query: query, starredOnly: false)
+    }
+
+    /// - Parameter starredOnly: `true` 保持历史 Stars 搜索语义；`false` 扫本地 `repos` 全表。
+    private func searchFTS(query: String, starredOnly: Bool) async throws -> [Repo] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            return try await fetchAllStarred()
+            if starredOnly {
+                return try await fetchAllStarred()
+            }
+            return try await database.writer.read { db in
+                // 未 Star 行的 starred_at 常为 NULL；DESC 会把它们沉底，再用 id 稳定次序。
+                try Repo.order(Column("starred_at").desc, Column("id").desc).fetchAll(db)
+            }
         }
         let ftsQuery = FTSQuery.sanitize(trimmed)
+        let starredPredicate = starredOnly ? "WHERE r.is_starred = 1" : ""
         return try await database.writer.read { db in
             // 用 CTE 把 "repos_fts 命中" 与 "notes_fts 命中" 摊平到同一关系
             // (repo_id, score)；外层按 repo_id 聚合取 MIN(score) = 最相关的来源分数。
@@ -537,8 +526,8 @@ struct GRDBRepoRepository {
                     FROM hits
                     GROUP BY repo_id
                 ) m ON r.id = m.repo_id
-                WHERE r.is_starred = 1
-                ORDER BY m.best_score ASC, r.starred_at DESC
+                \(starredPredicate)
+                ORDER BY m.best_score ASC, r.starred_at DESC, r.id DESC
             """, arguments: [ftsQuery, ftsQuery])
         }
     }
@@ -1089,7 +1078,7 @@ struct GRDBRepoRepository {
         let orderBy: String
         switch sort {
         case .starredAtDesc:
-            // 「默认」始终表示最近 star；知识库默认改走 libraryUpdatedAtDesc。
+            // 星标列表默认按最近 Star；知识库默认改走 libraryUpdatedAtDesc。
             orderBy = "r.starred_at DESC, r.id DESC"
         case .starredAtAsc:
             orderBy = "r.starred_at IS NULL ASC, r.starred_at ASC, r.id ASC"
@@ -1255,7 +1244,9 @@ struct GRDBRepoRepository {
                 sql: """
                     SELECT *
                     FROM repo_star_history_points
-                    WHERE repo_id IN (\(placeholders)) AND observed_on <= ?
+                    WHERE repo_id IN (\(placeholders))
+                      AND source = 'github_history'
+                      AND observed_on <= ?
                     ORDER BY repo_id ASC, observed_on ASC, fetched_at ASC
                     """,
                 arguments: StatementArguments(arguments)
@@ -1263,20 +1254,7 @@ struct GRDBRepoRepository {
             let grouped = Dictionary(grouping: records, by: \.repoId)
             var growth: [Int64: Int] = [:]
             for (repoID, repoRecords) in grouped {
-                var bestByDay: [String: RepoStarHistoryPointRecord] = [:]
-                for record in repoRecords {
-                    guard let existing = bestByDay[record.observedOn] else {
-                        bestByDay[record.observedOn] = record
-                        continue
-                    }
-                    let priority = Self.starHistoryPriority(record)
-                    let existingPriority = Self.starHistoryPriority(existing)
-                    if priority > existingPriority
-                        || (priority == existingPriority && record.fetchedAt > existing.fetchedAt) {
-                        bestByDay[record.observedOn] = record
-                    }
-                }
-                let points = bestByDay.values.sorted { $0.observedOn < $1.observedOn }
+                let points = repoRecords.sorted { $0.observedOn < $1.observedOn }
                 guard let latest = points.last else { continue }
                 let baseline = points.last { $0.observedOn <= cutoff }
                     ?? points.first { $0.observedOn > cutoff }
@@ -1284,19 +1262,6 @@ struct GRDBRepoRepository {
                 growth[repoID] = latest.starsCount - baseline.starsCount
             }
             return growth
-        }
-    }
-
-    /// 与详情 Star History 的“本机 > GitHub 重建 > Discovery > GH Archive”保持一致。
-    private static func starHistoryPriority(_ record: RepoStarHistoryPointRecord) -> Int {
-        switch StarHistorySource(rawValue: record.source) {
-        case .localSnapshot: return 4
-        case .githubStargazers: return 3
-        case .discoverySnapshot: return 2
-        case .ghArchive:
-            return record.precision == StarHistoryPrecision.snapshot.rawValue ? 2 : 1
-        case .none:
-            return 0
         }
     }
 

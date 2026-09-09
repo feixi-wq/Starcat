@@ -11,11 +11,9 @@
 //  - 暴露 @Observable 状态供 BatchAIQueuePanel / 入口 Banner 直接绑定。
 //
 //  关键约束：
-//  - **会话内存级**：队列、进度、失败记录不落库。重启 app 即清空。
-//    设计理由：(1) 已生成的 AI 摘要存在 ai_summaries 表，重启后再次整理会命中 cache
-//    不重复消耗配额；(2) 落库要新增 batch_ai_jobs 表 + 迁移 + Repository，
-//    与 dong4j 强调的"最小代码"冲突；(3) 用户预期的"后台继续"指 panel 关闭后仍跑，
-//    而非跨进程恢复——若未来真有需求，再独立 V8 迁移即可。
+//  - **手动会话可恢复**：开始前原子写入队列骨架，每个仓库在 AI 调用前及结果整合后
+//    单独 checkpoint。App 重启只恢复审核数据并保持暂停，不会自动重放 Provider 请求。
+//    静默后台整理仍由 AutoTidyScheduler 管理，不创建人工审核草稿。
 //  - **有界并发**：暂停只阻止下一波派发，终止则取消整组 in-flight Task；429 会临时
 //    降为单路并发，避免为了吞吐量把 Provider 推入持续限流。
 //  - **重试不可重试错误甄别**：API Key 缺失 / Provider 缺失这类配置错误**不消耗重试次数**——
@@ -85,6 +83,10 @@ final class BatchAIQueueService {
     /// 用户主动取消标志位：与 `runLoopTask.cancel()` 共同表达用户终止意图。
     private var cancelRequested: Bool = false
 
+    /// 账号切换只中断当前请求，不能复用“用户终止”删除 queued 草稿。
+    /// runLoop 收口 processing 项时据此写成可重试的中断失败，切回账号后由用户决定是否继续。
+    private var accountResetRequested: Bool = false
+
     /// 当前队列 Task。取消句柄会把 cancellation 传给整波 in-flight AI 请求；
     /// runLoop 仍负责统一收口 job 与 UI 状态，避免调用方直接改写状态机。
     private var runLoopTask: Task<Void, Never>?
@@ -109,6 +111,16 @@ final class BatchAIQueueService {
     /// 本轮是否已有标签落库，退出 runLoop 时据此合并一次 Sidebar 刷新。
     private var hasPendingTagsChangedNotification: Bool = false
 
+    /// 底栏「应用选中项」/ 批量落库重试的会话级锁。
+    ///
+    /// 不能只靠「当前是否有 `.applying` 行」派生：串行多仓时仓 A 刚变 `applied`、仓 B
+    /// 尚未进入 `applying` 会出现一帧 `isApplyingSuggestedTags == false`，底栏按钮反复
+    /// 启用/禁用形成闪烁。整批期间保持 true，结束再清。
+    private var isBulkApplyingSuggestedTags: Bool = false
+
+    /// 整批应用开始时冻结的「已选 N 个」快照；避免 `.applying` 被排除出有效选择后数字连跳。
+    private var frozenTagReviewSelectionCount: Int?
+
     // MARK: - 依赖（按 AppDependencies 装配顺序注入）
 
     private let insightService: any BatchAIInsightProviding
@@ -117,6 +129,11 @@ final class BatchAIQueueService {
     private let aiSummaryRepository: any AISummaryRepositoryProtocol
     private let entitlementGate: EntitlementGate?
     private let notificationService: ReleaseNotificationService?
+    private let draftRepository: (any AIOrganizationDraftRepositoryProtocol)?
+
+    /// draft id 同时是账号切换屏障；旧账号迟到写入在新数据库中找不到该 id，会自然 no-op。
+    private var activeDraftID: UUID?
+    private var isDraftCreated = false
 
     /// 正常状态下保留 5 个长驻 Worker；每个 Worker 完成一个仓库后立即领取下一项。
     private static let defaultConcurrency = 5
@@ -146,7 +163,8 @@ final class BatchAIQueueService {
         repoTagRepository: any RepoTagRepositoryProtocol,
         aiSummaryRepository: any AISummaryRepositoryProtocol,
         entitlementGate: EntitlementGate? = nil,
-        notificationService: ReleaseNotificationService? = nil
+        notificationService: ReleaseNotificationService? = nil,
+        draftRepository: (any AIOrganizationDraftRepositoryProtocol)? = nil
     ) {
         self.insightService = insightService
         self.tagRepository = tagRepository
@@ -154,6 +172,7 @@ final class BatchAIQueueService {
         self.aiSummaryRepository = aiSummaryRepository
         self.entitlementGate = entitlementGate
         self.notificationService = notificationService
+        self.draftRepository = draftRepository
     }
 
     // MARK: - 派生状态（panel UI 用）
@@ -197,7 +216,11 @@ final class BatchAIQueueService {
     }
 
     var selectedTagReviewRepositoryCount: Int {
-        effectiveSelectedRepoIDsForTagApplication.count
+        // 整批应用中展示开批时的勾选数，避免每仓进入 applying / 完成后底栏数字闪跳。
+        if let frozenTagReviewSelectionCount {
+            return frozenTagReviewSelectionCount
+        }
+        return effectiveSelectedRepoIDsForTagApplication.count
     }
 
     var selectedTagReviewTagCount: Int {
@@ -208,8 +231,10 @@ final class BatchAIQueueService {
     }
 
     /// 标签正在写入数据库时不能丢弃会话，否则 UI 状态虽已清空，异步写入仍可能继续完成。
+    /// 含会话级整批锁：覆盖串行多仓间隙，防止底栏按钮闪烁。
     var isApplyingSuggestedTags: Bool {
-        jobs.contains { job in
+        if isBulkApplyingSuggestedTags { return true }
+        return jobs.contains { job in
             if case .applying = job.tagReviewState { true } else { false }
         }
     }
@@ -326,6 +351,7 @@ final class BatchAIQueueService {
         self.isPaused = false
         self.isRunning = true
         self.cancelRequested = false
+        self.accountResetRequested = false
         self.hasPendingTagsChangedNotification = false
         self.startedAt = Date()
         self.processingJobIDs = []
@@ -334,6 +360,8 @@ final class BatchAIQueueService {
         self.pendingTagCreationsByCanonicalKey = [:]
         self.retryNotBeforeByRepoID = [:]
         self.rateLimitCooldownUntil = nil
+        self.activeDraftID = silent ? nil : UUID()
+        self.isDraftCreated = silent
         AppLog.ai.notice("[batch-ai] start: count=\(repos.count, privacy: .public), autoApplyTags=\(options.autoApplyTags, privacy: .public), threshold=\(options.confidenceThreshold, privacy: .public), silent=\(silent, privacy: .public)")
         launchRunLoop()
         return true
@@ -390,8 +418,10 @@ final class BatchAIQueueService {
         }
         // 立即清空所有未开始的 job，给用户立即可见的反馈。
         // 已完成 / 已忽略 / 已失败 / processing 的 job 保留，不破坏历史记录。
-        let removed = jobs.filter { $0.status == .queued }.count
+        let removedRepoIDs = Set(jobs.compactMap { $0.status == .queued ? $0.repoId : nil })
+        let removed = removedRepoIDs.count
         jobs.removeAll { $0.status == .queued }
+        deleteDraftItems(repoIDs: removedRepoIDs)
         AppLog.ai.notice("[batch-ai] cancel requested, cleared \(removed, privacy: .public) queued jobs")
     }
 
@@ -408,18 +438,81 @@ final class BatchAIQueueService {
         await task?.value
     }
 
-    /// 账号切换时终止任何来源的批次，并清除仅属于旧账号的建议和进度。
+    /// 账号切换时中断任何来源的批次，并清除仅属于旧账号的内存态。
     ///
-    /// 这里比普通 `cancel()` 更强：必须取消 in-flight AI 请求并等待 runLoop 退出，
-    /// 否则旧账号的 GitHub Lists 建议可能在数据库作用域已经切换后才尝试写回。
+    /// 不能调用普通 `cancel()`：那是用户明确终止，会删除 queued 草稿。这里必须先让
+    /// in-flight AI 请求在旧账号数据库内收口为“处理中断”，同时保留未开始和未确认结果，
+    /// 否则切回账号仍会重复消耗 token。
     func resetForAccountChange() async {
         if isRunning {
-            cancel()
-            let task = runLoopTask
-            task?.cancel()
-            await task?.value
+            accountResetRequested = true
+            cancelRequested = true
+            isPaused = false
+            if let runLoopTask {
+                runLoopTask.cancel()
+                await runLoopTask.value
+            } else {
+                // 暂停态的旧 runLoop 已退出；重新进入统一收口，确保状态已经持久化再切库。
+                launchRunLoop()
+                runLoopTask?.cancel()
+                await runLoopTask?.value
+            }
         }
         reset()
+    }
+
+    /// 数据库切换完成后恢复当前账号的人工草稿。恢复态永远停在用户可审阅/可继续的边界，
+    /// 不会从 `.queued` 或被中断的 `.processing` 自动发起 Provider 请求。
+    func restoreDraftIfNeeded() async {
+        guard jobs.isEmpty, !isRunning, let draftRepository else { return }
+        do {
+            guard let draft = try await draftRepository.loadDraft(kind: .batchTags) else { return }
+            let header = try AIOrganizationDraftJSON.decode(
+                BatchAIOrganizationDraftHeader.self,
+                from: draft.headerJSON
+            )
+            let snapshots = try draft.items.map {
+                try AIOrganizationDraftJSON.decode(BatchAIOrganizationDraftItem.self, from: $0.payloadJSON)
+            }
+            guard !snapshots.isEmpty else {
+                try await draftRepository.deleteDraft(draftID: draft.id, kind: .batchTags)
+                return
+            }
+
+            activeDraftID = draft.id
+            isDraftCreated = true
+            options = header.options
+            silent = false
+            startedAt = header.startedAt
+            jobs = snapshots.map { $0.restoredJob() }
+            repoCache = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.repo.id, $0.repo) })
+            selectedRepoIDsForTagApplication = Set(
+                snapshots.filter(\.isSelectedForTagApplication).map { $0.repo.id }
+            )
+            isPaused = jobs.contains { $0.status == .queued }
+            isRunning = isPaused
+            cancelRequested = false
+            processingJobIDs = []
+            sharedTagLibrary = nil
+            initialTagCanonicalKeys = nil
+            pendingTagCreationsByCanonicalKey = [:]
+            retryNotBeforeByRepoID = [:]
+            rateLimitCooldownUntil = nil
+
+            // 中断态已在内存中转为可重试失败，立即回写，下一次启动不会再次看到“执行中”。
+            for job in jobs where job.status == .failed || {
+                if case .failed = job.tagReviewState { return true }
+                return false
+            }() {
+                try await persistJob(repoID: job.repoId)
+            }
+            if isManualSessionResolved {
+                try await draftRepository.deleteDraft(draftID: draft.id, kind: .batchTags)
+                reset()
+            }
+        } catch {
+            AppLog.database.error("[batch-ai] restore draft failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// UI 派生：true 时显示"正在终止当前 AI 调用..."提示。
@@ -437,14 +530,19 @@ final class BatchAIQueueService {
         startedAt = nil
         processingJobIDs = []
         cancelRequested = false
+        accountResetRequested = false
         silent = false
         hasPendingTagsChangedNotification = false
+        isBulkApplyingSuggestedTags = false
+        frozenTagReviewSelectionCount = nil
         sharedTagLibrary = nil
         initialTagCanonicalKeys = nil
         pendingTagCreationsByCanonicalKey = [:]
         retryNotBeforeByRepoID = [:]
         rateLimitCooldownUntil = nil
         repoCache = [:]
+        activeDraftID = nil
+        isDraftCreated = false
     }
 
     /// 放弃当前批次的内存态结果，让用户可以立即开始下一批整理。
@@ -454,6 +552,7 @@ final class BatchAIQueueService {
     @discardableResult
     func discardCurrentSession() -> Bool {
         guard canDiscardCurrentSession else { return false }
+        deleteActiveDraft()
         reset()
         return true
     }
@@ -462,6 +561,7 @@ final class BatchAIQueueService {
     @discardableResult
     func finishManualSessionIfResolved() -> Bool {
         guard isManualSessionResolved else { return false }
+        deleteActiveDraft()
         reset()
         return true
     }
@@ -479,6 +579,7 @@ final class BatchAIQueueService {
         jobs[idx].copyDiagnostic = nil
         jobs[idx].finishedAt = nil
         retryNotBeforeByRepoID[jobId] = nil
+        schedulePersistJob(repoID: jobId)
         if !isRunning {
             isRunning = true
             isPaused = false
@@ -514,6 +615,7 @@ final class BatchAIQueueService {
             touched = true
         }
         guard touched else { return }
+        schedulePersistJobs(repoIDs: Set(jobs.compactMap { $0.status == .queued ? $0.repoId : nil }))
         if isRunning {
             if isPaused {
                 isPaused = false
@@ -537,6 +639,9 @@ final class BatchAIQueueService {
             if case .failed = job.tagReviewState { return job.repoId }
             return nil
         }
+        // 与底栏批量应用同一会话锁，避免串行落库间隙底栏/重试按钮闪烁。
+        beginBulkTagApplication(selectionCount: nil)
+        defer { endBulkTagApplication() }
         for repoID in reviewFailureRepoIDs {
             guard !Task.isCancelled else { return }
             await applySelectedSuggestedTags(repoId: repoID)
@@ -561,6 +666,7 @@ final class BatchAIQueueService {
         case .notRequired, .applying, .applied, .ignored:
             return
         }
+        schedulePersistJob(repoID: repoId)
     }
 
     func isRepoSelectedForTagApplication(repoId: Int64) -> Bool {
@@ -579,11 +685,13 @@ final class BatchAIQueueService {
                 return nil
             }
         })
+        schedulePersistJobs(repoIDs: Set(jobs.map(\.repoId)))
     }
 
     /// 清空仓库层复选状态，保留每行已选择的候选标签，方便用户稍后重新批量勾选。
     func clearTagReviewRepositorySelection() {
         selectedRepoIDsForTagApplication = []
+        schedulePersistJobs(repoIDs: Set(jobs.map(\.repoId)))
     }
 
     /// 切换单个候选标签的选中状态。
@@ -605,6 +713,7 @@ final class BatchAIQueueService {
         }
         // 用户调整选择即开始新一轮审核，清掉上一次应用失败的展示状态。
         jobs[index].tagReviewState = .pending
+        schedulePersistJob(repoID: repoId)
     }
 
     func selectAllSuggestedTags(repoId: Int64) {
@@ -613,6 +722,7 @@ final class BatchAIQueueService {
         case .pending, .failed:
             jobs[index].selectedSuggestedTagIDs = Set(jobs[index].suggestedTags.map(\.id))
             jobs[index].tagReviewState = .pending
+            schedulePersistJob(repoID: repoId)
         case .notRequired, .applying, .applied, .ignored:
             return
         }
@@ -624,6 +734,7 @@ final class BatchAIQueueService {
         case .pending, .failed:
             jobs[index].selectedSuggestedTagIDs = []
             jobs[index].tagReviewState = .pending
+            schedulePersistJob(repoID: repoId)
         case .notRequired, .applying, .applied, .ignored:
             return
         }
@@ -637,6 +748,7 @@ final class BatchAIQueueService {
             jobs[index].selectedSuggestedTagIDs = []
             jobs[index].tagReviewState = .ignored
             selectedRepoIDsForTagApplication.remove(repoId)
+            schedulePersistJob(repoID: repoId)
         case .notRequired, .applying, .applied, .ignored:
             return
         }
@@ -712,6 +824,8 @@ final class BatchAIQueueService {
                 else { return nil }
                 return job.repoId
             }
+            beginBulkTagApplication(selectionCount: nil)
+            defer { endBulkTagApplication() }
             for repoID in reviewFailureRepoIDs {
                 guard !Task.isCancelled else { return }
                 await applySelectedSuggestedTags(repoId: repoID)
@@ -730,6 +844,7 @@ final class BatchAIQueueService {
             guard repoIDs.contains(jobs[index].repoId) else { continue }
             jobs[index].tagReviewState = .pending
         }
+        schedulePersistJobs(repoIDs: repoIDs)
     }
 
     /// 将用户在单个仓库行内确认的标签落库。
@@ -749,6 +864,12 @@ final class BatchAIQueueService {
         let suggestions = jobs[initialIndex].suggestedTags.filter { selectedIDs.contains($0.id) }
         guard !suggestions.isEmpty else { return }
         jobs[initialIndex].tagReviewState = .applying
+        do {
+            try await persistJob(repoID: repoId)
+        } catch {
+            jobs[initialIndex].tagReviewState = .failed(BatchAIFailure(error: error))
+            return
+        }
 
         do {
             let tags = try await tagRepository.fetchAll()
@@ -787,15 +908,23 @@ final class BatchAIQueueService {
                         jobs[latestIndex].suggestedTagAvailability[suggestion.id] = .created
                     }
                 }
+                try await persistJob(repoID: repoId)
             }
 
             guard let finalIndex = jobs.firstIndex(where: { $0.repoId == repoId }) else { return }
             jobs[finalIndex].tagReviewState = .applied
             selectedRepoIDsForTagApplication.remove(repoId)
-            onTagsChanged?()
+            try await persistJob(repoID: repoId)
+            // 整批应用中只记 pending，结束时合并一次 Sidebar 刷新，避免每仓触发整窗抖动。
+            if isBulkApplyingSuggestedTags {
+                hasPendingTagsChangedNotification = true
+            } else {
+                onTagsChanged?()
+            }
         } catch {
             guard let finalIndex = jobs.firstIndex(where: { $0.repoId == repoId }) else { return }
             jobs[finalIndex].tagReviewState = .failed(BatchAIFailure(error: error))
+            await persistJobBestEffort(repoID: repoId)
         }
     }
 
@@ -804,15 +933,31 @@ final class BatchAIQueueService {
     /// 标签可能需要按 canonical key 创建；串行复用单仓应用路径可以避免多个仓库同时创建同名标签，
     /// 同时每完成一个仓库就即时更新该行。单仓失败会保留勾选并继续处理其余仓库。
     func applySelectedTagReviewRepositories() async {
+        guard !isBulkApplyingSuggestedTags else { return }
         let selectedRepoIDs = effectiveSelectedRepoIDsForTagApplication
         guard !selectedRepoIDs.isEmpty else { return }
         let orderedRepoIDs = jobs
             .map(\.repoId)
             .filter { selectedRepoIDs.contains($0) }
+        beginBulkTagApplication(selectionCount: selectedRepoIDs.count)
+        defer { endBulkTagApplication() }
         for repoId in orderedRepoIDs {
             guard !Task.isCancelled else { return }
             await applySelectedSuggestedTags(repoId: repoId)
         }
+    }
+
+    /// 打开整批落库会话锁；`selectionCount` 非 nil 时冻结底栏「已选 N 个」。
+    private func beginBulkTagApplication(selectionCount: Int?) {
+        isBulkApplyingSuggestedTags = true
+        frozenTagReviewSelectionCount = selectionCount
+    }
+
+    /// 关闭整批落库会话锁，并合并发布本批产生的标签变更通知。
+    private func endBulkTagApplication() {
+        isBulkApplyingSuggestedTags = false
+        frozenTagReviewSelectionCount = nil
+        notifyTagsChangedIfNeeded()
     }
 
     // MARK: - 主循环
@@ -821,6 +966,10 @@ final class BatchAIQueueService {
         guard runLoopTask == nil else { return }
         runLoopTask = Task { [weak self] in
             guard let self else { return }
+            guard await self.prepareDraftForRun() else {
+                self.runLoopTask = nil
+                return
+            }
             await self.runLoop()
             self.runLoopTask = nil
             // resume() 可能刚好发生在旧 Worker Group 收尾之前；旧 Task 尚未置 nil 时
@@ -878,11 +1027,12 @@ final class BatchAIQueueService {
                 let now = Date()
                 for idx in jobs.indices where jobs[idx].status == .processing {
                     jobs[idx].status = .failed
-                    jobs[idx].failure = .cancelled
+                    jobs[idx].failure = accountResetRequested ? .interrupted : .cancelled
                     jobs[idx].errorDiagnostic = nil
                     jobs[idx].copyDiagnostic = nil
                     jobs[idx].finishedAt = now
                 }
+                await persistJobsBestEffort(repoIDs: Set(jobs.map(\.repoId)))
             }
             isRunning = false
             processingJobIDs = []
@@ -956,14 +1106,19 @@ final class BatchAIQueueService {
     private func processClaimedJob(repoID: Int64, options: BatchAIQueueOptions) async {
         defer { processingJobIDs.remove(repoID) }
         do {
+            // processing 必须先 durable 再请求 AI。若 App 在请求期间退出，恢复时才能明确
+            // 标成“处理中断”，而不是把同一 queued 项静默再调用一次并重复消耗 token。
+            try await persistJob(repoID: repoID)
             let result = try await processSingle(jobId: repoID, options: options)
             try Task.checkCancellation()
             guard !cancelRequested else { return }
             try await applyResult(jobId: repoID, result: result, options: options)
             retryNotBeforeByRepoID[repoID] = nil
+            try await persistJob(repoID: repoID)
         } catch {
             guard !cancelRequested, !Task.isCancelled, !(error is CancellationError) else { return }
             handleFailure(jobId: repoID, error: error, options: options)
+            await persistJobBestEffort(repoID: repoID)
         }
     }
 
@@ -1010,6 +1165,11 @@ final class BatchAIQueueService {
                 externalContextEnabledOverride: includesSummary ? options.externalContextEnabledOverride : nil
             )
             suggestions = insight.insight.suggestedTags
+            // 标签任务的空结果没有任何可审核或可应用内容，不能计为“全部完成”。
+            // 摘要单独运行仍允许 suggestions 为空，因此只在本仓库确实执行标签任务时失败。
+            guard !includesTags || !suggestions.isEmpty else {
+                throw AIRecommendationValidationError.emptyTagSuggestions
+            }
         } else {
             suggestions = []
         }
@@ -1381,6 +1541,11 @@ final class BatchAIQueueService {
 
     /// 不可重试错误判别：用户没改配置之前永远会失败的那一类。
     private func isPermanentError(_ error: Error) -> Bool {
+        // 结构合法但业务结果不可用时，自动重复相同请求只会继续消耗配额；保留失败态，
+        // 由用户检查模型 / 规则后通过现有“重试”入口再次发起。
+        if error is AIRecommendationValidationError {
+            return true
+        }
         if let insight = error as? RepoAIInsightError {
             switch insight {
             case .missingAPIKey, .missingProvider:
@@ -1405,6 +1570,129 @@ final class BatchAIQueueService {
         guard let aiError = error as? AIClientError else { return false }
         if case .rateLimited = aiError { return true }
         return false
+    }
+
+    // MARK: - 人工会话草稿
+
+    /// 首次启动时先原子保存 Header 与全部 queued Item。后续 resume/重试复用同一 draft，
+    /// 从而保证任何 Provider 请求开始前，数据库都已经知道该仓库正在本轮队列里。
+    private func prepareDraftForRun() async -> Bool {
+        guard !silent, !isDraftCreated else { return true }
+        guard let draftRepository, let activeDraftID, let options, let startedAt else {
+            // 测试或不支持持久化的注入环境保持原有行为。
+            isDraftCreated = true
+            return true
+        }
+        do {
+            let header = BatchAIOrganizationDraftHeader(options: options, startedAt: startedAt)
+            let items = try jobs.map { job in
+                AIOrganizationDraftItem(
+                    repoID: job.repoId,
+                    payloadJSON: try encodedDraftItem(for: job.repoId)
+                )
+            }
+            try await draftRepository.replaceDraft(AIOrganizationDraft(
+                id: activeDraftID,
+                kind: .batchTags,
+                headerJSON: try AIOrganizationDraftJSON.encode(header),
+                items: items
+            ))
+            isDraftCreated = true
+            return true
+        } catch {
+            let now = Date.now
+            for index in jobs.indices where jobs[index].status == .queued {
+                jobs[index].status = .failed
+                jobs[index].failure = BatchAIFailure(error: error)
+                jobs[index].finishedAt = now
+            }
+            isRunning = false
+            AppLog.database.error("[batch-ai] create draft failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func encodedDraftItem(for repoID: Int64) throws -> String {
+        guard let job = jobs.first(where: { $0.repoId == repoID }),
+              let repo = repoCache[repoID]
+        else { throw CocoaError(.fileNoSuchFile) }
+        let snapshot = BatchAIOrganizationDraftItem(
+            repo: repo,
+            job: job,
+            isSelectedForTagApplication: selectedRepoIDsForTagApplication.contains(repoID)
+        )
+        return try AIOrganizationDraftJSON.encode(snapshot)
+    }
+
+    private func persistJob(repoID: Int64) async throws {
+        guard !silent,
+              isDraftCreated,
+              let draftRepository,
+              let activeDraftID
+        else { return }
+        try await draftRepository.upsertItem(
+            draftID: activeDraftID,
+            kind: .batchTags,
+            repoID: repoID,
+            payloadJSON: try encodedDraftItem(for: repoID)
+        )
+    }
+
+    private func persistJobBestEffort(repoID: Int64) async {
+        do {
+            try await persistJob(repoID: repoID)
+        } catch {
+            AppLog.database.error("[batch-ai] save draft item failed: repo=\(repoID, privacy: .public), error=\(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func persistJobsBestEffort(repoIDs: Set<Int64>) async {
+        for repoID in repoIDs {
+            await persistJobBestEffort(repoID: repoID)
+        }
+    }
+
+    private func schedulePersistJob(repoID: Int64) {
+        Task { [weak self] in
+            await self?.persistJobBestEffort(repoID: repoID)
+        }
+    }
+
+    private func schedulePersistJobs(repoIDs: Set<Int64>) {
+        guard !repoIDs.isEmpty else { return }
+        Task { [weak self] in
+            await self?.persistJobsBestEffort(repoIDs: repoIDs)
+        }
+    }
+
+    private func deleteDraftItems(repoIDs: Set<Int64>) {
+        guard !repoIDs.isEmpty,
+              let draftRepository,
+              let activeDraftID,
+              isDraftCreated
+        else { return }
+        Task {
+            do {
+                try await draftRepository.deleteItems(
+                    draftID: activeDraftID,
+                    kind: .batchTags,
+                    repoIDs: repoIDs
+                )
+            } catch {
+                AppLog.database.error("[batch-ai] delete draft items failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func deleteActiveDraft() {
+        guard let draftRepository, let activeDraftID, isDraftCreated else { return }
+        Task {
+            do {
+                try await draftRepository.deleteDraft(draftID: activeDraftID, kind: .batchTags)
+            } catch {
+                AppLog.database.error("[batch-ai] delete draft failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     // MARK: - Repo 缓存（避免每次 processSingle 都查库）
