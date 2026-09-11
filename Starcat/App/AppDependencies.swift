@@ -765,6 +765,8 @@ final class AppDependencies {
                 reranker = HuggingFaceTEIRAGReranker(configuration: rerankConfiguration, apiKey: apiKey)
             case .cohereCompatible:
                 reranker = CohereCompatibleRAGReranker(configuration: rerankConfiguration, apiKey: apiKey)
+            case .localMLX:
+                reranker = LocalMLXRAGReranker(configuration: rerankConfiguration)
             }
         } else {
             reranker = nil

@@ -716,12 +716,13 @@ struct RAGWorkspaceSettingsView: View {
                 Divider()
                 // 与提示词 / 预设同款：等宽铺满，中英文布局一致。
                 EqualWidthSegmentedControl(
-                    items: [RAGRerankProvider.huggingFaceTEI, .cohereCompatible],
+                    items: [RAGRerankProvider.huggingFaceTEI, .cohereCompatible, .localMLX],
                     selection: $rerankProvider,
                     title: { provider in
                         switch provider {
                         case .huggingFaceTEI: return "rag.workspace.rerank.provider.tei"
                         case .cohereCompatible: return "rag.workspace.rerank.provider.cohere"
+                        case .localMLX: return "rag.workspace.rerank.provider.localmlx"
                         }
                     }
                 )
@@ -733,6 +734,7 @@ struct RAGWorkspaceSettingsView: View {
                     }
                 }
                 .padding(.vertical, interfaceScale.scaled(10))
+                if rerankProvider != .localMLX {
                 Divider()
                 // URL 往往很长：输入框吃满标题右侧到容器右缘，溢出只水平滚动不换行。
                 settingTextFieldRow(
@@ -761,6 +763,7 @@ struct RAGWorkspaceSettingsView: View {
                     isSecure: true
                 )
                 .padding(.vertical, interfaceScale.scaled(8))
+                } // rerankProvider != .localMLX：本地重排序没有端点 / Key / 模型名可填
                 Divider()
                 settingTextFieldRow(
                     titleKey: "rag.workspace.rerank.candidateLimit",
