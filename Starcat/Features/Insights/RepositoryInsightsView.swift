@@ -402,53 +402,67 @@ struct RepositoryInsightsView: View {
                 // 洞察页区块含 Charts；LazyVStack 会反复估算高度并与滚动回写形成反馈。
                 // 改为 VStack，并用「概览 / 趋势 / 健康信号」三段节奏降低同权卡片疲劳。
                 // 组间只靠 spacing，不再插 Divider——emphasized 卡片本身已有边界。
-                VStack(alignment: .leading, spacing: 24) {
-                    // 上半：一眼能扫完的本地事实 + 活动 KPI
-                    VStack(alignment: .leading, spacing: 12) {
-                        localOverviewSection
-                        activitySection
+                ScrollViewReader { proxy in
+                    // 「本地洞察」卡片的 chevron 会在页内滚动到对应深潜区块。
+                    let scrollToAnchor: (String) -> Void = { anchor in
+                        if reduceMotion {
+                            proxy.scrollTo(anchor, anchor: .top)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.3)) {
+                                proxy.scrollTo(anchor, anchor: .top)
+                            }
+                        }
                     }
+                    VStack(alignment: .leading, spacing: 24) {
+                        // 上半：一眼能扫完的本地事实 + 活动 KPI
+                        VStack(alignment: .leading, spacing: 12) {
+                            localOverviewSection(onDetailsScroll: scrollToAnchor)
+                            activitySection
+                        }
 
-                    // 中段：需要盯图的趋势深潜
-                    VStack(alignment: .leading, spacing: 12) {
-                        starHistorySection
-                        commitSection
-                        contributorSection
-                    }
+                        // 中段：需要盯图的趋势深潜
+                        VStack(alignment: .leading, spacing: 12) {
+                            starHistorySection
+                            commitSection
+                            contributorSection
+                        }
 
-                    // 下半：节奏 / 健康 / 社区安全 / 时间线
-                    VStack(alignment: .leading, spacing: 12) {
-                        releaseCadenceSection
-                        healthSection
-                        localSignalsSection
-                        timelineSection
+                        // 下半：节奏 / 健康 / 社区安全 / 时间线
+                        VStack(alignment: .leading, spacing: 12) {
+                            releaseCadenceSection
+                                .id(InsightsSectionAnchor.releaseCadence)
+                            healthSection
+                                .id(InsightsSectionAnchor.health)
+                            localSignalsSection
+                            timelineSection
+                        }
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .top)
-                // 外层 Scaffold 在 Hero 折叠后会扩大正文视口；内容栈必须坚持使用卡片的
-                // 固有高度，否则 VStack 会接受扩大的纵向 proposal，在最后一张卡片后留下
-                // 一段可滚动但不可见的空白。fixedSize 测固有高，再 frame 锁死，
-                // 比单靠 fixedSize 更能扛住折叠瞬间的 proposal 拉伸。
-                .fixedSize(horizontal: false, vertical: true)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: InsightsContentHeightKey.self,
-                            value: proxy.size.height
-                        )
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    // 外层 Scaffold 在 Hero 折叠后会扩大正文视口；内容栈必须坚持使用卡片的
+                    // 固有高度，否则 VStack 会接受扩大的纵向 proposal，在最后一张卡片后留下
+                    // 一段可滚动但不可见的空白。fixedSize 测固有高，再 frame 锁死，
+                    // 比单靠 fixedSize 更能扛住折叠瞬间的 proposal 拉伸。
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: InsightsContentHeightKey.self,
+                                value: proxy.size.height
+                            )
+                        }
                     }
+                    .onPreferenceChange(InsightsContentHeightKey.self) { height in
+                        guard height > 0,
+                              abs(height - insightsContentHeight) > Self.contentHeightTolerance
+                        else { return }
+                        insightsContentHeight = height
+                    }
+                    .frame(
+                        height: insightsContentHeight > 0 ? insightsContentHeight : nil,
+                        alignment: .top
+                    )
+                    .padding(18)
                 }
-                .onPreferenceChange(InsightsContentHeightKey.self) { height in
-                    guard height > 0,
-                          abs(height - insightsContentHeight) > Self.contentHeightTolerance
-                    else { return }
-                    insightsContentHeight = height
-                }
-                .frame(
-                    height: insightsContentHeight > 0 ? insightsContentHeight : nil,
-                    alignment: .top
-                )
-                .padding(18)
             }
             .detailScrollViewStyle()
             .onScrollGeometryChange(for: RepoDetailScrollReport.self) { geometry in
@@ -521,100 +535,94 @@ struct RepositoryInsightsView: View {
         await onStarHistoryChanged(repo)
     }
 
-    private var localOverviewSection: some View {
+    /// 本地洞察：四张彩色摘要卡。chevron 在页内滚动到对应深潜区块（原型交互）。
+    private func localOverviewSection(
+        onDetailsScroll: @escaping (String) -> Void
+    ) -> some View {
         InsightsSectionContainer(
             title: "insights.repo.section.local",
             subtitle: "insights.repo.section.local.subtitle",
-            systemImage: "internaldrive.fill",
-            iconColor: .cyan,
+            systemImage: "cylinder.fill",
+            iconColor: .blue,
             chrome: .emphasized
         ) {
-            // 与活动概览同款：四卡一行、标题行彩色图标、数值居中加大。
             HStack(alignment: .top, spacing: 10) {
                 localFact(
                     title: "insights.repo.local.release",
+                    caption: "insights.repo.local.release.caption",
                     systemImage: "tag.fill",
                     tintName: "blue",
-                    value: releaseValue
+                    motif: .releaseFolder,
+                    value: releaseValue,
+                    detailsHelpKey: "insights.repo.local.release.details",
+                    anchorID: InsightsSectionAnchor.releaseCadence,
+                    onDetailsScroll: onDetailsScroll
                 )
                 localFact(
                     title: "insights.repo.local.license",
+                    caption: "insights.repo.local.license.caption",
                     systemImage: "checkmark.seal.fill",
                     tintName: "green",
-                    value: repo.license ?? String.l10n("insights.repo.state.noData")
+                    motif: .licenseDocument,
+                    value: repo.license ?? String.l10n("insights.repo.state.noData"),
+                    detailsHelpKey: "insights.repo.local.license.details",
+                    anchorID: InsightsSectionAnchor.community,
+                    onDetailsScroll: onDetailsScroll
                 )
                 localFact(
                     title: "insights.repo.local.health",
+                    caption: "insights.repo.local.health.caption",
                     systemImage: "heart.text.square.fill",
                     tintName: "orange",
-                    value: healthValue
+                    motif: .healthBars,
+                    value: healthValue,
+                    detailsHelpKey: "insights.repo.local.health.details",
+                    anchorID: InsightsSectionAnchor.health,
+                    onDetailsScroll: onDetailsScroll
                 )
                 localFact(
                     title: "insights.repo.local.openssf",
-                    systemImage: "shield.checkered",
+                    caption: "insights.repo.local.openssf.caption",
+                    systemImage: "shield.fill",
                     tintName: "purple",
-                    value: openSSFValue
+                    motif: .securityShield,
+                    value: openSSFValue,
+                    detailsHelpKey: "insights.repo.local.openssf.details",
+                    anchorID: InsightsSectionAnchor.security,
+                    onDetailsScroll: onDetailsScroll
                 )
             }
         }
     }
 
-    /// 卡片浅 tint 对角渐变：比纯色块略有层次，饱和度仍压低，避免营销页大渐变。
-    private func insightsCardFill(_ tint: Color) -> LinearGradient {
-        LinearGradient(
-            colors: [
-                tint.opacity(0.16),
-                tint.opacity(0.05)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
-
+    /// 本地事实卡统一走 InsightsSummaryCard；chevron 垂直居中贴右（原型位置）。
     private func localFact(
         title: LocalizedStringKey,
+        caption: LocalizedStringKey,
         systemImage: String,
         tintName: String,
-        value: String?
+        motif: InsightsCardIllustrationMotif,
+        value: String?,
+        detailsHelpKey: String,
+        anchorID: String,
+        onDetailsScroll: @escaping (String) -> Void
     ) -> some View {
-        let tint = InsightsColor.resolve(tintName)
-        let displayValue = value ?? "—"
         let isPlaceholder = value == nil
             || value == String.l10n("insights.repo.state.noData")
             || value == String.l10n("error.loadFailed")
 
-        return VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(tint)
-                Text(title)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .font(interfaceScale.font(.caption))
-
-            Text(verbatim: displayValue)
-                .font(interfaceScale.font(size: 22, weight: .semibold))
-                .foregroundStyle(isPlaceholder ? .secondary : .primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, minHeight: 72)
-        .padding(10)
-        // 极浅语义 tint 渐变：比纯色块略有层次，仍避免大面积营销渐变。
-        .background(
-            insightsCardFill(tint),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return InsightsSummaryCard(
+            title: title,
+            systemImage: systemImage,
+            tint: InsightsColor.resolve(tintName),
+            value: value ?? "—",
+            isPlaceholder: isPlaceholder,
+            caption: caption,
+            motif: motif,
+            chevronAlignment: .trailing,
+            chevronHelpText: String.l10n(detailsHelpKey),
+            onChevron: { onDetailsScroll(anchorID) }
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(tint.opacity(0.22), lineWidth: 1)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(title))
-        .accessibilityValue(Text(verbatim: displayValue))
     }
 
     private var releaseValue: String? {
@@ -662,21 +670,18 @@ struct RepositoryInsightsView: View {
             subtitle: "insights.repo.section.activity.subtitle",
             systemImage: "waveform.path.ecg",
             iconColor: .orange,
-            chrome: .emphasized
+            chrome: .emphasized,
+            headerTrailing: {
+                // 原型把范围切换 + 刷新放在区块标题行右侧，内容区完整留给指标卡。
+                activityControls
+            }
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                // 派生三指标与时间切换同一行：左指标、右控件，避免底部再占一行。
-                HStack(alignment: .center, spacing: 8) {
-                    if let counts = displayedActivityCounts {
-                        activityDerivedMetricsRow(counts)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if isActivityAwaitingFirstContent {
-                        InsightsSectionSkeleton(kind: .derivedPills())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Spacer(minLength: 0)
-                    }
-                    activityControls
+                // 派生三指标独占一行；等待首次数据时用骨架占位，避免行高跳动。
+                if let counts = displayedActivityCounts {
+                    activityDerivedMetricsRow(counts)
+                } else if isActivityAwaitingFirstContent {
+                    InsightsSectionSkeleton(kind: .derivedPills())
                 }
 
                 ZStack(alignment: .topLeading) {
@@ -748,27 +753,145 @@ struct RepositoryInsightsView: View {
         }
     }
 
+    /// 派生三指标大卡（原型）：彩色图标 + 大数值 + 等级徽章 + 底部占比条。
     private func activityDerivedMetricsRow(_ counts: RepositoryActivityCounts) -> some View {
-        HStack(spacing: 8) {
-            activityDerivedMetric(
+        HStack(alignment: .top, spacing: 10) {
+            activityThroughputCard(
                 title: "insights.repo.activity.prThroughput",
-                value: activityRatio(counts.pullRequestThroughput),
+                ratio: counts.pullRequestThroughput,
                 systemImage: "arrow.triangle.merge",
-                tintName: "green"
+                tintName: "green",
+                grade: Self.prThroughputGrade(counts.pullRequestThroughput)
             )
-            activityDerivedMetric(
+            activityThroughputCard(
                 title: "insights.repo.activity.issueThroughput",
-                value: activityRatio(counts.issueThroughput),
+                ratio: counts.issueThroughput,
                 systemImage: "checkmark.circle",
-                tintName: "blue"
+                tintName: "blue",
+                grade: Self.issueThroughputGrade(counts.issueThroughput)
             )
-            activityDerivedMetric(
-                title: "insights.repo.activity.netIssueChange",
-                value: signedActivityChange(counts.netIssueChange),
-                systemImage: "arrow.up.arrow.down",
-                tintName: counts.netIssueChange > 0 ? "orange" : "green"
-            )
+            activityNetIssueCard(counts)
         }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// 吞吐率卡：进度条直接表达「已处理 / 新建」占比，超过 100% 的合并比例按满格封顶。
+    private func activityThroughputCard(
+        title: LocalizedStringKey,
+        ratio: Double?,
+        systemImage: String,
+        tintName: String,
+        grade: ActivityMetricGrade?
+    ) -> some View {
+        let tint = InsightsColor.resolve(tintName)
+        let value = activityRatio(ratio)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: systemImage)
+                    .font(interfaceScale.font(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text(title)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 6)
+                if let grade {
+                    activityGradeBadge(grade, tint: tint)
+                }
+            }
+
+            Text(verbatim: value)
+                .font(interfaceScale.font(size: 21, weight: .semibold))
+                .foregroundStyle(ratio == nil ? .secondary : .primary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(tint.opacity(0.15))
+                    Capsule()
+                        .fill(tint.opacity(0.75))
+                        .frame(width: max(0, proxy.size.width * CGFloat(min(ratio ?? 0, 1))))
+                }
+            }
+            .frame(height: 4)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .topLeading)
+        .insightsTintedCardBackground(tint)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(verbatim: value))
+    }
+
+    /// 净新增卡。净增没有天然 0–100 占比，进度条改画「范围内已关闭占全部 Issue 流量的
+    /// 比例」：两个数字来自同一次 GitHub 计数，纯 UI 派生，不引入新数据口径。
+    private func activityNetIssueCard(_ counts: RepositoryActivityCounts) -> some View {
+        let tint = InsightsColor.resolve(counts.netIssueChange > 0 ? "orange" : "green")
+        let flow = counts.createdIssues + counts.closedIssues
+        let resolvedFraction = flow > 0 ? Double(counts.closedIssues) / Double(flow) : 0
+        let grade: ActivityMetricGrade = counts.netIssueChange > 0
+            ? .active
+            : (counts.netIssueChange < 0 ? .draining : .balanced)
+        let value = signedActivityChange(counts.netIssueChange)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(interfaceScale.font(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                Text("insights.repo.activity.netIssueChange")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 6)
+                activityGradeBadge(grade, tint: tint)
+            }
+
+            Text(verbatim: value)
+                .font(interfaceScale.font(size: 21, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(tint.opacity(0.15))
+                    Capsule()
+                        .fill(tint.opacity(0.75))
+                        .frame(width: max(0, proxy.size.width * CGFloat(resolvedFraction)))
+                }
+            }
+            .frame(height: 4)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .topLeading)
+        .insightsTintedCardBackground(tint)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("insights.repo.activity.netIssueChange"))
+        .accessibilityValue(Text(verbatim: value))
+    }
+
+    /// 等级徽章（优秀 / 待提升 / 较活跃…）。阈值是纯展示口径，不写回数据层。
+    private func activityGradeBadge(
+        _ grade: ActivityMetricGrade,
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: grade.systemImage)
+                .font(interfaceScale.font(size: 9, weight: .bold))
+            Text(LocalizedStringKey(grade.titleKey))
+                .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(tint.opacity(0.13)))
+        .accessibilityHidden(true)
     }
 
     private var activityRangePicker: some View {
@@ -875,87 +998,66 @@ struct RepositoryInsightsView: View {
     }
 
     private func activityMetric(_ metric: RepositoryActivityMetric) -> some View {
-        let tint = InsightsColor.resolve(metric.tintName)
-        // 布局/字号/底色与 localFact 保持同一套，避免两块「看起来像两套组件」。
-        return VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: metric.systemImage)
-                    .foregroundStyle(tint)
-                Text(LocalizedStringKey(metric.titleKey))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .font(interfaceScale.font(.caption))
-
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(metric.value.formatted(.number.locale(locale)))
-                    .font(interfaceScale.font(size: 22, weight: .semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if let delta = metric.delta {
-                    Text(verbatim: delta >= 0 ? "+\(delta)%" : "\(delta)%")
-                        .font(interfaceScale.font(.captionSmall, weight: .medium))
-                        .foregroundStyle(delta >= 0 ? .green : .red)
-                        .monospacedDigit()
+        // 布局/字号/底色与本地事实卡保持同一套，避免两块「看起来像两套组件」。
+        let helpText = String.l10n(activityMetricHelpKey(for: metric.id))
+        return InsightsSummaryCard(
+            title: LocalizedStringKey(metric.titleKey),
+            systemImage: metric.systemImage,
+            tint: InsightsColor.resolve(metric.tintName),
+            value: metric.value.formatted(.number.locale(locale)),
+            isPlaceholder: false,
+            delta: metric.delta,
+            motif: activityMetricMotif(for: metric.id),
+            chevronAlignment: .bottomTrailing,
+            chevronHelpText: helpText,
+            onChevron: {
+                if let url = activityMetricDestinationURL(for: metric.id) {
+                    NSWorkspace.shared.open(url)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, minHeight: 72)
-        .padding(10)
-        .background(
-            insightsCardFill(tint),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(tint.opacity(0.22), lineWidth: 1)
-        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(LocalizedStringKey(metric.titleKey)))
         .accessibilityValue(Text(verbatim: activityMetricAccessibilityValue(metric)))
     }
 
-    private func activityDerivedMetric(
-        title: LocalizedStringKey,
-        value: String,
-        systemImage: String,
-        tintName: String
-    ) -> some View {
-        let tint = InsightsColor.resolve(tintName)
-        return HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .foregroundStyle(tint)
-
-            Text(title)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-
-            Spacer(minLength: 6)
-
-            Text(verbatim: value)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+    /// 四张活动卡的 GitHub 下钻列表：PR / Issue 的原生列表页，口径与计数一致。
+    private func activityMetricDestinationURL(for id: String) -> URL? {
+        let base = repo.htmlUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        switch id {
+        case "createdPullRequests":
+            return URL(string: "\(base)/pulls")
+        case "mergedPullRequests":
+            return URL(string: "\(base)/pulls?q=is%3Apr+is%3Amerged")
+        case "createdIssues":
+            return URL(string: "\(base)/issues")
+        case "closedIssues":
+            return URL(string: "\(base)/issues?q=is%3Aissue+is%3Aclosed")
+        default:
+            return nil
         }
-        .font(interfaceScale.font(.caption))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            tint.opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(tint.opacity(0.18), lineWidth: 1)
+    }
+
+    private func activityMetricMotif(
+        for id: String
+    ) -> InsightsCardIllustrationMotif {
+        switch id {
+        case "createdPullRequests": return .branchGraph
+        case "mergedPullRequests": return .mergeCurve
+        case "createdIssues": return .issueDocument
+        case "closedIssues": return .checkCircle
+        default: return .branchGraph
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(title))
-        .accessibilityValue(Text(verbatim: value))
+    }
+
+    private func activityMetricHelpKey(for id: String) -> String {
+        switch id {
+        case "createdPullRequests": return "insights.repo.activity.openPulls"
+        case "mergedPullRequests": return "insights.repo.activity.openMergedPulls"
+        case "createdIssues": return "insights.repo.activity.openIssues"
+        case "closedIssues": return "insights.repo.activity.openClosedIssues"
+        default: return "insights.repo.activity.range.label"
+        }
     }
 
     private func activityRatio(_ ratio: Double?) -> String {
@@ -972,6 +1074,22 @@ struct RepositoryInsightsView: View {
         if value > 0 { return "+\(formatted)" }
         if value < 0 { return "−\(formatted)" }
         return "0"
+    }
+
+    /// PR 合并率的展示等级：≥90% 优秀、≥50% 良好、其余待提升；无新建 PR 时不评等级。
+    private static func prThroughputGrade(_ ratio: Double?) -> ActivityMetricGrade? {
+        guard let ratio else { return nil }
+        if ratio >= 0.9 { return .excellent }
+        if ratio >= 0.5 { return .good }
+        return .needsAttention
+    }
+
+    /// Issue 关闭率的展示等级：≥80% 优秀、≥40% 良好、其余待提升；无新建 Issue 时不评等级。
+    private static func issueThroughputGrade(_ ratio: Double?) -> ActivityMetricGrade? {
+        guard let ratio else { return nil }
+        if ratio >= 0.8 { return .excellent }
+        if ratio >= 0.4 { return .good }
+        return .needsAttention
     }
 
     private func activityMetricAccessibilityValue(_ metric: RepositoryActivityMetric) -> String {
@@ -2630,6 +2748,9 @@ struct RepositoryInsightsView: View {
                 }
             }
         }
+        // 「开源许可证」本地卡 chevron 的滚动目标（ViewThatFits 两个分支引用同一 var，
+        // 同一时刻只安装一份，不会产生重复 id）。
+        .id(InsightsSectionAnchor.community)
     }
 
     private var displayedCommunity: RepositoryCommunityInsight? {
@@ -2660,6 +2781,8 @@ struct RepositoryInsightsView: View {
                 securityAdvisoriesContent
             }
         }
+        // OpenSSF 本地卡 chevron 的滚动目标。
+        .id(InsightsSectionAnchor.security)
     }
 
     @ViewBuilder
@@ -3304,6 +3427,167 @@ struct RepositoryInsightsView: View {
         let base = repo.htmlUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let encodedTag = tagName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tagName
         return URL(string: "\(base)/releases/tag/\(encodedTag)")
+    }
+}
+
+/// 「本地洞察」卡片 chevron 的页内滚动锚点；id 挂在下方对应深潜区块上。
+private enum InsightsSectionAnchor {
+    static let releaseCadence = "insights.anchor.releaseCadence"
+    static let health = "insights.anchor.health"
+    static let community = "insights.anchor.community"
+    static let security = "insights.anchor.security"
+}
+
+/// 活动派生指标的展示等级。纯 UI 口径：只由现有 counts 阈值派生，不回写数据层。
+private enum ActivityMetricGrade {
+    case excellent
+    case good
+    case needsAttention
+    case active
+    case balanced
+    case draining
+
+    var titleKey: String {
+        switch self {
+        case .excellent: return "insights.repo.activity.grade.excellent"
+        case .good: return "insights.repo.activity.grade.good"
+        case .needsAttention: return "insights.repo.activity.grade.needsAttention"
+        case .active: return "insights.repo.activity.grade.active"
+        case .balanced: return "insights.repo.activity.grade.balanced"
+        case .draining: return "insights.repo.activity.grade.draining"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .excellent, .active: return "arrow.up"
+        case .good: return "checkmark"
+        case .needsAttention, .draining: return "arrow.down"
+        case .balanced: return "minus"
+        }
+    }
+}
+
+/// 「本地洞察 / 活动概览」共用的摘要卡（原型样式）：图标 chip + 标签、左对齐大数值、
+/// 可选环比 / 说明行、手绘插画与 chevron 触发器。占位判断与数值格式化由调用方完成。
+private struct InsightsSummaryCard: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    let tint: Color
+    let value: String
+    let isPlaceholder: Bool
+    var caption: LocalizedStringKey?
+    var delta: Int?
+    var motif: InsightsCardIllustrationMotif = .branchGraph
+    /// 本地事实卡 chevron 垂直居中贴右；活动卡在右下角。
+    var chevronAlignment: Alignment = .bottomTrailing
+    var chevronHelpText: String?
+    var onChevron: (() -> Void)?
+
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                InsightsCardIconChip(systemImage: systemImage, tint: tint)
+                Text(title)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .font(interfaceScale.font(.caption))
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(verbatim: value)
+                    .font(interfaceScale.font(size: 21, weight: .semibold))
+                    .foregroundStyle(isPlaceholder ? .secondary : .primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .monospacedDigit()
+                if let delta {
+                    Text(verbatim: delta >= 0 ? "+\(delta)%" : "\(delta)%")
+                        .font(interfaceScale.font(.captionSmall, weight: .medium))
+                        .foregroundStyle(delta >= 0 ? .green : .red)
+                        .monospacedDigit()
+                }
+            }
+
+            if let caption {
+                Text(caption)
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+        .padding(10)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+            shape
+                .fill(Self.cardFill(tint))
+                .overlay(alignment: .bottomTrailing) {
+                    InsightsCardIllustration(motif: motif, tint: tint)
+                        .frame(width: 82, height: 58)
+                        // chevron 居中贴右时插画贴边即可；chevron 在右下角时给它让出 30pt。
+                        .padding(.trailing, chevronAlignment == .trailing ? 8 : 30)
+                        .padding(.bottom, 4)
+                        .opacity(isPlaceholder ? 0.55 : 1)
+                }
+                .clipShape(shape)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tint.opacity(0.22), lineWidth: 1)
+        }
+        .overlay(alignment: chevronAlignment) {
+            if let chevronHelpText, let onChevron {
+                InsightsCardChevronButton(helpText: chevronHelpText, action: onChevron)
+                    .padding(8)
+            }
+        }
+    }
+
+    /// 浅 tint 对角渐变：比纯色块略有层次，饱和度压低，避免营销页大渐变。
+    private static func cardFill(_ tint: Color) -> LinearGradient {
+        LinearGradient(
+            colors: [
+                tint.opacity(0.16),
+                tint.opacity(0.05)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
+/// 派生指标卡的浅 tint 渐变底 + 同色描边，与 InsightsSummaryCard 保持同一视觉语言。
+private struct InsightsTintedCardBackground: ViewModifier {
+    let tint: Color
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                LinearGradient(
+                    colors: [
+                        tint.opacity(0.16),
+                        tint.opacity(0.05)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(tint.opacity(0.22), lineWidth: 1)
+            }
+    }
+}
+
+private extension View {
+    func insightsTintedCardBackground(_ tint: Color) -> some View {
+        modifier(InsightsTintedCardBackground(tint: tint))
     }
 }
 
