@@ -131,6 +131,7 @@ set +e
   -configuration Release \
   -destination 'generic/platform=macOS' \
   -archivePath "$ARCHIVE_PATH" \
+  -skipPackagePluginValidation \
   "${BUILD_SETTINGS[@]}" \
   clean archive \
   >"$BUILD_LOG" 2>&1

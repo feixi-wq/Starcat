@@ -134,6 +134,7 @@ xcodebuild \
   -configuration Release \
   -sdk macosx \
   -arch arm64 \
+  -skipPackagePluginValidation \
   -derivedDataPath "$DERIVED_DIR" \
   "${BUILD_SETTINGS[@]}" \
   clean build \

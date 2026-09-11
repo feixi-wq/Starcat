@@ -39,6 +39,7 @@ echo "    derived data: $TEST_DERIVED_DATA"
 xcodebuild \
   -scheme Starcat \
   -destination 'platform=macOS,arch=arm64' \
+  -skipPackagePluginValidation \
   -derivedDataPath "$TEST_DERIVED_DATA" \
   test \
   "$@"

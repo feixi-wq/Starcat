@@ -138,6 +138,7 @@ xcodebuild \
   -configuration Debug \
   -sdk macosx \
   -arch arm64 \
+  -skipPackagePluginValidation \
   -derivedDataPath "$DERIVED_DATA" \
   DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM_ID" \
   CODE_SIGN_IDENTITY="Apple Development" \
