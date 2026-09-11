@@ -56,8 +56,10 @@ final class SystemTranslationSessionBroker {
     /// 语言包下载或系统 Session 异常时不能让 README 永久停在 loading。
     private static let requestTimeoutNanoseconds: UInt64 = 60_000_000_000
 
-    /// 非 nil 时触发 `.translationTask`；请求完成后保留，下一次同语言请求通过
-    /// `Configuration.invalidate()` 重新触发 task，避免反复销毁和创建 TranslationSession。
+    /// 非 nil 时触发 `.translationTask`；请求完成后保留，下一次同语言请求必须
+    /// mutate 这份实例再 `invalidate()`，让内部 `version` 递增。每次 new 一份再
+    /// `invalidate()` 只会得到相同 version，SwiftUI Equatable 认为没变化，
+    /// 第三次起 `.translationTask` 不再运行。
     private(set) var configuration: TranslationSession.Configuration?
 
     /// 当前宿主正在消费的请求。保持一个 active request，避免多个 SwiftUI 宿主重复消费同一 Session。
@@ -314,14 +316,19 @@ final class SystemTranslationSessionBroker {
         request.generation = nextGeneration
         active = request
         // 首次配置显式传入源语言，避免 prepareTranslation() 因无法识别 source 而失败。
-        // 同一语言对再次激活时才 invalidate，确保 SwiftUI 重新执行 translationTask。
-        var config = TranslationSession.Configuration(source: request.source, target: request.target)
-        if lastActivatedSource == request.source, lastActivatedTarget == request.target {
-            config.invalidate()
+        // Apple 官方模式是保留同一个 Configuration，再对它 invalidate() 让 version
+        // 从 0→1→2→3 递增。每次 new + 一次 invalidate() 永远停在 version=1，
+        // 第三次同语对请求会和第二次 Equatable 相等，translationTask 不再触发。
+        if var existing = configuration,
+           lastActivatedSource == request.source,
+           lastActivatedTarget == request.target {
+            existing.invalidate()
+            configuration = existing
+        } else {
+            configuration = TranslationSession.Configuration(source: request.source, target: request.target)
         }
         lastActivatedSource = request.source
         lastActivatedTarget = request.target
-        configuration = config
     }
 
     private func cancel(requestID: UUID) {

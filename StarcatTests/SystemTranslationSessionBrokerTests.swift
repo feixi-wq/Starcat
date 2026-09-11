@@ -4,8 +4,9 @@
 //
 //  系统翻译宿主生命周期回归测试。
 //
-//  这些测试不调用真实 Apple Translation 语言包，而是验证 Broker 的两个关键约束：
-//  同一进程内只能有一个有效宿主，以及空批次必须在进入 Translation framework 前失败。
+//  这些测试不调用真实 Apple Translation 语言包，而是验证 Broker 的关键约束：
+//  同一进程内只能有一个有效宿主、空批次必须在进入 Translation framework 前失败，
+//  以及同一语言对连续激活时 Configuration.version 必须持续递增。
 //
 
 import Foundation
@@ -80,5 +81,37 @@ struct SystemTranslationSessionBrokerTests {
             targetLanguage: .simplifiedChinese
         )
         #expect(broker.configuration?.version != firstVersion)
+    }
+
+    @Test("同一语言对第三次请求必须继续递增 Configuration.version")
+    func thirdSequentialSameLanguagePairBumpsConfigurationVersion() {
+        let broker = SystemTranslationSessionBroker()
+
+        broker.activateSyntheticRequestForTesting(
+            sourceLanguage: .english,
+            targetLanguage: .simplifiedChinese
+        )
+        let firstVersion = broker.configuration?.version
+        broker.finishActiveForTesting()
+
+        broker.activateSyntheticRequestForTesting(
+            sourceLanguage: .english,
+            targetLanguage: .simplifiedChinese
+        )
+        let secondVersion = broker.configuration?.version
+        broker.finishActiveForTesting()
+
+        broker.activateSyntheticRequestForTesting(
+            sourceLanguage: .english,
+            targetLanguage: .simplifiedChinese
+        )
+        let thirdVersion = broker.configuration?.version
+
+        // SwiftUI `.translationTask` 用 Configuration == 判断是否重跑。
+        // 每次 new + 一次 invalidate() 只会得到 version=1，第三次会和第二次相等，
+        // 系统翻译就会停在 60 秒超时。必须 mutate 同一实例让 version 继续递增。
+        #expect(firstVersion != secondVersion)
+        #expect(secondVersion != thirdVersion)
+        #expect(firstVersion != thirdVersion)
     }
 }
