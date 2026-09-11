@@ -147,7 +147,10 @@ struct AISettingsTab: View {
     var body: some View {
         // AI 服务是 Direct / StoreKit 共享的 Pro 能力，必须读取聚合后的业务门控；
         // 直接读取 SubscriptionManager 会把 Direct License 用户误判为未开通。
-        if dependencies.entitlementGate.isProUser {
+        // 本地 AI 免费（dong4j 2026-09-12）：Apple Silicon 上免费用户也必须能进入
+        // 本页配置并下载本地模型；远程 provider 的消费仍由 EntitlementGate 在调用点拦截，
+        // 设置页只是配置面。Intel Mac 维持整页锁定。
+        if dependencies.entitlementGate.isProUser || LocalAIHardwareSupport.isLocalAIAvailable {
             aiConfigurationForm
         } else {
             lockedAISettings
@@ -163,6 +166,10 @@ struct AISettingsTab: View {
         // 的反直觉行为。改成每行模型一个齿轮按钮 + popover，参数与"模型"绑定。
         Form {
             providerSection
+            // 本地 AI 模型管理区：下载 / 暂停 / 删除内置 MLX 模型。Apple Silicon 才展示。
+            if LocalAIHardwareSupport.isLocalAIAvailable {
+                LocalAIModelsSection()
+            }
             enabledModelsSection
             taskModelsSection
                 .id(Self.taskModelsSettingsAnchor)
@@ -451,7 +458,8 @@ struct AISettingsTab: View {
                 .frame(width: 28, height: 28)
                 .help("settings.ai.provider.deleteHelp")
                 .accessibilityLabel(Text("settings.ai.provider.deleteHelp"))
-                .disabled(selectedProfile == nil)
+                // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
+                .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
             }
 
             // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
@@ -484,7 +492,8 @@ struct AISettingsTab: View {
             // 影响输入，干扰极小。
             if draftProfile != nil {
                 Picker("Provider", selection: supportedProviderBinding) {
-                    ForEach(AIServiceProvider.allCases) { provider in
+                    // 按硬件能力过滤：Intel Mac 不提供本地 AI 选项。
+                    ForEach(AIServiceProvider.userSelectableCases) { provider in
                         Label {
                             Text(provider.displayName)
                         } icon: {
@@ -498,32 +507,41 @@ struct AISettingsTab: View {
             }
 
             if let profile = activeProfile {
-                providerInputRows(profile)
-
-                HStack {
-                    Text(profile.lastTestStatus.displayText)
+                if profile.provider == .localAI {
+                    // 内置本地 AI：无 Key / 无 Base URL 可填，也不走「测试并获取模型」。
+                    // 下载模型在下方「本地 AI 模型」区；此处只给一句引导。
+                    Text("settings.localai.provider.hint")
                         .font(.caption)
-                        .foregroundStyle(statusTint(profile.lastTestStatus))
-                        .lineLimit(2)
-                        .truncationMode(.tail)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    providerInputRows(profile)
 
-                    Spacer(minLength: 12)
+                    HStack {
+                        Text(profile.lastTestStatus.displayText)
+                            .font(.caption)
+                            .foregroundStyle(statusTint(profile.lastTestStatus))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
 
-                    Button {
-                        Task { await testAndFetchModels(profile) }
-                    } label: {
-                        if isTestingProfileID == profile.id {
-                            HStack(spacing: 4) {
-                                ProgressView().controlSize(.small)
-                                Text("settings.ai.provider.testButton")
+                        Spacer(minLength: 12)
+
+                        Button {
+                            Task { await testAndFetchModels(profile) }
+                        } label: {
+                            if isTestingProfileID == profile.id {
+                                HStack(spacing: 4) {
+                                    ProgressView().controlSize(.small)
+                                    Text("settings.ai.provider.testButton")
+                                }
+                            } else {
+                                Label("settings.ai.provider.testButton", systemImage: "network")
                             }
-                        } else {
-                            Label("settings.ai.provider.testButton", systemImage: "network")
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .disabled(isTestingProfileID != nil || !canTest(profile))
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .disabled(isTestingProfileID != nil || !canTest(profile))
                 }
 
                 if let keyError {

@@ -86,6 +86,30 @@ final class LocalAIModelManager {
         LocalAIModelStorage.totalDiskUsage()
     }
 
+    /// 「检查本地模型」：校验全部已安装模型的 manifest 可读且文件齐全。
+    /// 返回 nil = 通过；否则返回用户可读的错误文案。
+    func verifyIntegrity() -> String? {
+        for manifest in installedModels {
+            guard let entry = LocalAIModelCatalog.entry(id: manifest.id) else { continue }
+            guard let directory = try? LocalAIModelStorage.modelDirectory(
+                entry: entry, revision: manifest.revision)
+            else {
+                return String(
+                    format: String.l10n("settings.localai.error.manifestCorruptedFormat"),
+                    manifest.id)
+            }
+            for file in manifest.files {
+                let url = directory.appendingPathComponent(file.name)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    return String(
+                        format: String.l10n("settings.localai.verify.missingFileFormat"),
+                        entry.displayName, file.name)
+                }
+            }
+        }
+        return nil
+    }
+
     /// 任务选择器视角：某能力下当前可用（已安装）的模型名列表。
     func installedModelNames(capability: AIModelCapability) -> [String] {
         LocalAIModelCatalog.entries
