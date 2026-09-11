@@ -40,6 +40,7 @@ xcodebuild \
   -scheme Starcat \
   -destination 'platform=macOS,arch=arm64' \
   -skipPackagePluginValidation \
+  -skipMacroValidation \
   -derivedDataPath "$TEST_DERIVED_DATA" \
   test \
   "$@"
