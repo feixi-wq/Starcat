@@ -2606,7 +2606,7 @@ struct AISettingsTab: View {
 
         let testingKey = apiKey(for: profile)
         do {
-            let models = try await OpenAIClient(configuration: AIClientConfiguration(
+            let models = try await AIClientFactory.make(configuration: AIClientConfiguration(
                 providerID: profile.id,
                 provider: profile.provider,
                 apiKey: testingKey,

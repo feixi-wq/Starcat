@@ -276,23 +276,24 @@ final class LocalAIModelManager {
 
     /// 把安装状态写进内置 profile。App 启动与每次安装 / 删除后调用。
     ///
-    /// `lastTestStatus` 只承担「本地 provider 已验证」语义：有任一已安装模型即
-    /// `.success(modelCount:)`；细粒度的 capability 匹配仍由 `resolveChatSelection` /
-    /// `resolveEmbeddingSelection` 按 `profile.models` 校验兜底。
+    /// - 无条件 seed（Apple Silicon 上）：内置 profile 必须始终出现在 AI 设置的服务商
+    ///   列表里，用户才能选中它并进入模型下载区；没有模型时 `lastTestStatus = .notTested`
+    ///   （未验证 → 不会出现在任务模型下拉，也不会被 selection 解析放行）。
+    /// - `lastTestStatus` 只承担「本地 provider 已验证」语义：有任一已安装模型即
+    ///   `.success(modelCount:)`；细粒度的 capability 匹配仍由 `resolveChatSelection` /
+    ///   `resolveEmbeddingSelection` 按 `profile.models` 校验兜底。
     func syncBuiltInProfile() {
         guard !TestEnvironment.isRunning else { return }
         guard !isSyncingProfile else { return }
         isSyncingProfile = true
         defer { isSyncingProfile = false }
 
+        guard LocalAIHardwareSupport.isLocalAIAvailable else { return }
+
         let settings = AppSettings.shared
         var profiles = settings.aiProviderProfiles
         let descriptors = installedModelDescriptors()
         let index = profiles.firstIndex { $0.id == LocalAIModelCatalog.builtInProfileID }
-
-        if descriptors.isEmpty && index == nil {
-            return
-        }
 
         if let index {
             var profile = profiles[index]

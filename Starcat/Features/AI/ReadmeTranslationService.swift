@@ -829,7 +829,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
             throw ReadmeTranslationError.missingAPIKey
         }
         let model = resolvedModelName(task: task, fallback: fallbackModel)
-        let client = try OpenAIClient(configuration: AIClientConfiguration(
+        let client = try AIClientFactory.make(configuration: AIClientConfiguration(
             providerID: profile.id,
             provider: profile.provider,
             apiKey: apiKey,

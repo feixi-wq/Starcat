@@ -1641,7 +1641,7 @@ final class KnowledgeRAGWorkspaceViewModel {
               !isAnswering,
               composerBlockingReason == nil else { return }
         do {
-            try dependencies.entitlementGate.requirePro(.knowledgeRAG)
+            try dependencies.entitlementGate.requirePro(.knowledgeRAG, usesLocalOnly: dependencies.settings.isRAGPipelineResolvedToLocalAI)
         } catch {
             errorMessage = error.localizedDescription
             return
@@ -1774,7 +1774,7 @@ final class KnowledgeRAGWorkspaceViewModel {
         let question = editingUserDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !isAnswering else { return }
         do {
-            try dependencies.entitlementGate.requirePro(.knowledgeRAG)
+            try dependencies.entitlementGate.requirePro(.knowledgeRAG, usesLocalOnly: dependencies.settings.isRAGPipelineResolvedToLocalAI)
         } catch {
             errorMessage = error.localizedDescription
             return

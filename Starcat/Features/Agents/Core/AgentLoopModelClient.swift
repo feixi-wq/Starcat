@@ -311,7 +311,7 @@ enum AgentLoopModelClientFactory {
             ?? (selection == nil
                 ? settings.effectiveParameters(for: task)
                 : AIModelParameters.defaults(for: capability))
-        let client = try OpenAIClient(configuration: AIClientConfiguration(
+        let client = try AIClientFactory.make(configuration: AIClientConfiguration(
             providerID: profile.id,
             provider: profile.provider,
             apiKey: apiKey,

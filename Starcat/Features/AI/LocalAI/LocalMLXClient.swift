@@ -38,27 +38,23 @@ struct LocalMLXClient: AIClientProtocol {
         self.directoryForModelName = directoryForModelName
     }
 
-    /// 装配入口：按 catalog 展示名校验已安装并构造客户端。
+    /// 装配入口（`AIClientFactory` 调用）。
     ///
-    /// 与 `OpenAIClient(configuration:)` 同级——由各业务的 makeClient 工厂分支调用；
-    /// 这里即时校验 chat 模型已下载（fail fast），embedding 模型在调用时校验。
-    public static func makeClient(modelName: String) throws -> LocalMLXClient {
-        try validateModelInstalled(displayName: modelName)
-        return LocalMLXClient(directoryForModelName: Self.directoryResolver)
+    /// 注意不在这里校验 chat 模型已安装：同一 profile 下可能是「embedding 本地 +
+    /// chat 名字只是配置残留」的混合形态，强校验会把纯 embedding 路径误杀；
+    /// 每次调用时的目录解析才是精确校验点（未安装抛 `modelNotInstalled`）。
+    public static func makeClient(modelName: String) -> LocalMLXClient {
+        LocalMLXClient(directoryForModelName: directoryResolver)
     }
 
     /// 展示名 → 安装目录。任何线程可用（磁盘扫描即真源）。
-    static let directoryResolver: @Sendable (String) throws -> URL = { name in
+    private static let directoryResolver: @Sendable (String) throws -> URL = { name in
         guard let entry = LocalAIModelCatalog.entries.first(where: { $0.displayName == name }),
             let directory = LocalAIModelStorage.installedDirectoryURL(entryID: entry.id)
         else {
             throw LocalAIError.modelNotInstalled(name)
         }
         return directory
-    }
-
-    private static func validateModelInstalled(displayName: String) throws {
-        _ = try directoryResolver(displayName)
     }
 
     // MARK: - AITextGenerating
