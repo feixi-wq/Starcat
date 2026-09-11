@@ -785,7 +785,6 @@ struct SearchCenterView: View {
                     UnifiedRepoRow(
                         card: repo.card,
                         isSelected: isSelected,
-                        showStarredCheckmark: true,
                         trailingReservedWidth: sourceIndicatorTrailingReserve(for: source)
                     )
                 }

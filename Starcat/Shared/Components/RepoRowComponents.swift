@@ -86,21 +86,36 @@ public struct LanguageBadge: View {
 // MARK: - StarsBadge
 
 /// Stars 计数徽章。
+///
+/// `isStarred` 控制星星实/空心（2026-09-11 dong4j 决策：卡片用星星表达 star
+/// 状态，取代原 fullName 右侧绿色 ✓ 圆勾）。默认 `true` —— Manage 星标模块、
+/// RAG 选择器等场景列表里全是有 star 的仓库，保持实心不变；只有把真实 star
+/// 状态派生好的调用方（UnifiedRepoRow）显式传入。
 public struct StarsBadge: View {
     let count: Int
     let style: BadgeStyle
+    /// 已 star → 实心 `star.fill`，未 star → 空心 `star`。
+    let isStarred: Bool
     @Environment(\.starcatInterfaceScale) private var interfaceScale
 
-    public init(count: Int, style: BadgeStyle) {
+    public init(count: Int, style: BadgeStyle, isStarred: Bool = true) {
         self.count = count
         self.style = style
+        self.isStarred = isStarred
+    }
+
+    /// 星星颜色：实星恒黄；空心星用 `.primary` 语义主色（亮色黑描边 / 暗色白描边，
+    /// dong4j 2026-09-11 决策）——黄描边叠淡黄胶囊对比不足看不清，改用主色后
+    /// 明暗两主题自动适配，也符合 UI 颜色规范「图标只用 .primary/.secondary」。
+    private var starTint: Color {
+        isStarred ? .yellow : .primary
     }
 
     public var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: "star.fill")
+            Image(systemName: isStarred ? "star.fill" : "star")
                 .font(interfaceScale.font(.captionSmall))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(starTint)
             Text(count.formattedShort)
                 .font(interfaceScale.font(.captionSmall))
                 .foregroundStyle(.secondary)

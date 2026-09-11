@@ -26,6 +26,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import ThinkingOrbsKit
 
 struct RepoDetailView: View {
 
@@ -1029,7 +1030,7 @@ struct ReadmeTranslationControl {
 ///   已显示译文时点击切回原文，符合 dong4j Coding Style 里"最少操作即可完成任务"。
 /// - 旁边的下拉菜单负责"选择目标语言"+"重新翻译"+"清除当前译文"，避免在 footer 里
 ///   堆出多个按钮抢空间。
-/// - 翻译进行中切换为 ProgressView + 禁用，复用与同列其它按钮（SyncIconButton）一致的视觉。
+/// - 翻译进行中图标切换为思考球（与 AI 标签整理行同款）。
 /// - 错误不再内联到 footer，改为通过 toast 浮动提示（手动关闭 + AI 配置类错误可跳转设置）。
 struct ReadmeTranslationFooterButton: View {
 
@@ -1045,7 +1046,7 @@ struct ReadmeTranslationFooterButton: View {
     ///     hover 切换符合用户对"翻译中按钮 = 当前能做的事就是取消"的直觉；
     ///   - hover 时只切**图标**，文字"翻译"保持不变：按钮宽度不抖动，视觉聚焦在 icon；
     ///   - 翻译中按钮**不再 disabled**：让 click 能落地触发 `cancelTranslation()`；
-    ///   - 默认 ProgressView 转圈：脱离 hover 时仍清晰看到"在跑"。
+    ///   - 默认思考球动画：脱离 hover 时仍清晰看到"在跑"。
     @State private var isHoveringWhileTranslating: Bool = false
 
     /// 2026-06-15:hover 切图标的 0.15s 淡入在「关闭应用内动画」时跳过。
@@ -1124,14 +1125,14 @@ struct ReadmeTranslationFooterButton: View {
     }
 
     /// 按钮图标：3 态切换。
-    ///   - 翻译中 + 未 hover → 转圈 ProgressView（明确"在跑"）
+    ///   - 翻译中 + 未 hover → 思考球（与 AI 标签整理行同款，明确"AI 在跑"）
     ///   - 翻译中 + hover → 红色 `stop.fill`（暗示"点击可停"）
     ///   - 非翻译态 → 原 `character.bubble[.fill]` 取决于是否已显示译文
     ///
     /// 翻译中两态用 ZStack + opacity 切换而非 if-else，是因为：
-    ///   - if-else 切换会导致 SwiftUI 重新初始化 ProgressView，转圈动画从 0 重启，
+    ///   - if-else 切换会导致 SwiftUI 重新初始化思考球，TimelineView 动画从 0 重启，
     ///     用户连续 hover / leave 时会看到"动画反复重置"的不连续感；
-    ///   - ZStack + opacity 保留 ProgressView 实例 + 让动画连贯跑下去，hover 切走
+    ///   - ZStack + opacity 保留思考球实例 + 让动画连贯跑下去，hover 切走
     ///     时只是隐藏不重启。
     /// 加 `.animation(.easeInOut(duration: 0.15), value: isHoveringWhileTranslating)`
     /// 让 hover 切换有淡入淡出，避免硬切。
@@ -1139,10 +1140,18 @@ struct ReadmeTranslationFooterButton: View {
     private var iconView: some View {
         if isTranslatingCurrentRepo {
             ZStack {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 12, height: 12)
-                    .opacity(isHoveringWhileTranslating ? 0 : 1)
+                // 翻译中用 AI 标签整理行（BatchAITagReviewRow.statusIcon）同款思考球
+                // 替代系统菊花，统一「AI 在跑」的视觉语言；displaySize 12 适配本按钮
+                // 的 12×12 图标槽，paused 透传 reduceMotion 做「关闭应用内动画」兜底。
+                ThinkingOrb(
+                    state: .working,
+                    size: .px20,
+                    theme: .auto,
+                    paused: reduceMotion,
+                    displaySize: 12
+                )
+                .accessibilityHidden(true)
+                .opacity(isHoveringWhileTranslating ? 0 : 1)
                 Image(systemName: "stop.fill")
                     .font(.caption2)
                     .foregroundStyle(.red)

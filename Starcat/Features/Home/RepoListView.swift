@@ -2860,7 +2860,6 @@ private struct ManageRepoRowContent: View {
             isSelected: isSelected,
             isPinned: viewModel.isRepoPinned(repo.id),
             semanticHit: viewModel.semanticHit(for: repo.id),
-            showStarredCheckmark: viewModel.selection == .myProjects || isKnowledgeLibraryList,
             showLibraryBadge: !isKnowledgeLibraryList,
             hasAISummary: aiSummaryAvailability.contains(repo.id)
         )
