@@ -112,11 +112,14 @@ public struct StarsBadge: View {
         isStarred ? .yellow : .primary
     }
 
-    /// 胶囊底色：明亮主题下黄 12% 叠白卡几乎隐形（dong4j 2026-09-11 反馈
-    /// 「看着不明显」），加深到 28% 让黄色胶囊在 chip 行里显形，同时给黑色
-    /// 空心星足够的底色对比；暗色主题 12% 在深底上本就有色彩感，维持不变。
+    /// 胶囊底色用中性灰，不用黄。
+    ///
+    /// 实心星已经是系统 `.yellow`；再铺淡黄底会黄叠黄，和 JavaScript 语言胶囊
+    /// 也会撞色。中性底只负责把 chip 托出来，黄星单独承担「这是 Stars」的色信号。
+    /// 亮色 8%：比相对时间徽章的 6% 略实，避免在白卡上消失；暗色 12% 与
+    /// Fork / 归档胶囊同一档。
     private var capsuleFill: Color {
-        colorScheme == .light ? .yellow.opacity(0.28) : .yellow.opacity(0.12)
+        colorScheme == .light ? Color.primary.opacity(0.08) : Color.primary.opacity(0.12)
     }
 
     public var body: some View {
