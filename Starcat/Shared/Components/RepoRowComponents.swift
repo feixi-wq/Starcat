@@ -97,6 +97,7 @@ public struct StarsBadge: View {
     /// 已 star → 实心 `star.fill`，未 star → 空心 `star`。
     let isStarred: Bool
     @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(count: Int, style: BadgeStyle, isStarred: Bool = true) {
         self.count = count
@@ -109,6 +110,13 @@ public struct StarsBadge: View {
     /// 明暗两主题自动适配，也符合 UI 颜色规范「图标只用 .primary/.secondary」。
     private var starTint: Color {
         isStarred ? .yellow : .primary
+    }
+
+    /// 胶囊底色：明亮主题下黄 12% 叠白卡几乎隐形（dong4j 2026-09-11 反馈
+    /// 「看着不明显」），加深到 28% 让黄色胶囊在 chip 行里显形，同时给黑色
+    /// 空心星足够的底色对比；暗色主题 12% 在深底上本就有色彩感，维持不变。
+    private var capsuleFill: Color {
+        colorScheme == .light ? .yellow.opacity(0.28) : .yellow.opacity(0.12)
     }
 
     public var body: some View {
@@ -127,7 +135,7 @@ public struct StarsBadge: View {
         .background {
             if style == .full {
                 Capsule()
-                    .fill(.yellow.opacity(0.12))
+                    .fill(capsuleFill)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
