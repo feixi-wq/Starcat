@@ -284,12 +284,21 @@ struct UserFacingError: Equatable, Sendable {
         operation: String,
         service: String?
     ) -> UserFacingError {
-        UserFacingError(
+        // 语言包未下载 / 语言对不支持 / 源语言无法识别是用户可自行理解的状态，
+        // 超时多为一次性抖动；这些不写诊断，避免把正常用户环境当成线上故障。
+        let shouldRecordDiagnostic: Bool
+        switch error {
+        case .languagePackMissing, .languageUnsupported, .sourceLanguageUndetected, .timedOut, .cancelled:
+            shouldRecordDiagnostic = false
+        case .frameworkUnavailable, .sessionUnavailable, .incompleteResult, .emptyBatch:
+            shouldRecordDiagnostic = true
+        }
+        return UserFacingError(
             title: String.l10n("readme.translate.engine.system"),
-            message: error.errorDescription ?? String.l10n("readme.translate.error.systemSession"),
+            message: error.errorDescription ?? String.l10n("readme.translate.error.sessionUnavailable"),
             recovery: String.l10n("error.user.unknown.recovery"),
             diagnosticSummary: DiagnosticEvent.redact(error.localizedDescription),
-            shouldRecordDiagnostic: true
+            shouldRecordDiagnostic: shouldRecordDiagnostic
         )
     }
 

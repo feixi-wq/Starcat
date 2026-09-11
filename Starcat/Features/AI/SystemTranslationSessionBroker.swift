@@ -22,9 +22,21 @@ extension TranslationSession: @unchecked @retroactive Sendable {}
 #endif
 
 /// 系统翻译请求失败。
+///
+/// case 必须按用户可采取的动作细分：语言包未下载、语言对不支持与真正的会话故障
+/// 是三种完全不同的提示，混成一个「会话不可用」会让用户无从下手。
 enum SystemTranslationError: Error, LocalizedError, Equatable {
     case frameworkUnavailable
+    /// 会话兜底故障：底层没有给出可归类原因时的最后落点。
     case sessionUnavailable
+    /// 语言包支持但未下载，用户需要重试并在系统弹窗里确认下载。
+    case languagePackMissing
+    /// 系统不支持该源/目标语言或语言组合，重试无用。
+    case languageUnsupported
+    /// 无法识别 README 的源语言。
+    case sourceLanguageUndetected
+    /// 批次返回数量与请求不一致，结果不完整。
+    case incompleteResult
     case emptyBatch
     case cancelled
     case timedOut
@@ -34,14 +46,65 @@ enum SystemTranslationError: Error, LocalizedError, Equatable {
         case .frameworkUnavailable:
             return String.l10n("readme.translate.error.systemUnavailable")
         case .sessionUnavailable:
-            return String.l10n("readme.translate.error.systemSession")
+            return String.l10n("readme.translate.error.sessionUnavailable")
+        case .languagePackMissing:
+            return String.l10n("readme.translate.error.languagePackMissing")
+        case .languageUnsupported:
+            return String.l10n("readme.translate.error.languageUnsupported")
+        case .sourceLanguageUndetected:
+            return String.l10n("readme.translate.error.sourceUndetected")
+        case .incompleteResult:
+            return String.l10n("readme.translate.error.incompleteResult")
         case .emptyBatch:
             return String.l10n("readme.translate.error.emptySource")
         case .cancelled:
             return nil
         case .timedOut:
-            // 复用已有系统翻译错误文案，避免在 String Catalog 中制造仅用于超时的重复文案。
-            return String.l10n("readme.translate.error.systemSession")
+            return String.l10n("readme.translate.error.timedOut")
+        }
+    }
+
+    /// 把 Session 消费过程中的底层错误归类为用户可读的系统翻译错误。
+    ///
+    /// 归类顺序：
+    /// 1. 已是 `SystemTranslationError`（含取消 / 超时）原样返回；
+    /// 2. `CancellationError` 原样返回，让上层按取消静默处理；
+    /// 3. `TranslationError` 的具体静态成员按语义映射（`notInstalled` 要到
+    ///    macOS 26 才有，必须门控）；
+    /// 4. 其余错误用 `LanguageAvailability` 的安装状态兜底：支持但未安装 →
+    ///    语言包缺失；不支持 → 语言组合不支持；已安装仍失败 → 会话故障。
+    static func classified(
+        _ error: Error,
+        source: Locale.Language,
+        target: Locale.Language
+    ) async -> Error {
+        if let system = error as? SystemTranslationError { return system }
+        if error is CancellationError { return error }
+        switch error {
+        case TranslationError.unsupportedSourceLanguage,
+             TranslationError.unsupportedTargetLanguage,
+             TranslationError.unsupportedLanguagePairing:
+            return SystemTranslationError.languageUnsupported
+        case TranslationError.unableToIdentifyLanguage:
+            return SystemTranslationError.sourceLanguageUndetected
+        case TranslationError.nothingToTranslate:
+            return SystemTranslationError.emptyBatch
+        default:
+            break
+        }
+        if #available(macOS 26.0, *) {
+            if case TranslationError.notInstalled = error {
+                return SystemTranslationError.languagePackMissing
+            }
+        }
+        let status = await LanguageAvailability().status(from: source, to: target)
+        switch status {
+        case .supported:
+            return SystemTranslationError.languagePackMissing
+        case .unsupported:
+            return SystemTranslationError.languageUnsupported
+        default:
+            return SystemTranslationError.sessionUnavailable
         }
     }
 }
@@ -251,10 +314,12 @@ final class SystemTranslationSessionBroker {
         } catch {
             if !request.isCompleted {
                 // Translation framework 的底层错误可能不是 LocalizedError，必须归一到
-                // 系统翻译错误，否则上层会误显示成 AI 服务失败。
-                let userFacingError: Error = error is TranslationError
-                    ? SystemTranslationError.sessionUnavailable
-                    : error
+                // 系统翻译错误；「语言包未下载 / 不支持」要与会话故障分开提示。
+                let userFacingError = await SystemTranslationError.classified(
+                    error,
+                    source: request.source,
+                    target: request.target
+                )
                 AppLog.ai.error(
                     "System translation failed request=\(request.id.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )

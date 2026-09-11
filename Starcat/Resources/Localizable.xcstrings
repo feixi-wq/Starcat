@@ -259684,6 +259684,54 @@
         }
       }
     },
+    "readme.translate.error.incompleteResult" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "System translation returned an incomplete result. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统翻译返回结果不完整，请重试"
+          }
+        }
+      }
+    },
+    "readme.translate.error.languagePackMissing" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The translation language pack isn't downloaded. Retry and confirm the download."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译语言包未下载，请重试并在弹窗中确认下载"
+          }
+        }
+      }
+    },
+    "readme.translate.error.languageUnsupported" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "System translation doesn't support this language pair."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统翻译不支持这个语言组合"
+          }
+        }
+      }
+    },
     "readme.translate.error.missingAPIKey" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -259906,6 +259954,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "尚未為 README 翻譯任務綁定 AI 服務。請前往「設定」→「AI」進行設定。"
+          }
+        }
+      }
+    },
+    "readme.translate.error.sessionUnavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The system translation session is unavailable. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统翻译会话不可用，请重试"
+          }
+        }
+      }
+    },
+    "readme.translate.error.sourceUndetected" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to identify the README source language."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法识别 README 的源语言"
           }
         }
       }
@@ -260339,6 +260419,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此 Mac 上无法使用系统翻译。"
+          }
+        }
+      }
+    },
+    "readme.translate.error.timedOut" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The system translation request timed out. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统翻译请求超时，请重试"
           }
         }
       }

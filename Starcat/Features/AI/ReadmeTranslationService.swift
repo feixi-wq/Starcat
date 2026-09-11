@@ -349,7 +349,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
         guard let sourceLanguage = TranslationSourceLanguageGate.detectedLanguage(from: sourceSample) else {
             // Apple Translation 的 prepareTranslation() 需要明确源语言；样本不足或混杂时
             // 不猜英语，避免生成错误语言包并把失败伪装成正文翻译失败。
-            throw SystemTranslationError.sessionUnavailable
+            throw SystemTranslationError.sourceLanguageUndetected
         }
         var translatedByHash = translatedByHash
         var record = Self.makeRecord(
@@ -399,7 +399,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
 
         // 正常情况下所有批次都通过 onBatch 回填；数量不一致时不要静默生成残缺缓存。
         guard batchResponses.count == batches.count else {
-            throw SystemTranslationError.sessionUnavailable
+            throw SystemTranslationError.incompleteResult
         }
 
         return record

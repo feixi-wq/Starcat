@@ -538,6 +538,9 @@ final class ReadmeTranslationViewModel {
             ) else { return }
             isTranslating = false
             currentTask = nil
+        } catch SystemTranslationError.cancelled {
+            // 系统翻译的取消走自定义错误类型，不继承 CancellationError；
+            // 与上面取消分支同理，状态已由 cancelTranslation 复位，不能弹错误提示。
         } catch {
             guard isCurrentGeneration(
                 identity: requestedIdentity,

@@ -98,9 +98,21 @@ struct DiagnosticsTests {
             service: "系统翻译"
         )
 
-        #expect(error.message == String.l10n("readme.translate.error.systemSession"))
+        #expect(error.message == String.l10n("readme.translate.error.sessionUnavailable"))
         #expect(!error.message.contains("在访问 AI 时失败"))
         #expect(error.title == String.l10n("readme.translate.engine.system"))
+    }
+
+    @Test("系统翻译语言包缺失不写入开发者诊断")
+    func userFacingErrorSystemTranslationLanguagePackMissing() throws {
+        let error = UserFacingError.map(
+            SystemTranslationError.languagePackMissing,
+            operation: String.l10n("diagnostics.operation.translateReadme"),
+            service: "系统翻译"
+        )
+
+        #expect(error.message == String.l10n("readme.translate.error.languagePackMissing"))
+        #expect(!error.shouldRecordDiagnostic)
     }
 
     @Test("本地数据库错误会进入开发者诊断")
