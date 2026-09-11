@@ -1133,9 +1133,12 @@ struct RepositoryInsightsView: View {
             iconColor: .yellow,
             chrome: .emphasized,
             headerTrailing: {
+                // 与活动概览同款：范围切换 + 刷新放标题行；导出图保留范围上下文，只藏操作按钮。
                 HStack(spacing: 6) {
                     starDataSourceBadge
+                    starRangePicker
                     if StarHistoryShareCaptureChrome.showsActionButtons(isShareCapture) {
+                        starRefreshButton
                         starHistoryShareButton
                     }
                 }
@@ -1146,25 +1149,11 @@ struct RepositoryInsightsView: View {
                     starHistoryExportIdentity
                 }
 
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 18) {
-                        if isStarHistoryWaitingForFirstPaint {
-                            InsightsSectionSkeleton(kind: .metricTiles(count: 3, minHeight: 58))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            starMetrics
-                        }
-                        Spacer(minLength: 8)
-                        starControls(isShareCapture: isShareCapture)
-                    }
-                    VStack(alignment: .leading, spacing: 10) {
-                        if isStarHistoryWaitingForFirstPaint {
-                            InsightsSectionSkeleton(kind: .metricTiles(count: 3, minHeight: 58))
-                        } else {
-                            starMetrics
-                        }
-                        starControls(isShareCapture: isShareCapture)
-                    }
+                if isStarHistoryWaitingForFirstPaint {
+                    InsightsSectionSkeleton(kind: .metricTiles(count: 3, minHeight: 58))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    starMetrics
                 }
 
                 if isStarHistoryWaitingForFirstPaint {
@@ -1509,20 +1498,15 @@ struct RepositoryInsightsView: View {
         return formatted
     }
 
-    private func starControls(isShareCapture: Bool) -> some View {
-        HStack(spacing: 8) {
-            PillSegmentedControl(
-                items: Array(StarHistoryRange.allCases),
-                selection: starRangeBinding,
-                title: starRangeTitle,
-                size: .compact
-            )
-            .accessibilityLabel(Text("insights.repo.star.range.label"))
-
-            if StarHistoryShareCaptureChrome.showsActionButtons(isShareCapture) {
-                starRefreshButton
-            }
-        }
+    /// Star 历史范围切换，现居区块标题行；导出图也保留它作为范围上下文。
+    private var starRangePicker: some View {
+        PillSegmentedControl(
+            items: Array(StarHistoryRange.allCases),
+            selection: starRangeBinding,
+            title: starRangeTitle,
+            size: .compact
+        )
+        .accessibilityLabel(Text("insights.repo.star.range.label"))
     }
 
     private var starRefreshButton: some View {
@@ -1654,21 +1638,17 @@ struct RepositoryInsightsView: View {
             ),
             systemImage: "chart.bar.fill",
             iconColor: .blue,
-            chrome: .emphasized
+            chrome: .emphasized,
+            // 与活动概览 / Star 趋势同款：范围切换 + 刷新放标题行，内容区完整留给脉搏与图表。
+            headerTrailing: {
+                commitControls
+            }
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                // 与活动概览同款：左脉搏三指标、右独立 range + 刷新。
-                HStack(alignment: .center, spacing: 8) {
-                    if let pulse = displayedCommitActivity?.maintenancePulse {
-                        maintenancePulseRow(pulse)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if isCommitAwaitingFirstContent {
-                        InsightsSectionSkeleton(kind: .derivedPills())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Spacer(minLength: 0)
-                    }
-                    commitControls
+                if let pulse = displayedCommitActivity?.maintenancePulse {
+                    maintenancePulseRow(pulse)
+                } else if isCommitAwaitingFirstContent {
+                    InsightsSectionSkeleton(kind: .derivedPills())
                 }
 
                 ZStack(alignment: .topLeading) {
@@ -3486,6 +3466,10 @@ private struct InsightsSummaryCard: View {
 
     @Environment(\.starcatInterfaceScale) private var interfaceScale
 
+    /// 本地事实卡带说明文案共三行；活动数字卡只有图标行 + 数值行。
+    /// 两行卡不配 96pt 的三行高度，右下角插画也缩一档，避免装饰撑出大片留白。
+    private var showsCaptionRow: Bool { caption != nil }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
@@ -3520,7 +3504,11 @@ private struct InsightsSummaryCard: View {
                     .minimumScaleFactor(0.8)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: showsCaptionRow ? 96 : 74,
+            alignment: .topLeading
+        )
         .padding(10)
         .background {
             let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -3528,9 +3516,12 @@ private struct InsightsSummaryCard: View {
                 .fill(Self.cardFill(tint))
                 .overlay(alignment: .bottomTrailing) {
                     InsightsCardIllustration(motif: motif, tint: tint)
-                        .frame(width: 82, height: 58)
-                        // chevron 居中贴右时插画贴边即可；chevron 在右下角时给它让出 30pt。
-                        .padding(.trailing, chevronAlignment == .trailing ? 8 : 30)
+                        .frame(
+                            width: showsCaptionRow ? 64 : 54,
+                            height: showsCaptionRow ? 46 : 40
+                        )
+                        // chevron 居中贴右时插画贴边即可；chevron 在右下角时给它让出 32pt。
+                        .padding(.trailing, chevronAlignment == .trailing ? 8 : 32)
                         .padding(.bottom, 4)
                         .opacity(isPlaceholder ? 0.55 : 1)
                 }
