@@ -948,10 +948,14 @@ struct ReadmeStateView: View {
         sourceSnapshot: ReadmeTranslationSourceSnapshot
     ) -> some View {
         readmeStatusFooter {
-            Image(systemName: "clock")
-                .font(.caption2)
-            Text(String(format: String.l10n("readme.cachedAtFormat"), RelativeTimeText.pastEvent(cachedAt, locale: locale)))
-                .font(.caption2)
+            // 时钟和图文必须先合成一组。外层 footer 的 12pt 是给左侧状态与右侧按钮用的；
+            // 若把 Image / Text 直接作为 HStack 子项，图标和「缓存于」会被拉开到 12pt。
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.caption2)
+                Text(String(format: String.l10n("readme.cachedAtFormat"), RelativeTimeText.pastEvent(cachedAt, locale: locale)))
+                    .font(.caption2)
+            }
             Spacer()
             if let control = translationControl {
                 ReadmeTranslationFooterButton(
