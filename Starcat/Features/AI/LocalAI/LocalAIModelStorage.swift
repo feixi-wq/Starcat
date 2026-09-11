@@ -47,6 +47,10 @@ struct LocalAIInstalledModel: Codable, Equatable, Identifiable, Sendable {
 /// manifest 存取 / 目录解析的纯函数集合。线程安全：无状态，全部显式传参。
 enum LocalAIModelStorage {
 
+    /// 单测注入的 models 根目录。仅 `TestEnvironment.isRunning` 时生效，
+    /// 避免测试把文件写进测试宿主真实的 Application Support。
+    nonisolated(unsafe) static var testRootOverride: URL?
+
     enum StorageError: LocalizedError, Equatable {
         case applicationSupportUnavailable
         case manifestCorrupted(String)
@@ -66,6 +70,9 @@ enum LocalAIModelStorage {
 
     /// `Application Support/<bundleId>/models/`。
     static func modelsRootURL(fileManager: FileManager = .default) throws -> URL {
+        if TestEnvironment.isRunning, let testRootOverride {
+            return testRootOverride
+        }
         guard let appSupport = fileManager.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first else {

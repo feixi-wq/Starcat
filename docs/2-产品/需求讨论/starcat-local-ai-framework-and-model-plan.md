@@ -376,3 +376,20 @@ ModelScope 白名单 + 下载源 Picker / 存储页联动 / i18n 全量 / 双渠
 | 付费 | 未提及 | 免费；`requirePro` 各点位 provider 感知放行 |
 | 硬件 | 未提及 | Apple Silicon 检测 + Intel 隐藏入口 |
 | 框架与默认模型 | — | **原样保留**（mlx-swift-lm + Qwen3 三件套），以 M0 spike 结论定稿 |
+
+---
+
+## 15. 实施记录（2026-09-12，feature/local-ai 分支）
+
+按本方案 v1.1 完成首版实现。与上文的差异与最终落地口径（以上文 + 本节为准）：
+
+1. **依赖最终形态**：`mlx-swift-lm`（branch: main）提供 `MLXLMCommon / MLXLLM / MLXEmbedders / MLXRerankers / MLXHuggingFace`；3.x 起分词器需自带实现，配套引入 `swift-transformers`（Tokenizers）与 `swift-huggingface`（HuggingFace）。构建脚本全部入口补 `-skipPackagePluginValidation` + `-skipMacroValidation`（mlx-swift 带 SPM 构建插件与宏）。
+2. **Reranker 比预期顺利**：上游已提供公共 `RerankerModelFactory`（自动识别 qwen3 判别式权重，归一化 0...1 打分），无需自行封装 yes/no logits；R2 风险中「判别式用法」已由上游解决，仅剩 M1/M2 芯片实测。
+3. **Catalog 校验口径**：离线无法预知 commit SHA 与文件哈希，改为「安装时解析 revision（HF API sha）并记录进 manifest；文件 SHA256 下载时流式计算写入 manifest」，后续完整性检查以 manifest 对账。
+4. **本地 Reranker 定位**：`RAGReranking` 第三实现 + `RAGRerankConfiguration.provider` 加 `.localMLX`，默认关闭（§4.4 口径落地）。
+5. **客户端工厂**：`AIClientFactory.make(configuration:)` 统一 7 个构造点，`.localAI` 返回 `LocalMLXClient`，其余走 `OpenAIClient`。
+6. **免费门控**：`EntitlementGate.requirePro(_:usesLocalOnly:)` + `AppSettings.isTaskResolvedToLocalAI(_:)` 系列 helper；适配点：语义搜索 ×3、摘要/标签/对话（RepoAIInsightService ×4）、批量 AI ×5（服务 + UI）、自动整理、RAG（IndexBuilder ×5 + AppDependencies ×2 + WorkspaceViewModel ×2）、`AIWorkspaceEntryGate`。AI 设置页整页 Pro 锁在 Apple Silicon 上放行（免费用户可进入配置与下载）。
+7. **设置页**：新增独立「本地 AI 模型」Section（`LocalAIModelsSection.swift`），不依赖 profile 验证状态即可下载；provider 区对 localAI 隐藏 Base URL / Key / 测试按钮，内置 profile 禁止删除；v1 未放下载源 Picker（catalog 尚无 ModelScope 白名单条目，字段已建模）。
+8. **i18n**：38 个 `settings.localai.*` + 1 个 `rag.workspace.rerank.provider.localmlx`，18 语言，按行插入（diff 仅新增）。
+9. **测试**：Catalog 契约 / Storage（manifest、脏目录、清理、用量，`testRootOverride` 注入临时目录）/ Downloader（整段 + 206 续传 + 忽略 Range + 404 + 体积不符，URLProtocolStub）/ 门控与 selection（本地放行、远程不变、未验证 profile 拒绝）。`TestEnvironment` 门控：不下载、不加载 MLX；manager profile 同步测试期 no-op。
+10. **遗留到后续版本**：ModelScope 白名单与下载源 Picker、存储页（StorageSettingsTab）联动项、嵌入切换重建的 UI 引导文案细化、Intel Mac 兜底提示文案。
