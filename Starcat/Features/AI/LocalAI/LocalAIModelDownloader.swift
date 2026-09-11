@@ -210,17 +210,18 @@ actor LocalAIModelDownloader {
         }
         defer { try? handle.close() }
 
-        // 总长度：206 时 Content-Range 的 total；200 时 Content-Length。
-        var totalBytes: Int64 = {
-            if http.statusCode == 206,
-                let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
-                let totalString = contentRange.split(separator: "/").last,
-                let total = Int64(totalString) {
-                return total
-            }
-            return Int64(http.expectedContentLength)
-        }()
-        totalBytes += offset
+        // 总长度：206 且带 Content-Range 时，"/" 后的 total 就是完整文件大小（无需加
+        // offset）；否则回退 Content-Length（200 时即完整长度；206 无 Content-Range 的
+        // 罕见服务端再补 offset）。
+        var totalBytes: Int64
+        if http.statusCode == 206,
+            let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+            let totalString = contentRange.split(separator: "/").last,
+            let total = Int64(totalString), total > 0 {
+            totalBytes = total
+        } else {
+            totalBytes = Int64(http.expectedContentLength) + offset
+        }
 
         var hasher = SHA256()
         if offset > 0 {
