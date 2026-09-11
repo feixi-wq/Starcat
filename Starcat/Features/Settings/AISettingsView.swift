@@ -64,8 +64,6 @@ struct AISettingsTab: View {
     @State private var isTestingProfileID: String?
     @State private var keyError: String?
     @State private var promptTask: AIModelTask = .summary
-    /// 翻译 Prompt 的二级 Tab。只切换 Prompt，不复制 Provider / Model / 参数配置。
-    @State private var translationPromptMode: ReadmeTranslationMode = .segmented
     /// Prompt 区「可用占位符」popover；切换任务时关闭，避免旧任务说明残留。
     @State private var isPromptPlaceholderPopoverPresented = false
 
@@ -596,7 +594,10 @@ struct AISettingsTab: View {
                 // EqualWidthSegmentedControl 按父宽均分，中英文同一套整行样式。
                 VStack(alignment: .leading, spacing: 0) {
                     EqualWidthSegmentedControl(
-                        items: Array(AIModelTask.allCases),
+                        // 2026-09-11：翻译任务的模型选择迁入「翻译服务」设置页，
+                        // 这里只保留仍在 AI 服务页配置的任务；枚举与存储保留，
+                        // 待 dong4j 审核通过后再做代码级删除。
+                        items: AIModelTask.allCases.filter { $0 != .translation },
                         selection: $taskModelTask,
                         title: { LocalizedStringKey($0.displayNameKey) }
                     )
@@ -1407,7 +1408,9 @@ struct AISettingsTab: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 12) {
                         EqualWidthSegmentedControl(
-                            items: [AIModelTask.summary, .tags, .chat, .embedding, .translation],
+                            // 2026-09-11：翻译 Prompt（分段 / 全文）迁入「翻译服务」设置页，
+                            // AI 服务页 Prompt 区不再出现翻译任务。
+                            items: [AIModelTask.summary, .tags, .chat, .embedding],
                             selection: $promptTask,
                             title: { LocalizedStringKey($0.displayNameKey) }
                         )
@@ -1420,23 +1423,6 @@ struct AISettingsTab: View {
                         }
                     }
                     .padding(.vertical, 10)
-
-                    if promptTask == .translation {
-                        Divider()
-
-                        // 翻译任务包含两套独立 Prompt。二级 Tab 必须放在 Prompt 区，
-                        // 紧跟一级任务 Tab，避免误落到“模型配置”后在当前面板不可见。
-                        EqualWidthSegmentedControl(
-                            items: ReadmeTranslationMode.allCases,
-                            selection: $translationPromptMode,
-                            title: { LocalizedStringKey($0.displayNameKey) }
-                        )
-                        .accessibilityLabel("settings.ai.prompt.translation.mode.pickerLabel")
-                        // 二级 Tab 只有两个短选项，限制宽度并居中，避免随面板横向拉伸成两个大色块。
-                        .frame(maxWidth: 320)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 10)
-                    }
 
                     Divider()
 
@@ -1497,9 +1483,6 @@ struct AISettingsTab: View {
                 .onChange(of: promptTask) { _, _ in
                     isPromptPlaceholderPopoverPresented = false
                 }
-                .onChange(of: translationPromptMode) { _, _ in
-                    isPromptPlaceholderPopoverPresented = false
-                }
             } label: {
                 disclosureLabel("settings.ai.prompt.title", systemImage: "text.quote", isExpanded: $isPromptExpanded)
             }
@@ -1527,8 +1510,7 @@ struct AISettingsTab: View {
         .help("settings.ai.prompt.placeholders.openHelp")
         .popover(isPresented: $isPromptPlaceholderPopoverPresented, arrowEdge: .top) {
             AIPromptPlaceholderPopover(catalog: AIPromptPlaceholderCatalog.catalog(
-                for: promptTask,
-                translationMode: translationPromptMode
+                for: promptTask
             ))
                 .appLocaleEnvironment()
         }
@@ -2720,11 +2702,8 @@ struct AISettingsTab: View {
     }
 
     private func restoreDefaultPrompt(_ task: AIModelTask) {
-        if task == .translation, translationPromptMode == .full {
-            settings.aiFullTranslationPrompt = AIDefaultPrompts.fullTranslation
-            return
-        }
-
+        // 2026-09-11：翻译任务的 Prompt（分段 / 全文）已迁入「翻译服务」设置页，
+        // 这里只剩非翻译任务的恢复默认；`.translation` 分支仅为 switch 穷尽性保留。
         updateTask(task) { config in
             switch task {
             case .summary:
@@ -2736,7 +2715,7 @@ struct AISettingsTab: View {
             case .chat:
                 config.prompt = AIDefaultPrompts.chat
             case .translation:
-                // 分段与全文使用独立 Prompt；全文分支已在函数开头单独写回。
+                // UI 不再出现翻译任务（已迁「翻译服务」页）；仅为穷尽性保留。
                 config.prompt = AIDefaultPrompts.translation
             }
         }
@@ -2978,35 +2957,17 @@ struct AISettingsTab: View {
         )
     }
 
+    // 2026-09-11：翻译 Prompt（分段 / 全文）的编辑入口已迁入「翻译服务」设置页，
+    // 这里的 binding 只服务其余任务。
     private func promptSystemBinding(_ task: AIModelTask) -> Binding<String> {
-        if task == .translation, translationPromptMode == .full {
-            return Binding(
-                get: { settings.aiFullTranslationPrompt.systemPrompt },
-                set: { value in
-                    var prompt = settings.aiFullTranslationPrompt
-                    prompt.systemPrompt = value
-                    settings.aiFullTranslationPrompt = prompt
-                }
-            )
-        }
-        return Binding(
+        Binding(
             get: { taskConfig(task).prompt.systemPrompt },
             set: { value in updateTask(task) { $0.prompt.systemPrompt = value } }
         )
     }
 
     private func promptUserBinding(_ task: AIModelTask) -> Binding<String> {
-        if task == .translation, translationPromptMode == .full {
-            return Binding(
-                get: { settings.aiFullTranslationPrompt.userPromptTemplate },
-                set: { value in
-                    var prompt = settings.aiFullTranslationPrompt
-                    prompt.userPromptTemplate = value
-                    settings.aiFullTranslationPrompt = prompt
-                }
-            )
-        }
-        return Binding(
+        Binding(
             get: { taskConfig(task).prompt.userPromptTemplate },
             set: { value in updateTask(task) { $0.prompt.userPromptTemplate = value } }
         )

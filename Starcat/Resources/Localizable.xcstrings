@@ -395634,6 +395634,86 @@
         }
       }
     },
+    "settings.translation.ai.footer" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segmented and full-text modes share the model above; prompts are independent. Model parameters follow the model itself — adjust them in AI Settings → model list."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分段与全文共用上方模型，提示词相互独立；模型参数跟随模型本身，在「AI 服务 → 模型列表」中调整。"
+          }
+        }
+      }
+    },
+    "settings.translation.ai.model.empty" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No available Chat model for this provider"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该服务商下没有可用的 Chat 模型"
+          }
+        }
+      }
+    },
+    "settings.translation.ai.prompt" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prompt"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示词"
+          }
+        }
+      }
+    },
+    "settings.translation.ai.prompt.restoreHelp %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restore default prompt for %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复默认「%@」提示词"
+          }
+        }
+      }
+    },
+    "settings.translation.ai.section" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI Translation"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 翻译"
+          }
+        }
+      }
+    },
     "settings.translation.engine.default" : {
       "localizations" : {
         "en" : {
@@ -395662,6 +395742,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "当前没有可用的翻译服务。"
+          }
+        }
+      }
+    },
+    "settings.translation.google.apiKey.field" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API Key"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API Key"
           }
         }
       }
@@ -395726,6 +395822,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "显示 API Key"
+          }
+        }
+      }
+    },
+    "settings.translation.google.apiKey.testAndSave" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test & Save"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试并保存"
           }
         }
       }
@@ -395870,6 +395982,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "填写 API Key 后使用 Google Cloud Translation；不填写时使用 Google 翻译公开网页接口，可能受到限流。"
+          }
+        }
+      }
+    },
+    "settings.translation.section.google.rateLimitFooter" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Without an API Key, the public web endpoint is rate limited by design — large or consecutive translations will often fail. Configure an API Key for the official Cloud Translation API."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未填写 API Key 时使用公开网页接口，该接口会限流，大页面或连续翻译很容易失败；建议填写 API Key 使用官方 Cloud Translation。"
           }
         }
       }
