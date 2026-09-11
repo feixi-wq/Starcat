@@ -594,10 +594,7 @@ struct AISettingsTab: View {
                 // EqualWidthSegmentedControl 按父宽均分，中英文同一套整行样式。
                 VStack(alignment: .leading, spacing: 0) {
                     EqualWidthSegmentedControl(
-                        // 2026-09-11：翻译任务的模型选择迁入「翻译服务」设置页，
-                        // 这里只保留仍在 AI 服务页配置的任务；枚举与存储保留，
-                        // 待 dong4j 审核通过后再做代码级删除。
-                        items: AIModelTask.allCases.filter { $0 != .translation },
+                        items: AIModelTask.aiSettingsPageTasks,
                         selection: $taskModelTask,
                         title: { LocalizedStringKey($0.displayNameKey) }
                     )
@@ -1408,9 +1405,7 @@ struct AISettingsTab: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 12) {
                         EqualWidthSegmentedControl(
-                            // 2026-09-11：翻译 Prompt（分段 / 全文）迁入「翻译服务」设置页，
-                            // AI 服务页 Prompt 区不再出现翻译任务。
-                            items: [AIModelTask.summary, .tags, .chat, .embedding],
+                            items: AIModelTask.aiSettingsPageTasks,
                             selection: $promptTask,
                             title: { LocalizedStringKey($0.displayNameKey) }
                         )

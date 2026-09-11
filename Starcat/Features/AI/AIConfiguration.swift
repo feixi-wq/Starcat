@@ -549,6 +549,16 @@ enum AIModelTask: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// AI 服务页「模型配置」与「Prompt」两区 segmented picker 的任务列表（单一来源）。
+    ///
+    /// 翻译任务的 Provider / 模型 / Prompt 已迁入「翻译服务」设置页
+    /// （TranslationSettingsView），不再出现在 AI 服务页；顺序统一为
+    /// 摘要 / 标签 / 对话 / 向量化。枚举 case 与 `aiTranslationTask` 存储
+    /// 必须保留——翻译设置页与运行时仍消费它们，删掉会重置用户已存配置。
+    static var aiSettingsPageTasks: [AIModelTask] {
+        [.summary, .tags, .chat, .embedding]
+    }
+
     /// HOM-126 follow-up (dong4j 反馈 2026-06-07，「模型配置」/「Prompt」segmented picker 显得拥挤)：
     /// 任务名收紧为单字/双字，避免在 4 个 tab 横排的 segmented picker 里被截断。
     /// 业务语义对齐：摘要 = 仓库 AI 摘要；标签 = 自动推荐 + 应用标签；向量化 = embedding 索引；翻译 = README 翻译；对话 = 详情页 AI 助手。
