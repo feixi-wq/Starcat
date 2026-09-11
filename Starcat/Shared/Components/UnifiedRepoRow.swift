@@ -262,8 +262,16 @@ struct UnifiedRepoRow: View {
                     // 保留单棵布局树，避免恢复 ViewThatFits 多变体测量带来的滚动开销。
                     // 胶囊按自然宽度紧邻排列，空余宽度只交给末尾 Spacer；状态图标不另起右簇。
                     // clipped 只兜住越界绘制，单行约束负责防止胶囊换行增高。
+                    //
+                    // 2026-09-11（dong4j 反馈知识库窗口最小宽度下「1/19」被拦腰裁切）：
+                    // 胶囊全部 fixedSize，行宽不足时 clipped 会从胶囊中间切断。改成
+                    // ViewThatFits 两档：宽裕时全量胶囊；窄栏先丢 forks / AI 摘要这类
+                    // 次要信号，保住语言、Stars 与场景元数据（如 RAG 索引进度）完整可读。
                     HStack(spacing: 8) {
-                        metadataChipCluster
+                        ViewThatFits(in: .horizontal) {
+                            metadataChipCluster(showsSecondaryMetadata: true)
+                            metadataChipCluster(showsSecondaryMetadata: false)
+                        }
                         Spacer(minLength: 8)
                         if let semanticHit {
                             SemanticScoreBadge(
@@ -339,8 +347,11 @@ struct UnifiedRepoRow: View {
     }
 
     /// 胶囊保持原有顺序与 8pt 间距；长文本在各自宽度上限内截断，不扩展短胶囊的占位。
+    ///
+    /// `showsSecondaryMetadata == false` 是窄栏降级簇：只去掉 forks / AI 摘要两个
+    /// 「同站内到处可见」的次要信号，语言、Stars、RAG 索引进度等身份信息原样保留。
     @ViewBuilder
-    private var metadataChipCluster: some View {
+    private func metadataChipCluster(showsSecondaryMetadata: Bool) -> some View {
         HStack(spacing: 8) {
             if let language = card.language, !language.isEmpty {
                 LanguageBadge(language: language, style: .full, maximumWidth: 96 * interfaceScale.multiplier)
@@ -351,18 +362,20 @@ struct UnifiedRepoRow: View {
                 .accessibilityLabel(Text(card.isStarred
                     ? "repo.card.alreadyStarred"
                     : "list.filter.starStatus.unstarred"))
-            MetaBadge(systemImage: "tuningfork", text: card.forksCount.formattedShort, tint: forkTint)
-            if hasAISummary {
-                // 与 RAG 仓库选择器复用同一 `sparkles` 语义；只显示图标，完整含义通过
-                // tooltip 与 accessibility label 提供，避免在窄栏挤占 metadata 行。
-                MetaBadge(
-                    systemImage: "sparkles",
-                    text: "",
-                    tint: .accentColor,
-                    iconOnly: true,
-                    accessibilityLabel: "repo.card.aiSummaryAvailable"
-                )
-                .help("repo.card.aiSummaryAvailable")
+            if showsSecondaryMetadata {
+                MetaBadge(systemImage: "tuningfork", text: card.forksCount.formattedShort, tint: forkTint)
+                if hasAISummary {
+                    // 与 RAG 仓库选择器复用同一 `sparkles` 语义；只显示图标，完整含义通过
+                    // tooltip 与 accessibility label 提供，避免在窄栏挤占 metadata 行。
+                    MetaBadge(
+                        systemImage: "sparkles",
+                        text: "",
+                        tint: .accentColor,
+                        iconOnly: true,
+                        accessibilityLabel: "repo.card.aiSummaryAvailable"
+                    )
+                    .help("repo.card.aiSummaryAvailable")
+                }
             }
             if let metadata = card.footerMetadata {
                 RepoCardInlineMetadataBadge(metadata: metadata)
