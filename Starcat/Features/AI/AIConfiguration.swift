@@ -406,6 +406,31 @@ enum AIChatSelectionError: Error, Equatable, Sendable {
 }
 
 extension AppSettings {
+    /// 指定任务当前解析到的服务商是否为内置本地 AI（`.localAI`）。
+    ///
+    /// 门控口径（本地 AI 免费，dong4j 2026-09-12 拍板）：任务解析到本地 provider 的
+    /// 调用走进程内 MLX、无远程 AI 成本，`EntitlementGate.requirePro(_:usesLocalOnly:)`
+    /// 据此放行。这里只看 provider 类型，不做已安装校验——未下载模型时的失败由
+    /// selection 解析报「配置不可用」，而不是付费墙。
+    func isTaskResolvedToLocalAI(_ task: AIModelTaskConfiguration) -> Bool {
+        aiProviderProfiles.first { $0.id == task.providerID }?.provider == .localAI
+    }
+
+    var isChatTaskResolvedToLocalAI: Bool { isTaskResolvedToLocalAI(aiChatTask) }
+    var isSummaryTaskResolvedToLocalAI: Bool { isTaskResolvedToLocalAI(aiSummaryTask) }
+    var isTagsTaskResolvedToLocalAI: Bool { isTaskResolvedToLocalAI(aiTagsTask) }
+    var isEmbeddingTaskResolvedToLocalAI: Bool { isTaskResolvedToLocalAI(aiEmbeddingTask) }
+
+    /// 摘要 + 标签任务都指向本地模型（批量 AI / 自动整理的免费判定口径）。
+    var isGenerationTasksResolvedToLocalAI: Bool {
+        isSummaryTaskResolvedToLocalAI && isTagsTaskResolvedToLocalAI
+    }
+
+    /// 对话 + 向量化任务都指向本地模型（知识库 RAG / Agent 工作台入口的免费判定口径）。
+    var isRAGPipelineResolvedToLocalAI: Bool {
+        isChatTaskResolvedToLocalAI && isEmbeddingTaskResolvedToLocalAI
+    }
+
     /// 设置页「模型配置 → 对话」是否已经指向一个可用模型。
     ///
     /// Agent 与知识库 RAG 都依赖对话模型，因此入口只依据此处的用户显式选择放行。
@@ -1572,13 +1597,14 @@ extension AIServiceProvider {
         case .zhipu:            return String.l10n("ai.provider.zhipu.name")
         case .zai:              return "Z.AI"
         case .orcaRouter:       return "OrcaRouter"
+        case .localAI:          return "Starcat Local AI"
         }
     }
 
     /// 是否允许 API Key 为空（本地服务用）。
     var allowsEmptyAPIKey: Bool {
         switch self {
-        case .ollama, .lmStudio:
+        case .ollama, .lmStudio, .localAI:
             return true
         default:
             return false

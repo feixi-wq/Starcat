@@ -297,6 +297,15 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     // 继续追加在尾部，避免改动已有 rawValue 的持久化语义。
     case orcaRouter
 
+    // MARK: - 2026-09-12 新增（内置本地 AI，非 HTTP Provider）
+    //
+    // `localAI` 是第一个不走 OpenAI Chat Completions 协议的 case：进程内 MLX 推理，
+    // 无 Key、无 Base URL，模型经设置页下载校验后由内置 profile 提供（见
+    // `LocalAIModelManager.syncBuiltInProfile`）。任务选择 / capability 校验 /
+    // 门禁逻辑全部复用，仅客户端工厂、免费门控与模型管理 UI 按 provider 适配。
+    // 设计文档：docs/2-产品/需求讨论/starcat-local-ai-framework-and-model-plan.md。
+    case localAI
+
     var id: String { rawValue }
 
     /// 设置页 picker 显示的服务商名（i18n key 复用 LocalizedStringKey 自动解析）。
@@ -326,6 +335,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "ai.provider.zhipu"
         case .zai:              return "Z.AI"
         case .orcaRouter:       return "OrcaRouter"
+        case .localAI:          return "Starcat Local AI"
         }
     }
 
@@ -360,6 +370,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "chatglm"
         case .zai:              return "zai"
         case .orcaRouter:       return "orcarouter"
+        // 自绘 CPU+火花矢量（本地推理语义），非上游品牌资源。
+        case .localAI:          return "localai"
         }
     }
 
@@ -371,6 +383,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .orcaRouter:
             return "point.3.connected.trianglepath.dotted"
+        case .localAI:
+            return "cpu"
         default:
             return "sparkles"
         }
@@ -389,7 +403,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     /// 判定来源：`rg -o 'fill="[^"]*"' Resources/Assets.xcassets/AIProviders/*/*.svg`。
     var iconIsMonochromeWhite: Bool {
         switch self {
-        case .openAICompatible, .ollama, .lmStudio, .grok, .moonshot:
+        case .openAICompatible, .ollama, .lmStudio, .grok, .moonshot, .localAI:
             return true
         default:
             return false
@@ -423,6 +437,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "https://open.bigmodel.cn/api/paas/v4"
         case .zai:              return "https://api.z.ai/api/coding/paas/v4"
         case .orcaRouter:       return "https://api.orcarouter.ai/v1"
+        case .localAI:          return ""
         }
     }
 
@@ -453,6 +468,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "glm-4.6"
         case .zai:              return "glm-4.6"
         case .orcaRouter:       return "openai/gpt-4o-mini"
+        // 占位提示：真实可用列表来自内置 profile 的已安装模型（LocalAIModelManager）。
+        case .localAI:          return "Qwen3 4B Instruct 4bit"
         }
     }
 
@@ -505,6 +522,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
             // OrcaRouter 2026-09-05 官方 OpenAPI 未定义 `/v1/embeddings`。
             // 空值只用于构造“模型列表测试”客户端；Embedding 任务由下方能力门禁拦截。
             return ""
+        case .localAI:
+            return "Qwen3 Embedding 0.6B 8bit"
         }
     }
 
@@ -519,6 +538,24 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         default:
             return true
         }
+    }
+
+    /// 该服务商在当前硬件上是否可选。
+    ///
+    /// MLX 只能跑 Apple Silicon；Intel Mac 不展示 localAI 入口，旧配置残留时由
+    /// selection 解析按同一判定报 `providerUnavailable`。
+    var isAvailableOnThisHardware: Bool {
+        switch self {
+        case .localAI:
+            return LocalAIHardwareSupport.isLocalAIAvailable
+        default:
+            return true
+        }
+    }
+
+    /// 设置页「新增服务商」可选列表（按硬件能力过滤）。
+    static var userSelectableCases: [AIServiceProvider] {
+        allCases.filter(\.isAvailableOnThisHardware)
     }
 }
 
