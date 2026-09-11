@@ -230,6 +230,17 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
 
         // 同一段落可能在 README 中重复出现；按 hash 去重请求，渲染时再映射回每个 DOM id。
         let uniqueSources = Self.uniqueSegments(request.sourceSegments)
+
+        // 文档级主语言在去重后的完整片段集上判定：部分缓存重试时剩余片段可能全是
+        // 标题、代码或表格，单独拿去识别会失真。判定结果有两个消费者：
+        // ① 同语种整篇短路；② 系统翻译的源语言。
+        let documentLanguage = TranslationSourceLanguageGate.detectDocumentLanguage(in: uniqueSources)
+        if documentLanguage == request.targetLanguage {
+            // 整篇已经是目标语言：不转圈、不打接口。混排文档仍走下方按段跳过，
+            // 只把对不上目标语言的段落送出去。
+            throw ReadmeTranslationError.alreadyInTargetLanguage
+        }
+
         let currentSourceHashes = Set(uniqueSources.map(\.sourceHash))
         var translatedByHash: [String: String] = [:]
         if let cached {
@@ -305,6 +316,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
                 skippedHashes: skippedHashes,
                 documentHash: documentHash,
                 translatedByHash: translatedByHash,
+                documentLanguage: documentLanguage,
                 onBatch: onBatch
             )
         case .ai:
@@ -338,17 +350,14 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
         skippedHashes: Set<String>,
         documentHash: String,
         translatedByHash: [String: String],
+        documentLanguage: ReadmeTranslationLanguage?,
         onBatch: BatchProgressHandler?
     ) async throws -> ReadmeTranslation {
         let model = ReadmeTranslationEngine.system.cacheModelToken
         let batches = Self.makeBatches(toTranslate)
-        // 源语言检测必须基于完整源文档，而不是仅基于缓存未命中的片段。
-        // 部分缓存重试时，剩余片段可能恰好都是标题、代码或表格内容，
-        // 这会让 Apple Translation 无法可靠识别语言，导致“对比翻译”直接失败。
-        let sourceSample = Self.systemSourceSample(from: uniqueSources)
-        guard let sourceLanguage = TranslationSourceLanguageGate.detectedLanguage(from: sourceSample) else {
-            // Apple Translation 的 prepareTranslation() 需要明确源语言；样本不足或混杂时
-            // 不猜英语，避免生成错误语言包并把失败伪装成正文翻译失败。
+        // Apple Translation 的 prepareTranslation() 需要明确源语言；源语言只能来自
+        // Gate 的文档级投票，不猜英语——猜错会下载错误语言包并把失败伪装成正文翻译失败。
+        guard let sourceLanguage = documentLanguage else {
             throw SystemTranslationError.sourceLanguageUndetected
         }
         var translatedByHash = translatedByHash
@@ -758,15 +767,6 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
     ///
     /// 源样本从完整的去重源片段生成，不能随着缓存命中情况变化；否则同一份
     /// README 在首次翻译和部分缓存重试时可能得到不同的语言检测结果。
-    nonisolated static func systemSourceSample(
-        from sources: [ReadmeSourceSegment]
-    ) -> String {
-        sources
-            .prefix(4)
-            .map(\.text)
-            .joined(separator: "\n")
-    }
-
     private nonisolated static func takeBatch(
         from remaining: inout ArraySlice<ReadmeSourceSegment>,
         maxCount: Int,
