@@ -433,9 +433,9 @@ struct ReadmeStateView: View {
         .toast(
             message: $translationToast,
             icon: "exclamationmark.triangle.fill",
+            duration: 5,
             iconColor: .orange,
             bottomPadding: 30,
-            autoDismiss: false,
             actionLabel: translationToastActionLabel,
             onAction: translationToastOnAction
         )
@@ -1035,7 +1035,7 @@ struct ReadmeTranslationControl {
 /// - 旁边的下拉菜单负责"选择目标语言"+"重新翻译"+"清除当前译文"，避免在 footer 里
 ///   堆出多个按钮抢空间。
 /// - 翻译进行中图标切换为思考球（与 AI 标签整理行同款）。
-/// - 错误不再内联到 footer，改为通过 toast 浮动提示（手动关闭 + AI 配置类错误可跳转设置）。
+/// - 错误不再内联到 footer，改为通过 toast 浮动提示（5 秒自动关闭 + AI 配置类错误可跳转设置）。
 struct ReadmeTranslationFooterButton: View {
 
     let control: ReadmeTranslationControl

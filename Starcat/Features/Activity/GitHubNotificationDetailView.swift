@@ -172,13 +172,13 @@ struct GitHubNotificationDetailView: View {
         .onAppear {
             prepareTranslation(for: item)
         }
-        // 对齐 README 翻译：错误走右下角 toast，配置类错误带「前往设置」。
+        // 对齐 README 翻译：错误走右下角 toast，5 秒自动关闭，配置类错误带「前往设置」。
         .toast(
             message: $aiErrorToast,
             icon: "exclamationmark.triangle.fill",
+            duration: 5,
             iconColor: .orange,
             bottomPadding: isComposerExpanded ? 20 : 56,
-            autoDismiss: false,
             actionLabel: aiErrorToastActionLabel,
             onAction: aiErrorToastOnAction
         )
