@@ -147,25 +147,12 @@ struct LocalAIModelsSection: View {
                 statusView(for: entry, state: state)
             }
 
-            HStack(spacing: 6) {
-                if entry.recommended || entry.isLite {
-                    Text(entry.recommended
-                        ? "settings.localai.model.badge.recommended"
-                        : "settings.localai.model.badge.lite")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.quaternary, in: Capsule())
-                }
-
-                Text(sizeCaption(for: entry))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            .padding(.leading, 30)
+            Text(sizeCaption(for: entry))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, 30)
 
             if case .downloading(let progress, let completedBytes, let totalBytes, let speed) = state {
                 thinProgressBar(progress)
@@ -199,10 +186,12 @@ struct LocalAIModelsSection: View {
                 Button {
                     selectedIDs[type] = candidate.id
                 } label: {
+                    // 系统 NSMenu 不支持富样式徽标，档位以文本后缀跟在模型名后
+                    //（dong4j 2026-09-12：推荐/轻量放进下拉对应项后面）。
                     if candidate.id == selected.id {
-                        Label(candidate.displayName, systemImage: "checkmark")
+                        Label(menuItemTitle(candidate), systemImage: "checkmark")
                     } else {
-                        Text(candidate.displayName)
+                        Text(menuItemTitle(candidate))
                     }
                 }
             }
@@ -226,6 +215,17 @@ struct LocalAIModelsSection: View {
         .buttonStyle(.plain)
         .fixedSize()
         .accessibilityLabel(Text(typeLabel(type)))
+    }
+
+    /// 下拉菜单项标题：模型名后跟档位后缀（推荐 / 轻量）。
+    private func menuItemTitle(_ entry: LocalAIModelCatalogEntry) -> String {
+        if entry.recommended {
+            return entry.displayName + " · " + String.l10n("settings.localai.model.badge.recommended")
+        }
+        if entry.isLite {
+            return entry.displayName + " · " + String.l10n("settings.localai.model.badge.lite")
+        }
+        return entry.displayName
     }
 
     /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
