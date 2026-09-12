@@ -182,11 +182,8 @@ struct LocalAIModelsSection: View {
     }
 
     private func pickerTitle(_ entry: LocalAIModelCatalogEntry) -> String {
-        var parts = [entry.displayName]
-        if manager.installState(for: entry.id).isInstalled {
-            parts.append(String.l10n("settings.localai.model.status.installed"))
-        }
-        return parts.joined(separator: " · ")
+        // 安装状态已由行尾的「已安装」徽标表达，下拉里不再重复（dong4j 2026-09-12 反馈）。
+        entry.displayName
     }
 
     /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
@@ -310,7 +307,9 @@ struct LocalAIModelsSection: View {
 
         case .installed:
             HStack(spacing: 6) {
-                Label("settings.localai.model.status.installed", systemImage: "checkmark.circle.fill")
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("settings.localai.model.status.installed")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 deleteButton(entry)
@@ -329,17 +328,11 @@ struct LocalAIModelsSection: View {
     }
 
     private func deleteButton(_ entry: LocalAIModelCatalogEntry) -> some View {
-        Button {
+        DestructiveIconButton(
+            help: Text("settings.localai.model.action.delete")
+        ) {
             manager.delete(entryID: entry.id)
-        } label: {
-            Image(systemName: "trash")
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 28)
         }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .help("settings.localai.model.action.delete")
-        .accessibilityLabel(Text("settings.localai.model.action.delete"))
     }
 
     // MARK: - 进度展示
@@ -401,9 +394,10 @@ struct LocalAIModelsSection: View {
     }
 
     private func sizeCaption(for entry: LocalAIModelCatalogEntry) -> String {
-        var parts: [String] = [String(
-            format: String.l10n("settings.localai.model.sizeFormat"),
-            ByteCountFormatter.string(fromByteCount: entry.estimatedDownloadSize, countStyle: .file))]
+        // 直接显示体积，不加「下载约」前缀（dong4j 2026-09-12 反馈）。
+        var parts: [String] = [
+            ByteCountFormatter.string(fromByteCount: entry.estimatedDownloadSize, countStyle: .file)
+        ]
         if let dimension = entry.embeddingDimension {
             parts.append(String(
                 format: String.l10n("settings.localai.model.dimensionFormat"), dimension))
