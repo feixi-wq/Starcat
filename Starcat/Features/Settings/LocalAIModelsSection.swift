@@ -35,9 +35,11 @@ struct LocalAIModelsSection: View {
     /// 下拉顺序固定，避免设置页刷新时选项跳动。
     private let displayedTypes: [LocalAIModelType] = [.embedding, .reranker, .llm]
 
-    /// 本区块行内 icon 的统一口径（设置页 15pt / 28×28）：下载、绿色对勾、删除共用，
-    /// 保证同一行里图标大小完全一致（dong4j 2026-09-12）。
-    private static let rowIconFont = Font.system(size: 15, weight: .medium)
+    /// 本区块行内 icon 的统一口径：下载、绿色对勾、删除共用同一字号，保证同行一致。
+    /// 12pt regular——`checkmark.circle.fill` 是实心填充、视觉重量大，必须比线性图标
+    /// 小一档才与下拉箭头等周边图标协调（dong4j 2026-09-12 反馈「做得太大」）；
+    /// 命中区保持 28×28 不影响点击。
+    private static let rowIconFont = Font.system(size: 12, weight: .regular)
     private static let rowIconFrameSize: CGFloat = 28
 
     var body: some View {
