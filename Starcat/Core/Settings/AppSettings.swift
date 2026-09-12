@@ -1865,6 +1865,7 @@ final class AppSettings {
             embeddingModel: resolvedAIEmbeddingModel
         )
         let profiles = Self.decodeJSON([AIProviderProfile].self, key: Keys.aiProviderProfiles, defaults: defaults) ?? []
+        // 临时诊断（provider 列表消失问题）：确认启动时 decode 到的 profile 数量。
         // 历史脏数据（重复 id / 超大目录）会在设置页勾选模型时卡死主线程；启动时只做去重+截断。
         let sanitizedProfiles = profiles.isEmpty
             ? [defaultProfile]

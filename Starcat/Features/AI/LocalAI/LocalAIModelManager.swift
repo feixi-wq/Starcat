@@ -526,7 +526,10 @@ final class LocalAIModelManager {
         isSyncingProfile = true
         defer { isSyncingProfile = false }
 
-        guard LocalAIHardwareSupport.isLocalAIAvailable else { return }
+        guard LocalAIHardwareSupport.isLocalAIAvailable else {
+            AppLog.ai.info("syncBuiltInProfile: skip, hardware unsupported")
+            return
+        }
 
         let settings = AppSettings.shared
         var profiles = settings.aiProviderProfiles
