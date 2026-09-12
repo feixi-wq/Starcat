@@ -39,6 +39,9 @@ struct LocalAIModelsSection: View {
     /// 12pt regular——`checkmark.circle.fill` 是实心填充、视觉重量大，必须比线性图标
     /// 小一档才与下拉箭头等周边图标协调（dong4j 2026-09-12 反馈「做得太大」）；
     /// 命中区保持 28×28 不影响点击。
+    /// 模型下拉固定宽度：选中项变化不改变组件尺寸（dong4j 2026-09-12）。
+    private static let modelDropdownWidth: CGFloat = 220
+
     private static let rowIconFont = Font.system(size: 12, weight: .regular)
     private static let rowIconFrameSize: CGFloat = 28
 
@@ -134,14 +137,10 @@ struct LocalAIModelsSection: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 20)
 
-                Picker(selection: selectionBinding(for: type)) {
-                    ForEach(LocalAIModelCatalog.entries(of: type)) { candidate in
-                        Text(pickerTitle(candidate)).tag(Optional(candidate.id))
-                    }
-                } label: {
-                    Text(typeLabel(type))
-                }
-                .pickerStyle(.menu)
+                Text(typeLabel(type))
+                    .foregroundStyle(.primary)
+
+                modelDropdown(type)
 
                 Spacer(minLength: 12)
 
@@ -190,9 +189,43 @@ struct LocalAIModelsSection: View {
                      ByteCountFormatter.string(fromByteCount: Int64(entry.memoryRecommendation), countStyle: .file)))
     }
 
-    private func pickerTitle(_ entry: LocalAIModelCatalogEntry) -> String {
-        // 安装状态已由行尾的「已安装」徽标表达，下拉里不再重复（dong4j 2026-09-12 反馈）。
-        entry.displayName
+    /// 固定宽度自绘下拉（dong4j 2026-09-12：系统 Picker 随选中项文字长度伸缩，
+    /// 切换模型时整行组件乱跳；主窗口 toolbar 打开链接菜单即固定 label 思路）。
+    /// label 固定 220pt，选中名超长走中间省略；菜单项由系统渲染，当前项带 ✓。
+    private func modelDropdown(_ type: LocalAIModelType) -> some View {
+        let selected = selectedEntry(for: type)
+        return Menu {
+            ForEach(LocalAIModelCatalog.entries(of: type)) { candidate in
+                Button {
+                    selectedIDs[type] = candidate.id
+                } label: {
+                    if candidate.id == selected.id {
+                        Label(candidate.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(candidate.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selected.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: Self.modelDropdownWidth, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel(Text(typeLabel(type)))
     }
 
     /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
