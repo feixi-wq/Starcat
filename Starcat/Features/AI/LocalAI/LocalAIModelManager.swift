@@ -24,10 +24,15 @@ import Foundation
 import Observation
 
 /// 设置页观察的单模型下载状态。
+///
+/// `downloading` 携带的是**整个模型**（多文件加权）的进度与字节计数，而不是当前
+/// 文件的进度：小配置文件秒满、随后大文件归零的跳变由聚合消除。速度为 EMA 平滑值，
+/// 首个采样窗口内为 nil。
 enum LocalAIInstallState: Equatable, Sendable {
     case idle
     case preparing
-    case downloading(progress: Double)
+    case downloading(
+        progress: Double, completedBytes: Int64, totalBytes: Int64, speedBytesPerSecond: Double?)
     case failed(message: String)
     case installed
 
@@ -53,6 +58,13 @@ final class LocalAIModelManager {
     private let downloader = LocalAIModelDownloader()
     /// catalog id -> 正在进行的下载 Task，供暂停/取消。
     private var runningInstalls: [String: Task<Void, Never>] = [:]
+    /// 速度采样：0.5s 窗口取瞬时速度，0.7/0.3 EMA 平滑，避免条文字跳变。
+    private struct SpeedSample {
+        var lastTime: TimeInterval
+        var lastBytes: Int64
+        var speed: Double?
+    }
+    private var speedSamples: [String: SpeedSample] = [:]
 
     private init() {
         refreshInstalledModels()
@@ -127,6 +139,7 @@ final class LocalAIModelManager {
         guard !installState(for: entry.id).isInstalled else { return }
 
         installStates[entry.id] = .preparing
+        speedSamples[entry.id] = nil
         // 强持有 self：manager 是进程级单例，安装期间不释放；weak 会让 Task 句柄变成 Void?。
         let task = Task {
             await self.runInstall(entry: entry)
@@ -138,6 +151,7 @@ final class LocalAIModelManager {
     func pause(entryID: String) {
         runningInstalls[entryID]?.cancel()
         runningInstalls[entryID] = nil
+        speedSamples[entryID] = nil
         if case .downloading = installStates[entryID] {
             installStates[entryID] = .idle
         } else if installStates[entryID] == .preparing {
@@ -187,20 +201,55 @@ final class LocalAIModelManager {
             let optionalFiles = Set(
                 entry.files.filter { !$0.isRequired }.map(\.name))
 
+            // 文件大小计划：HF tree API 取真实字节做加权；失败时按文件数均分预估体积，
+            // 保证进度语义仍然单调（只是权重不准）。
+            let fileSizes = await resolveFileSizes(for: entry, revision: revision)
+            let knownTotal = entry.files.compactMap { fileSizes[$0.name] }.reduce(0, +)
+            let fallbackFileSize: Int64 = knownTotal > 0
+                ? 0
+                : max(entry.estimatedDownloadSize / Int64(entry.files.count), 1)
+            let totalBytes = knownTotal > 0
+                ? knownTotal
+                : fallbackFileSize * Int64(entry.files.count)
+            var doneBytesBefore: Int64 = 0
+
             for file in entry.files {
                 if Task.isCancelled {
                     installStates[entry.id] = .idle
                     runningInstalls[entry.id] = nil
                     return
                 }
+                let fileSize = fileSizes[file.name] ?? fallbackFileSize
+                // 快照进 @Sendable 闭包：循环变量 doneBytesBefore 在闭包存活期内会被改写，
+                // 直接捕获 var 在严格并发下不合法。
+                let doneBeforeSnapshot = doneBytesBefore
                 do {
                     let record = try await downloadOne(
                         entry: entry, revision: revision, file: file.name,
-                        directory: directory)
+                        directory: directory,
+                        onFileProgress: { [weak self] fileFraction in
+                            // 整体进度 = 已完成文件字节 + 当前文件加权字节；
+                            // 状态机与速度采样都在 MainActor 上，统一 hop 过去。
+                            Task { @MainActor [weak self] in
+                                guard let self else { return }
+                                let completed = doneBeforeSnapshot + Int64(Double(fileSize) * fileFraction)
+                                let speed = self.updateSpeedSampler(
+                                    entryID: entry.id, completedBytes: completed)
+                                self.installStates[entry.id] = .downloading(
+                                    progress: totalBytes > 0
+                                        ? min(1, Double(completed) / Double(totalBytes))
+                                        : 0,
+                                    completedBytes: completed,
+                                    totalBytes: totalBytes,
+                                    speedBytesPerSecond: speed)
+                            }
+                        })
                     records.append(record)
+                    doneBytesBefore += fileSize
                 } catch let error as LocalAIDownloadError {
                     if error == .cancelled {
                         installStates[entry.id] = .idle
+                        speedSamples[entry.id] = nil
                         runningInstalls[entry.id] = nil
                         return
                     }
@@ -211,6 +260,7 @@ final class LocalAIModelManager {
                     throw error
                 }
             }
+            speedSamples[entry.id] = nil
 
             let manifest = LocalAIInstalledModel(
                 id: entry.id,
@@ -238,7 +288,8 @@ final class LocalAIModelManager {
         entry: LocalAIModelCatalogEntry,
         revision: String,
         file: String,
-        directory: URL
+        directory: URL,
+        onFileProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> LocalAIFileRecord {
         let remoteURL: URL
         switch entry.source.kind {
@@ -257,10 +308,8 @@ final class LocalAIModelManager {
             fileName: file,
             into: directory,
             expectedTotalBytes: entry.estimatedDownloadSize,
-            onProgress: { [weak self] progress in
-                Task { @MainActor in
-                    self?.installStates[entry.id] = .downloading(progress: progress)
-                }
+            onProgress: { progress in
+                onFileProgress(progress)
             })
         return LocalAIFileRecord(
             name: result.name, sha256: result.sha256, sizeBytes: result.sizeBytes)
@@ -284,6 +333,61 @@ final class LocalAIModelManager {
             return try JSONDecoder().decode(HFModelInfo.self, from: data).sha
         case .modelScope:
             throw LocalAIDownloadError.invalidURL(source.repo)
+        }
+    }
+
+    /// EMA 速度采样。0.5s 内的重复回调沿用上次速度，避免文字频繁跳变。
+    private func updateSpeedSampler(entryID: String, completedBytes: Int64) -> Double? {
+        let now = Date().timeIntervalSinceReferenceDate
+        if var sample = speedSamples[entryID] {
+            let dt = now - sample.lastTime
+            guard dt >= 0.5 else { return sample.speed }
+            let instantaneous = Double(completedBytes - sample.lastBytes) / dt
+            sample.speed = sample.speed == nil
+                ? instantaneous
+                : sample.speed! * 0.7 + instantaneous * 0.3
+            sample.lastTime = now
+            sample.lastBytes = completedBytes
+            speedSamples[entryID] = sample
+            return sample.speed
+        }
+        speedSamples[entryID] = SpeedSample(lastTime: now, lastBytes: completedBytes, speed: nil)
+        return nil
+    }
+
+    /// HF tree API：返回仓库文件的精确字节大小（LFS 文件取 `lfs.size`）。
+    /// 失败返回空字典，调用方回退到均分预估，不阻断下载。
+    private func resolveFileSizes(
+        for entry: LocalAIModelCatalogEntry, revision: String
+    ) async -> [String: Int64] {
+        guard entry.source.kind == .huggingFace,
+            let url = URL(string: "https://huggingface.co/api/models/\(entry.source.repo)/tree/\(revision)?recursive=true")
+        else { return [:] }
+        var request = URLRequest(url: url)
+        request.setValue(AppConstants.httpUserAgent, forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return [:]
+            }
+            struct TreeEntry: Decodable {
+                let path: String
+                let size: Int64?
+                let lfs: LFSInfo?
+                struct LFSInfo: Decodable { let size: Int64? }
+            }
+            let entries = try JSONDecoder().decode([TreeEntry].self, from: data)
+            let wanted = Set(entry.files.map(\.name))
+            var sizes: [String: Int64] = [:]
+            for item in entries where wanted.contains(item.path) {
+                sizes[item.path] = item.lfs?.size ?? item.size
+            }
+            return sizes
+        } catch {
+            AppLog.ai.debug(
+                "LocalAI file size lookup failed (fallback to estimate): \(error.localizedDescription, privacy: .public)")
+            return [:]
         }
     }
 

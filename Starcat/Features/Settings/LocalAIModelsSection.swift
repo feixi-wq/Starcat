@@ -25,12 +25,8 @@ struct LocalAIModelsSection: View {
     var body: some View {
         Section {
             ForEach(LocalAIModelCatalog.entries) { entry in
+                // 下载进度条与速度/百分比内嵌在模型行内（见 modelRow）。
                 modelRow(entry)
-                if case .downloading(let progress) = manager.installState(for: entry.id) {
-                    ProgressView(value: progress)
-                        .progressViewStyle(.linear)
-                        .padding(.vertical, 2)
-                }
             }
 
             HStack {
@@ -121,7 +117,7 @@ struct LocalAIModelsSection: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(entry.displayName)
                         .foregroundStyle(.primary)
@@ -137,6 +133,22 @@ struct LocalAIModelsSection: View {
                 Text(sizeCaption(for: entry))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                // 下载中的细进度条 + 速度 / 百分比 / 字节，内嵌在模型行内，
+                // 避免整宽独立行把四个模型隔得太开。
+                if case .downloading(let progress, let completedBytes, let totalBytes, let speed) = state {
+                    thinProgressBar(progress)
+                    Text(progressCaption(
+                        progress: progress,
+                        completedBytes: completedBytes,
+                        totalBytes: totalBytes,
+                        speedBytesPerSecond: speed))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
 
             Spacer(minLength: 12)
@@ -147,6 +159,47 @@ struct LocalAIModelsSection: View {
         .help(String(format: String.l10n("settings.localai.model.memoryHelpFormat"),
                      ByteCountFormatter.string(fromByteCount: entry.estimatedDownloadSize, countStyle: .file),
                      ByteCountFormatter.string(fromByteCount: Int64(entry.memoryRecommendation), countStyle: .file)))
+    }
+
+    /// 4pt 细进度条：macOS 默认 `.linear` 样式过粗；自定义 Capsule 保证粗细一致，
+    /// 宽度动画用 linear 短过渡（进度回调约 0.5s 一次，视觉连续）。
+    private func thinProgressBar(_ progress: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.quaternary)
+                Capsule()
+                    .fill(.tint)
+                    .frame(width: max(0, min(1, progress)) * geo.size.width)
+            }
+        }
+        .frame(height: 4)
+        .animation(.linear(duration: 0.25), value: progress)
+        .accessibilityLabel(Text("settings.localai.section.title"))
+        .accessibilityValue(Text("\(Int(progress * 100))%"))
+    }
+
+    /// 「128.4 MB / 664 MB · 19% · 45.2 MB/s」；首个采样窗口速度未出时省略速度段。
+    private func progressCaption(
+        progress: Double,
+        completedBytes: Int64,
+        totalBytes: Int64,
+        speedBytesPerSecond: Double?
+    ) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let downloaded = formatter.string(fromByteCount: completedBytes)
+        let total = formatter.string(fromByteCount: totalBytes)
+        let percent = String(format: "%d%%", Int((max(0, min(1, progress)) * 100).rounded()))
+        if let speed = speedBytesPerSecond, speed > 0 {
+            let speedText = formatter.string(fromByteCount: Int64(speed))
+            return String(
+                format: String.l10n("settings.localai.model.progressFormat"),
+                downloaded, total, percent, speedText)
+        }
+        return String(
+            format: String.l10n("settings.localai.model.progressNoSpeedFormat"),
+            downloaded, total, percent)
     }
 
     @ViewBuilder
