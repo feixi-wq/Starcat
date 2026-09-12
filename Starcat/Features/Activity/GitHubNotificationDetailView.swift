@@ -602,7 +602,8 @@ struct GitHubNotificationDetailView: View {
                 cacheRepo: nil,
                 sourceHtml: nil,
                 targetLanguage: settings.effectiveReadmeTranslationLanguage,
-                mode: settings.readmeTranslationMode
+                mode: settings.readmeTranslationMode,
+                engine: settings.readmeTranslationEngine
             )
             return
         }
@@ -613,7 +614,8 @@ struct GitHubNotificationDetailView: View {
             cacheRepo: GitHubNotificationTranslation.cacheRepo(threadId: payload.threadId),
             sourceHtml: document.sourceText,
             targetLanguage: settings.effectiveReadmeTranslationLanguage,
-            mode: settings.readmeTranslationMode
+            mode: settings.readmeTranslationMode,
+            engine: settings.readmeTranslationEngine
         )
     }
 
@@ -669,7 +671,8 @@ struct GitHubNotificationDetailView: View {
             sourceHtml: document.sourceText,
             sourceSegments: document.segments,
             targetLanguage: settings.effectiveReadmeTranslationLanguage,
-            mode: settings.readmeTranslationMode
+            mode: settings.readmeTranslationMode,
+            engine: settings.readmeTranslationEngine
         )
     }
 
@@ -1658,6 +1661,8 @@ private struct GitHubNotificationTranslationControls: View {
     let reduceMotion: Bool
 
     @State private var isHoveringWhileTranslating = false
+    /// 当前可展示的翻译引擎。与 README footer 同一规则：未配置 / 不可用的引擎直接不出现。
+    @State private var availableEngines: [ReadmeTranslationEngine] = []
 
     private var isShowingTranslation: Bool {
         if case .showingTranslation = viewModel.displayMode { return true }
@@ -1681,7 +1686,8 @@ private struct GitHubNotificationTranslationControls: View {
                         sourceHtml: document.sourceText,
                         sourceSegments: document.segments,
                         targetLanguage: settings.effectiveReadmeTranslationLanguage,
-                        mode: settings.readmeTranslationMode
+                        mode: settings.readmeTranslationMode,
+                        engine: settings.readmeTranslationEngine
                     )
                 }
             } label: {
@@ -1710,6 +1716,26 @@ private struct GitHubNotificationTranslationControls: View {
                 : "readme.translate.action"))
 
             Menu {
+                if !availableEngines.isEmpty {
+                    Picker(selection: Binding(
+                        get: { settings.readmeTranslationEngine },
+                        set: { settings.readmeTranslationEngine = $0 }
+                    )) {
+                        ForEach(availableEngines) { engine in
+                            Label(
+                                LocalizedStringKey(engine.displayNameKey),
+                                systemImage: engine.systemImage
+                            )
+                            .tag(engine)
+                        }
+                    } label: {
+                        Text("readme.translate.menu.engine")
+                    }
+                    .pickerStyle(.inline)
+
+                    Divider()
+                }
+
                 Picker(selection: Binding(
                     get: { settings.readmeTranslationMode },
                     set: { settings.readmeTranslationMode = $0 }
@@ -1750,7 +1776,8 @@ private struct GitHubNotificationTranslationControls: View {
                         sourceHtml: document.sourceText,
                         sourceSegments: document.segments,
                         targetLanguage: settings.effectiveReadmeTranslationLanguage,
-                        mode: settings.readmeTranslationMode
+                        mode: settings.readmeTranslationMode,
+                        engine: settings.readmeTranslationEngine
                     )
                 } label: {
                     Label("readme.translate.menu.regenerate", systemImage: "arrow.clockwise")
@@ -1772,6 +1799,28 @@ private struct GitHubNotificationTranslationControls: View {
             .focusEffectDisabled()
             .clickablePointer()
             .help("readme.translate.menu.tooltip")
+            .task(id: settings.effectiveReadmeTranslationLanguage) {
+                await refreshAvailableEngines()
+            }
+        }
+    }
+
+    /// 与 README footer 的 `refreshAvailableEngines` 同一规则：可用列表 + 默认值回落，
+    /// 目标语言变化时重探（系统翻译的可用性随目标语种变化）。
+    @MainActor
+    private func refreshAvailableEngines() async {
+        let available = await ReadmeTranslationEngineAvailability.availableEngines(
+            targetLanguage: settings.effectiveReadmeTranslationLanguage,
+            settings: settings,
+            keychain: KeychainManager.shared
+        )
+        availableEngines = available
+        let resolved = ReadmeTranslationEngineAvailability.resolvedDefault(
+            current: settings.readmeTranslationEngine,
+            available: available
+        )
+        if resolved != settings.readmeTranslationEngine, !available.isEmpty {
+            settings.readmeTranslationEngine = resolved
         }
     }
 
