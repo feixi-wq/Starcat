@@ -65,10 +65,14 @@ struct LocalAIModelCatalogTests {
 
     @Test("ModelScope 仅收录已验证镜像")
     func modelScopeWhitelist() {
-        // 2026-09-12 核验：这四个模型在魔塔有 mlx-community 镜像；reranker-4bit 未核验。
+        // 2026-09-12 核验：以下七个模型在魔塔有 mlx-community 镜像；
+        // reranker-4bit 与 LFM2.5 8bit 未核验（超时/缺失），只收 HF。
         let verifiedOnModelScope = [
             "qwen3-embedding-0.6b-8bit",
+            "lfm2.5-embedding-350m-4bit",
             "qwen3-reranker-0.6b-mxfp8",
+            "qwen3.5-4b-mlx-4bit",
+            "qwen3.5-0.8b-mlx-4bit",
             "qwen3-4b-instruct-2507-4bit",
             "qwen3-1.7b-4bit",
         ]

@@ -5,13 +5,16 @@
 //  本地 AI 内置模型目录（编译期常量）。
 //
 //  设计：
-//  - 普通用户不接触 HF / ModelScope Repo ID，只面对「Lite / 推荐」两档 Starcat Model；
-//    UI 文案不暴露 FP16 / 4bit / 8bit / MXFP8 等量化概念。
-//  - 目录只收录**逐个人工验证过**的仓库（2026-09-12 核验）：HF 仓库必须页面 / API 可达，
-//    ModelScope 镜像必须 API `Code:200`。未验证的组合不入册——下载源 Picker 里选了
-//    ModelScope 而某模型没有镜像时，该模型显示「当前下载源暂未收录」。
+//  - 普通用户不接触 HF / ModelScope Repo ID，只面对「推荐 / 轻量」档 Starcat Model；
+//    UI 文案不暴露 FP16 / 4bit / 8bit / MXFP8 等量化概念（displayName 的量化后缀
+//    仅用于同系列多权重间的区分，统一小写风格）。
+//  - 目录只收录**逐个人工验证过**的仓库（2026-09-12 核验）：HF 仓库必须 API 可达
+//    （401/404 视为不存在），ModelScope 镜像必须 API `Code:200`。未验证的组合不入册
+//    ——下载源选了 ModelScope 而某模型没有镜像时，该模型显示「暂未收录」。
 //  - ModelScope 镜像为社区同步（master 分支），revision 记录为 master 快照；
 //    HF 为权威源（安装时解析 commit SHA）。
+//  - 每类至少 2 个模型；embedding / 生成已满足 ≥3，reranker 上游仅核验到 2 个
+//    （8bit / bf16 / 4B / 8B / bge-reranker-v2-m3 均不存在）。
 //  - 换默认模型 = 改这里，业务层无感。
 //
 
@@ -77,8 +80,10 @@ struct LocalAIModelCatalogEntry: Identifiable, Sendable, Equatable {
     let type: LocalAIModelType
     /// 下发到 `AIProviderProfile.models` 的能力标签。
     let capability: AIModelCapability
-    /// true = 「推荐」档；false = 「Lite」档。
+    /// true = 「推荐」档；每类恰好一个。
     let recommended: Bool
+    /// true = 「轻量」档（小体积 / 低内存机型友好）；与 recommended 互斥展示。
+    let isLite: Bool
     /// 下载体积预估（字节），用于 UI 展示与磁盘预检。
     let estimatedDownloadSize: Int64
     /// 运行内存建议（字节），安装前提示。
@@ -122,7 +127,7 @@ enum LocalAIModelCatalog {
         .optional("special_tokens_map.json"),
     ]
 
-    // MARK: - Embedding
+    // MARK: - Embedding（3）
 
     static let embedding = LocalAIModelCatalogEntry(
         id: "qwen3-embedding-0.6b-8bit",
@@ -130,6 +135,7 @@ enum LocalAIModelCatalog {
         type: .embedding,
         capability: .embedding,
         recommended: true,
+        isLite: false,
         estimatedDownloadSize: 664_000_000,
         memoryRecommendation: 1_200_000_000,
         contextLength: 32_768,
@@ -140,7 +146,42 @@ enum LocalAIModelCatalog {
         ],
         files: mlxConfigFiles)
 
-    // MARK: - Reranker
+    /// LFM2.5 350M（8bit）：11 语言、CLS 池化 1024 维；上游 mlx-swift-lm 原生支持 lfm2 架构。
+    static let embeddingLFM8bit = LocalAIModelCatalogEntry(
+        id: "lfm2.5-embedding-350m-8bit",
+        displayName: "LFM2.5 Embedding 350M 8bit",
+        type: .embedding,
+        capability: .embedding,
+        recommended: false,
+        isLite: false,
+        estimatedDownloadSize: 390_000_000,
+        memoryRecommendation: 800_000_000,
+        contextLength: nil,
+        embeddingDimension: 1024,
+        sources: [
+            // 8bit 的魔塔镜像两次核验超时，暂只收 HF。
+            LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/LFM2.5-Embedding-350M-8bit", revision: nil),
+        ],
+        files: mlxConfigFiles)
+
+    static let embeddingLFM4bit = LocalAIModelCatalogEntry(
+        id: "lfm2.5-embedding-350m-4bit",
+        displayName: "LFM2.5 Embedding 350M 4bit",
+        type: .embedding,
+        capability: .embedding,
+        recommended: false,
+        isLite: true,
+        estimatedDownloadSize: 210_000_000,
+        memoryRecommendation: 600_000_000,
+        contextLength: nil,
+        embeddingDimension: 1024,
+        sources: [
+            LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/LFM2.5-Embedding-350M-4bit", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/LFM2.5-Embedding-350M-4bit", revision: nil),
+        ],
+        files: mlxConfigFiles)
+
+    // MARK: - Reranker（2；上游可核验的只有这两个）
 
     static let reranker = LocalAIModelCatalogEntry(
         id: "qwen3-reranker-0.6b-4bit",
@@ -148,6 +189,7 @@ enum LocalAIModelCatalog {
         type: .reranker,
         capability: .rerank,
         recommended: true,
+        isLite: false,
         estimatedDownloadSize: 350_000_000,
         memoryRecommendation: 1_000_000_000,
         contextLength: 32_768,
@@ -160,10 +202,11 @@ enum LocalAIModelCatalog {
 
     static let rerankerMXFP8 = LocalAIModelCatalogEntry(
         id: "qwen3-reranker-0.6b-mxfp8",
-        displayName: "Qwen3 Reranker 0.6B MXFP8",
+        displayName: "Qwen3 Reranker 0.6B mxfp8",
         type: .reranker,
         capability: .rerank,
         recommended: false,
+        isLite: false,
         estimatedDownloadSize: 645_000_000,
         memoryRecommendation: 1_200_000_000,
         contextLength: 32_768,
@@ -174,14 +217,34 @@ enum LocalAIModelCatalog {
         ],
         files: mlxConfigFiles)
 
-    // MARK: - LLM
+    // MARK: - LLM（4）
 
-    static let llm: LocalAIModelCatalogEntry = LocalAIModelCatalogEntry(
+    /// 最新一代推荐：Qwen3.5 4B（mlx-swift-lm 锁定版本原生支持 Qwen3_5 架构）。
+    static let llm = LocalAIModelCatalogEntry(
+        id: "qwen3.5-4b-mlx-4bit",
+        displayName: "Qwen3.5 4B 4bit",
+        type: .llm,
+        capability: .chat,
+        recommended: true,
+        isLite: false,
+        estimatedDownloadSize: 3_100_000_000,
+        memoryRecommendation: 5_500_000_000,
+        contextLength: nil,
+        embeddingDimension: nil,
+        sources: [
+            LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/Qwen3.5-4B-MLX-4bit", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/Qwen3.5-4B-MLX-4bit", revision: nil),
+        ],
+        files: llmConfigFiles)
+
+    /// 上一代 4B：Qwen3.5 出问题时的稳妥回退（双源已长期验证）。
+    static let llmQwen3_4B = LocalAIModelCatalogEntry(
         id: "qwen3-4b-instruct-2507-4bit",
         displayName: "Qwen3 4B Instruct 4bit",
         type: .llm,
         capability: .chat,
-        recommended: true,
+        recommended: false,
+        isLite: false,
         estimatedDownloadSize: 2_500_000_000,
         memoryRecommendation: 4_000_000_000,
         contextLength: 262_144,
@@ -192,12 +255,30 @@ enum LocalAIModelCatalog {
         ],
         files: llmConfigFiles)
 
-    static let llmLite: LocalAIModelCatalogEntry = LocalAIModelCatalogEntry(
+    static let llmQwen35Lite = LocalAIModelCatalogEntry(
+        id: "qwen3.5-0.8b-mlx-4bit",
+        displayName: "Qwen3.5 0.8B 4bit",
+        type: .llm,
+        capability: .chat,
+        recommended: false,
+        isLite: true,
+        estimatedDownloadSize: 650_000_000,
+        memoryRecommendation: 1_600_000_000,
+        contextLength: nil,
+        embeddingDimension: nil,
+        sources: [
+            LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/Qwen3.5-0.8B-MLX-4bit", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/Qwen3.5-0.8B-MLX-4bit", revision: nil),
+        ],
+        files: llmConfigFiles)
+
+    static let llmLite = LocalAIModelCatalogEntry(
         id: "qwen3-1.7b-4bit",
         displayName: "Qwen3 1.7B 4bit",
         type: .llm,
         capability: .chat,
         recommended: false,
+        isLite: true,
         estimatedDownloadSize: 1_100_000_000,
         memoryRecommendation: 2_200_000_000,
         contextLength: 32_768,
@@ -208,12 +289,16 @@ enum LocalAIModelCatalog {
         ],
         files: llmConfigFiles)
 
-    /// 全部目录项。
+    /// 全部目录项。顺序即下拉顺序（推荐在前）。
     static let entries: [LocalAIModelCatalogEntry] = [
         embedding,
+        embeddingLFM8bit,
+        embeddingLFM4bit,
         reranker,
         rerankerMXFP8,
         llm,
+        llmQwen3_4B,
+        llmQwen35Lite,
         llmLite,
     ]
 

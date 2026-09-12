@@ -149,14 +149,16 @@ struct LocalAIModelsSection: View {
             }
 
             HStack(spacing: 6) {
-                Text(entry.recommended
-                    ? "settings.localai.model.badge.recommended"
-                    : "settings.localai.model.badge.lite")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.quaternary, in: Capsule())
+                if entry.recommended || entry.isLite {
+                    Text(entry.recommended
+                        ? "settings.localai.model.badge.recommended"
+                        : "settings.localai.model.badge.lite")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                }
 
                 Text(sizeCaption(for: entry))
                     .font(.caption)

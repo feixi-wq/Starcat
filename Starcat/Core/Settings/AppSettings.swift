@@ -996,13 +996,11 @@ final class AppSettings {
     ///
     /// 只影响**新下载**：已安装模型不受切源影响（manifest 记录各自来源）。
     /// catalog 中未收录某源镜像的模型，在该源下按钮置灰并提示「暂未收录」。
-    var localAIDownloadSource: LocalAIModelSource.Kind {
-        get {
-            LocalAIModelSource.Kind(
-                rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
-            ) ?? .huggingFace
-        }
-        set { persist(key: Keys.localAIDownloadSource, value: newValue.rawValue) }
+    ///
+    /// 必须是存储属性：之前是 UserDefaults 计算属性，@Observable 无法追踪，
+    /// 切换下载源后设置页不刷新（dong4j 2026-09-12 反馈）。
+    var localAIDownloadSource: LocalAIModelSource.Kind = .huggingFace {
+        didSet { persist(key: Keys.localAIDownloadSource, value: localAIDownloadSource.rawValue) }
     }
 
     /// 多服务商 AI 配置。
@@ -1872,6 +1870,9 @@ final class AppSettings {
             ? [defaultProfile]
             : profiles.map { $0.sanitizedForStorage() }
         self.aiProviderProfiles = sanitizedProfiles
+        self.localAIDownloadSource = LocalAIModelSource.Kind(
+            rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
+        ) ?? .huggingFace
         // init 里不能调实例方法（其余 stored 属性尚未齐），且 didSet 也不会触发；
         // 若消毒改写了内容，直接写 UserDefaults，避免每次冷启动重复处理同一份脏 JSON。
         if !profiles.isEmpty, sanitizedProfiles != profiles {
