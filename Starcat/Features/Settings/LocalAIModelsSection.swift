@@ -147,6 +147,8 @@ struct LocalAIModelsSection: View {
 
                 Text(typeLabel(type))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Spacer(minLength: 12)
 
@@ -210,7 +212,7 @@ struct LocalAIModelsSection: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .frame(width: Self.modelDropdownWidth, alignment: .leading)
+            .frame(width: Self.modelDropdownWidth, alignment: .trailing)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
