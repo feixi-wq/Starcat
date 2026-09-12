@@ -42,6 +42,9 @@ struct LocalAIModelsSection: View {
     /// 模型下拉固定宽度：选中项变化不改变组件尺寸（dong4j 2026-09-12）。
     private static let modelDropdownWidth: CGFloat = 220
 
+    /// 行尾状态区固定宽度：容纳两个 28pt 图标（对勾 + 删除）。
+    private static let statusAreaWidth: CGFloat = 62
+
     private static let rowIconFont = Font.system(size: 12, weight: .regular)
     private static let rowIconFrameSize: CGFloat = 28
 
@@ -140,11 +143,14 @@ struct LocalAIModelsSection: View {
                 Text(typeLabel(type))
                     .foregroundStyle(.primary)
 
-                modelDropdown(type)
-
                 Spacer(minLength: 12)
 
+                modelDropdown(type)
+
+                // 状态区固定宽度：下载(1 图标)与已安装(2 图标)状态下下拉右缘保持齐平，
+                // 内容不足时靠右补位（dong4j 2026-09-12：下拉全部右对齐）。
                 statusView(for: entry, state: state)
+                    .frame(width: Self.statusAreaWidth, alignment: .trailing)
             }
 
             Text(sizeCaption(for: entry))
@@ -367,10 +373,15 @@ struct LocalAIModelsSection: View {
         Button {
             manager.pause(entryID: entry.id)
         } label: {
-            Label("settings.localai.model.action.pause", systemImage: "pause.circle")
+            Image(systemName: "pause.circle")
+                .font(Self.rowIconFont)
+                .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .help("settings.localai.model.action.pause")
+        .accessibilityLabel(Text("settings.localai.model.action.pause"))
     }
 
     private func deleteButton(_ entry: LocalAIModelCatalogEntry) -> some View {
