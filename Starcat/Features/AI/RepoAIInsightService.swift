@@ -889,7 +889,7 @@ final class RepoAIInsightService {
         onReasoningCompleted: (@MainActor () -> Void)? = nil,
         onDelta: (@MainActor (String) -> Void)? = nil
     ) async throws -> String {
-        try entitlementGate?.requirePro(.aiChat)
+        try entitlementGate?.requirePro(.aiChat, usesLocalOnly: settings.isChatTaskResolvedToLocalAI)
         let source = try await makeSource(for: repo)
 
         // Y9：复用同一份 source 做缓存比对（避免 makeSource 被调两次造成重复网络 IO）。
@@ -949,10 +949,10 @@ final class RepoAIInsightService {
     private func enforceGenerationEntitlement(includeSummary: Bool, includeTags: Bool) throws {
         guard let entitlementGate else { return }
         if includeSummary {
-            try entitlementGate.requirePro(.aiSummary)
+            try entitlementGate.requirePro(.aiSummary, usesLocalOnly: settings.isSummaryTaskResolvedToLocalAI)
         }
         if includeTags {
-            try entitlementGate.requirePro(.aiTags)
+            try entitlementGate.requirePro(.aiTags, usesLocalOnly: settings.isTagsTaskResolvedToLocalAI)
         }
     }
 
@@ -1183,7 +1183,7 @@ final class RepoAIInsightService {
 
     /// GitHub 通知评论：走 Chat 任务，强制关 thinking，不写仓库摘要缓存。
     func ensureGitHubCommentReady() throws {
-        try entitlementGate?.requirePro(.aiChat)
+        try entitlementGate?.requirePro(.aiChat, usesLocalOnly: settings.isChatTaskResolvedToLocalAI)
         _ = try makeClient(
             task: settings.aiChatTask,
             fallbackModel: settings.aiChatModel,
@@ -1364,7 +1364,7 @@ final class RepoAIInsightService {
         }
         let model = task.resolvedModelName.nilIfBlank ?? fallbackModel
 
-        return (try OpenAIClient(configuration: AIClientConfiguration(
+        return (try AIClientFactory.make(configuration: AIClientConfiguration(
             providerID: profile.id,
             provider: profile.provider,
             apiKey: apiKey,

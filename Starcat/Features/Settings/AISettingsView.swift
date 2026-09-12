@@ -147,7 +147,10 @@ struct AISettingsTab: View {
     var body: some View {
         // AI 服务是 Direct / StoreKit 共享的 Pro 能力，必须读取聚合后的业务门控；
         // 直接读取 SubscriptionManager 会把 Direct License 用户误判为未开通。
-        if dependencies.entitlementGate.isProUser {
+        // 本地 AI 免费（dong4j 2026-09-12）：Apple Silicon 上免费用户也必须能进入
+        // 本页配置并下载本地模型；远程 provider 的消费仍由 EntitlementGate 在调用点拦截，
+        // 设置页只是配置面。Intel Mac 维持整页锁定。
+        if dependencies.entitlementGate.isProUser || LocalAIHardwareSupport.isLocalAIAvailable {
             aiConfigurationForm
         } else {
             lockedAISettings
@@ -163,6 +166,11 @@ struct AISettingsTab: View {
         // 的反直觉行为。改成每行模型一个齿轮按钮 + popover，参数与"模型"绑定。
         Form {
             providerSection
+            // 本地 AI 模型管理区：仅在服务商选中「Starcat Local AI」时显示
+            // （dong4j 2026-09-12 反馈：选其它服务商时不应一直挂着）；Apple Silicon 才展示。
+            if LocalAIHardwareSupport.isLocalAIAvailable, activeProfile?.provider == .localAI {
+                LocalAIModelsSection(settings: dependencies.settings)
+            }
             enabledModelsSection
             taskModelsSection
                 .id(Self.taskModelsSettingsAnchor)
@@ -376,7 +384,7 @@ struct AISettingsTab: View {
         // 被删的恰好是当前 selected 时，回退到剩余 verified 中的第一个；
         // 否则保持当前 selection 不动（删的是非当前项时，用户视线不应被打断）。
         if selectedProfileID == id {
-            setSelectedProfileID(verifiedProfiles.first?.id)
+            setSelectedProfileID(pickerProfiles.first?.id)
         }
         repairTasksAfterProfileChange()
         pendingDeleteProfileID = nil
@@ -395,7 +403,7 @@ struct AISettingsTab: View {
                 // DeepSeek 翻译 + Ollama embedding"）场景下一眼分辨。
                 // SwiftUI Picker 的 menu style 会把 Label 内的 Image 一起渲染到下拉
                 // 菜单和已选 caption 区，无需为下拉 / 当前选中分别画。
-                if verifiedProfiles.isEmpty {
+                if pickerProfiles.isEmpty {
                     // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
                     // zero state 文案补充行动指引——之前只说「暂无已验证服务商」是
                     // 状态描述，用户不知道下一步要做什么。改成「...点右侧 + 新增」
@@ -405,7 +413,7 @@ struct AISettingsTab: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Picker("settings.ai.provider.pickerLabel", selection: selectedProfileBinding) {
-                        ForEach(verifiedProfiles) { profile in
+                        ForEach(pickerProfiles) { profile in
                             Label {
                                 Text(profile.displayName)
                             } icon: {
@@ -451,7 +459,8 @@ struct AISettingsTab: View {
                 .frame(width: 28, height: 28)
                 .help("settings.ai.provider.deleteHelp")
                 .accessibilityLabel(Text("settings.ai.provider.deleteHelp"))
-                .disabled(selectedProfile == nil)
+                // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
+                .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
             }
 
             // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
@@ -484,7 +493,8 @@ struct AISettingsTab: View {
             // 影响输入，干扰极小。
             if draftProfile != nil {
                 Picker("Provider", selection: supportedProviderBinding) {
-                    ForEach(AIServiceProvider.allCases) { provider in
+                    // 按硬件能力过滤：Intel Mac 不提供本地 AI 选项。
+                    ForEach(AIServiceProvider.userSelectableCases) { provider in
                         Label {
                             Text(provider.displayName)
                         } icon: {
@@ -498,32 +508,41 @@ struct AISettingsTab: View {
             }
 
             if let profile = activeProfile {
-                providerInputRows(profile)
-
-                HStack {
-                    Text(profile.lastTestStatus.displayText)
+                if profile.provider == .localAI {
+                    // 内置本地 AI：无 Key / 无 Base URL 可填，也不走「测试并获取模型」。
+                    // 下载模型在下方「本地 AI 模型」区；此处只给一句引导。
+                    Text("settings.localai.provider.hint")
                         .font(.caption)
-                        .foregroundStyle(statusTint(profile.lastTestStatus))
-                        .lineLimit(2)
-                        .truncationMode(.tail)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    providerInputRows(profile)
 
-                    Spacer(minLength: 12)
+                    HStack {
+                        Text(profile.lastTestStatus.displayText)
+                            .font(.caption)
+                            .foregroundStyle(statusTint(profile.lastTestStatus))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
 
-                    Button {
-                        Task { await testAndFetchModels(profile) }
-                    } label: {
-                        if isTestingProfileID == profile.id {
-                            HStack(spacing: 4) {
-                                ProgressView().controlSize(.small)
-                                Text("settings.ai.provider.testButton")
+                        Spacer(minLength: 12)
+
+                        Button {
+                            Task { await testAndFetchModels(profile) }
+                        } label: {
+                            if isTestingProfileID == profile.id {
+                                HStack(spacing: 4) {
+                                    ProgressView().controlSize(.small)
+                                    Text("settings.ai.provider.testButton")
+                                }
+                            } else {
+                                Label("settings.ai.provider.testButton", systemImage: "network")
                             }
-                        } else {
-                            Label("settings.ai.provider.testButton", systemImage: "network")
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .disabled(isTestingProfileID != nil || !canTest(profile))
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .disabled(isTestingProfileID != nil || !canTest(profile))
                 }
 
                 if let keyError {
@@ -2560,8 +2579,11 @@ struct AISettingsTab: View {
     }
 
     private func ensureSelection() {
-        if selectedProfileID == nil || verifiedProfiles.allSatisfy({ $0.id != selectedProfileID }) {
-            setSelectedProfileID(verifiedProfiles.first?.id)
+        if selectedProfileID == nil || pickerProfiles.allSatisfy({ $0.id != selectedProfileID }) {
+            // 从未选过 / 指向已删 profile 时优先回落到本地 AI（首启动默认服务商）。
+            let fallback = pickerProfiles.first(where: { $0.provider == .localAI })?.id
+                ?? pickerProfiles.first?.id
+            setSelectedProfileID(fallback)
         }
     }
 
@@ -2606,7 +2628,7 @@ struct AISettingsTab: View {
 
         let testingKey = apiKey(for: profile)
         do {
-            let models = try await OpenAIClient(configuration: AIClientConfiguration(
+            let models = try await AIClientFactory.make(configuration: AIClientConfiguration(
                 providerID: profile.id,
                 provider: profile.provider,
                 apiKey: testingKey,
@@ -2974,6 +2996,12 @@ struct AISettingsTab: View {
         settings.aiProviderProfiles.filter(\.isVerifiedConfiguration)
     }
 
+    /// 服务商 Picker 的可选项：已验证 profile + 内置本地 AI（未下载模型时也显示，
+    /// 选中后由「本地 AI 模型」区引导下载）。首启动默认选中 Local AI（dong4j 2026-09-12）。
+    private var pickerProfiles: [AIProviderProfile] {
+        settings.aiProviderProfiles.filter { $0.isVerifiedConfiguration || $0.provider == .localAI }
+    }
+
     /// 任务下拉只显示具备对应协议端点的已验证 Provider。
     ///
     /// 模型 capability 来自名称推断或用户标注，不能替代 Provider 端点能力；尤其
@@ -2989,8 +3017,8 @@ struct AISettingsTab: View {
     }
 
     private var selectedProfile: AIProviderProfile? {
-        guard let selectedProfileID else { return verifiedProfiles.first }
-        return verifiedProfiles.first { $0.id == selectedProfileID }
+        guard let selectedProfileID else { return pickerProfiles.first }
+        return pickerProfiles.first { $0.id == selectedProfileID }
     }
 
     private func profile(_ id: String) -> AIProviderProfile? {

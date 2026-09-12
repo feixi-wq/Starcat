@@ -297,6 +297,15 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     // 继续追加在尾部，避免改动已有 rawValue 的持久化语义。
     case orcaRouter
 
+    // MARK: - 2026-09-12 新增（内置本地 AI，非 HTTP Provider）
+    //
+    // `localAI` 是第一个不走 OpenAI Chat Completions 协议的 case：进程内 MLX 推理，
+    // 无 Key、无 Base URL，模型经设置页下载校验后由内置 profile 提供（见
+    // `LocalAIModelManager.syncBuiltInProfile`）。任务选择 / capability 校验 /
+    // 门禁逻辑全部复用，仅客户端工厂、免费门控与模型管理 UI 按 provider 适配。
+    // 设计文档：docs/2-产品/需求讨论/starcat-local-ai-framework-and-model-plan.md。
+    case localAI
+
     var id: String { rawValue }
 
     /// 设置页 picker 显示的服务商名（i18n key 复用 LocalizedStringKey 自动解析）。
@@ -326,6 +335,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "ai.provider.zhipu"
         case .zai:              return "Z.AI"
         case .orcaRouter:       return "OrcaRouter"
+        case .localAI:          return "Starcat Local AI"
         }
     }
 
@@ -360,6 +370,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "chatglm"
         case .zai:              return "zai"
         case .orcaRouter:       return "orcarouter"
+        // 自绘 CPU+火花矢量（本地推理语义），非上游品牌资源。
+        case .localAI:          return "localai"
         }
     }
 
@@ -371,6 +383,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .orcaRouter:
             return "point.3.connected.trianglepath.dotted"
+        case .localAI:
+            return "cpu"
         default:
             return "sparkles"
         }
@@ -389,7 +403,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     /// 判定来源：`rg -o 'fill="[^"]*"' Resources/Assets.xcassets/AIProviders/*/*.svg`。
     var iconIsMonochromeWhite: Bool {
         switch self {
-        case .openAICompatible, .ollama, .lmStudio, .grok, .moonshot:
+        case .openAICompatible, .ollama, .lmStudio, .grok, .moonshot, .localAI:
             return true
         default:
             return false
@@ -423,6 +437,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "https://open.bigmodel.cn/api/paas/v4"
         case .zai:              return "https://api.z.ai/api/coding/paas/v4"
         case .orcaRouter:       return "https://api.orcarouter.ai/v1"
+        case .localAI:          return ""
         }
     }
 
@@ -453,6 +468,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zhipu:            return "glm-4.6"
         case .zai:              return "glm-4.6"
         case .orcaRouter:       return "openai/gpt-4o-mini"
+        // 占位提示：真实可用列表来自内置 profile 的已安装模型（LocalAIModelManager）。
+        case .localAI:          return "Qwen3 4B Instruct 4bit"
         }
     }
 
@@ -505,6 +522,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
             // OrcaRouter 2026-09-05 官方 OpenAPI 未定义 `/v1/embeddings`。
             // 空值只用于构造“模型列表测试”客户端；Embedding 任务由下方能力门禁拦截。
             return ""
+        case .localAI:
+            return "Qwen3 Embedding 0.6B 8bit"
         }
     }
 
@@ -519,6 +538,15 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         default:
             return true
         }
+    }
+
+    /// 设置页「新增服务商」可选类型列表。
+    ///
+    /// `localAI` 是内置默认服务商（首启动即注入并默认选中，dong4j 2026-09-12），
+    /// 不是用户可新增的类型，一律不出现在新增列表；其余类型不做硬件过滤
+    /// （新增远端 provider 与本机架构无关）。
+    static var userSelectableCases: [AIServiceProvider] {
+        allCases.filter { $0 != .localAI }
     }
 }
 
@@ -962,6 +990,17 @@ final class AppSettings {
     /// 语义搜索向量化使用的 embedding 模型。
     var aiEmbeddingModel: String {
         didSet { persist(key: Keys.aiEmbeddingModel, value: aiEmbeddingModel) }
+    }
+
+    /// 本地 AI 模型下载源（Hugging Face / ModelScope）。
+    ///
+    /// 只影响**新下载**：已安装模型不受切源影响（manifest 记录各自来源）。
+    /// catalog 中未收录某源镜像的模型，在该源下按钮置灰并提示「暂未收录」。
+    ///
+    /// 必须是存储属性：之前是 UserDefaults 计算属性，@Observable 无法追踪，
+    /// 切换下载源后设置页不刷新（dong4j 2026-09-12 反馈）。
+    var localAIDownloadSource: LocalAIModelSource.Kind = .huggingFace {
+        didSet { persist(key: Keys.localAIDownloadSource, value: localAIDownloadSource.rawValue) }
     }
 
     /// 多服务商 AI 配置。
@@ -1826,11 +1865,15 @@ final class AppSettings {
             embeddingModel: resolvedAIEmbeddingModel
         )
         let profiles = Self.decodeJSON([AIProviderProfile].self, key: Keys.aiProviderProfiles, defaults: defaults) ?? []
+        // 临时诊断（provider 列表消失问题）：确认启动时 decode 到的 profile 数量。
         // 历史脏数据（重复 id / 超大目录）会在设置页勾选模型时卡死主线程；启动时只做去重+截断。
         let sanitizedProfiles = profiles.isEmpty
             ? [defaultProfile]
             : profiles.map { $0.sanitizedForStorage() }
         self.aiProviderProfiles = sanitizedProfiles
+        self.localAIDownloadSource = LocalAIModelSource.Kind(
+            rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
+        ) ?? .huggingFace
         // init 里不能调实例方法（其余 stored 属性尚未齐），且 didSet 也不会触发；
         // 若消毒改写了内容，直接写 UserDefaults，避免每次冷启动重复处理同一份脏 JSON。
         if !profiles.isEmpty, sanitizedProfiles != profiles {
@@ -1860,7 +1903,9 @@ final class AppSettings {
             key: Keys.aiSummaryTask,
             defaults: defaults
         ) ?? defaultSummaryTask
-        self.aiSummaryTask = Self.migrateLegacyDefaultSummaryPromptIfNeeded(
+        self.aiSummaryTask = Self.localAIDefaultTaskOverride(
+            task: .summary, key: Keys.aiSummaryTask, defaults: defaults
+        ) ?? Self.migrateLegacyDefaultSummaryPromptIfNeeded(
             persistedSummaryTask,
             defaults: defaults
         )
@@ -1869,7 +1914,9 @@ final class AppSettings {
             key: Keys.aiTagsTask,
             defaults: defaults
         ) ?? defaultTagsTask
-        self.aiTagsTask = Self.migrateLegacyDefaultTagsPromptIfNeeded(
+        self.aiTagsTask = Self.localAIDefaultTaskOverride(
+            task: .tags, key: Keys.aiTagsTask, defaults: defaults
+        ) ?? Self.migrateLegacyDefaultTagsPromptIfNeeded(
             persistedTagsTask,
             defaults: defaults
         )
@@ -1883,7 +1930,10 @@ final class AppSettings {
         )
         self.aiTagSuggestionMinCount = clampedTagCounts.minimum
         self.aiTagSuggestionMaxCount = clampedTagCounts.maximum
-        self.aiEmbeddingTask = Self.decodeJSON(AIModelTaskConfiguration.self, key: Keys.aiEmbeddingTask, defaults: defaults) ?? defaultEmbeddingTask
+        self.aiEmbeddingTask = Self.localAIDefaultTaskOverride(
+            task: .embedding, key: Keys.aiEmbeddingTask, defaults: defaults
+        ) ?? Self.decodeJSON(AIModelTaskConfiguration.self, key: Keys.aiEmbeddingTask, defaults: defaults)
+            ?? defaultEmbeddingTask
         // HOM-68 follow-up：翻译任务首次升级时与摘要使用同一 provider+model，
         // 参数走 translationDefault（低温度 + 高 maxToken），用户可在设置页改。
         let defaultTranslationTask = Self.makeDefaultTask(
@@ -1919,7 +1969,9 @@ final class AppSettings {
             key: Keys.aiChatTask,
             defaults: defaults
         ) ?? defaultChatTask
-        self.aiChatTask = Self.migrateLegacyDefaultChatPromptIfNeeded(
+        self.aiChatTask = Self.localAIDefaultTaskOverride(
+            task: .chat, key: Keys.aiChatTask, defaults: defaults
+        ) ?? Self.migrateLegacyDefaultChatPromptIfNeeded(
             persistedChatTask,
             defaults: defaults
         )
@@ -2655,6 +2707,22 @@ final class AppSettings {
         )
     }
 
+    /// 首启动默认覆盖：对应任务的配置键**尚无持久化值**（首次安装 / 恢复出厂后首启）
+    /// 时，任务默认指向内置 Local AI（dong4j 2026-09-12 拍板「下载后开箱即用」）。
+    /// 用户一旦改过该任务，键已持久化，覆盖自动失效；Intel Mac 回退旧默认。
+    private static func localAIDefaultTaskOverride(
+        task: AIModelTask, key: String, defaults: UserDefaults
+    ) -> AIModelTaskConfiguration? {
+        guard defaults.object(forKey: key) == nil,
+            LocalAIHardwareSupport.isLocalAIAvailable
+        else { return nil }
+        let entry = task == .embedding ? LocalAIModelCatalog.embedding : LocalAIModelCatalog.llm
+        return makeDefaultTask(
+            task: task,
+            profileID: LocalAIModelCatalog.builtInProfileID,
+            modelName: entry.displayName)
+    }
+
     private static func makeDefaultTask(
         task: AIModelTask,
         profileID: String,
@@ -2718,6 +2786,7 @@ final class AppSettings {
         static let aiChatModel = "settings.ai.chatModel"
         static let aiEmbeddingModel = "settings.ai.embeddingModel"
         static let aiProviderProfiles = "settings.ai.providerProfiles.v2"
+        static let localAIDownloadSource = "settings.localai.downloadSource.v1"
         static let aiSummaryTask = "settings.ai.task.summary.v2"
         static let aiTagsTask = "settings.ai.task.tags.v2"
         static let aiTagSuggestionMinCount = "settings.ai.tagSuggestion.minCount.v1"

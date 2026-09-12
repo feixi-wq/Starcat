@@ -2126,7 +2126,7 @@ struct HomeView: View {
     /// 未分组中栏横幅「开始整理」：先过 Pro 门控，再打开现有 GitHub Lists 审核 sheet。
     private func startGitHubStarListAIGrouping() {
         do {
-            try dependencies.entitlementGate.requirePro(.batchAI)
+            try dependencies.entitlementGate.requirePro(.batchAI, usesLocalOnly: dependencies.settings.isGenerationTasksResolvedToLocalAI)
             PerformanceTracer.shared.mark(.gitHubStarListAIGroupingRequested)
             showGitHubStarListAIGroupingSheet = true
         } catch {
@@ -2137,7 +2137,7 @@ struct HomeView: View {
     /// Manage 多选入口复用现有审核窗口，只把本次点击时冻结的仓库作为整理范围。
     private func startSelectedGitHubStarListAIGrouping(repositories: [Repo]) {
         do {
-            try dependencies.entitlementGate.requirePro(.batchAI)
+            try dependencies.entitlementGate.requirePro(.batchAI, usesLocalOnly: dependencies.settings.isGenerationTasksResolvedToLocalAI)
         } catch {
             paywallContext = ProPaywallContext(feature: .batchAI, message: error.localizedDescription)
             return
@@ -2191,7 +2191,7 @@ struct HomeView: View {
     /// 失败时按钮仍可继续点（dependencies 状态未变，第二次点击会重试）。
     private func startBatchAIIntegration(scope: BatchAIRepositoryScope) async -> Bool {
         do {
-            try dependencies.entitlementGate.requirePro(.batchAI)
+            try dependencies.entitlementGate.requirePro(.batchAI, usesLocalOnly: dependencies.settings.isGenerationTasksResolvedToLocalAI)
         } catch {
             paywallContext = ProPaywallContext(feature: .batchAI, message: error.localizedDescription)
             return false

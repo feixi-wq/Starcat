@@ -195,7 +195,7 @@ final class SemanticSearchService {
         limit: Int = 80,
         usageContext: AIUsageContext = AIUsageContext(feature: .semanticSearch, phase: "query")
     ) async throws -> [SemanticSearchHit] {
-        try entitlementGate?.requirePro(.semanticSearch)
+        try entitlementGate?.requirePro(.semanticSearch, usesLocalOnly: settings.isEmbeddingTaskResolvedToLocalAI)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         guard !candidates.isEmpty else { return [] }
@@ -266,7 +266,7 @@ final class SemanticSearchService {
         force: Bool = true,
         onProgress: ((Int, Int) -> Void)? = nil
     ) async throws -> Int {
-        try entitlementGate?.requirePro(.semanticSearch)
+        try entitlementGate?.requirePro(.semanticSearch, usesLocalOnly: settings.isEmbeddingTaskResolvedToLocalAI)
         guard !repos.isEmpty else { return 0 }
         let (client, model) = try makeClient(
             usageContext: AIUsageContext(feature: .semanticSearch, phase: "indexing")
@@ -310,7 +310,7 @@ final class SemanticSearchService {
     @discardableResult
     func refreshIndexIfChanged(for repos: [Repo]) async -> Int {
         do {
-            try entitlementGate?.requirePro(.semanticSearch)
+            try entitlementGate?.requirePro(.semanticSearch, usesLocalOnly: settings.isEmbeddingTaskResolvedToLocalAI)
             let (client, model) = try makeClient(
                 usageContext: AIUsageContext(feature: .semanticSearch, phase: "indexing")
             )
@@ -334,7 +334,7 @@ final class SemanticSearchService {
             throw AIEmbeddingError.missingAPIKey
         }
 
-        return (try OpenAIClient(configuration: AIClientConfiguration(
+        return (try AIClientFactory.make(configuration: AIClientConfiguration(
             providerID: selection.profile.id,
             provider: selection.profile.provider,
             apiKey: apiKey,

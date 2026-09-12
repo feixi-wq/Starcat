@@ -269,7 +269,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
 
         // AI 路径保留既有 Pro 门控；系统翻译一期不做门控（产品确认 C）。
         if request.engine == .ai {
-            try entitlementGate?.requirePro(.readmeTranslation)
+            try entitlementGate?.requirePro(.readmeTranslation, usesLocalOnly: settings.isTaskResolvedToLocalAI(settings.aiTranslationTask))
         }
 
         let documentHash = Self.hash(trimmedSource)
@@ -829,7 +829,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
             throw ReadmeTranslationError.missingAPIKey
         }
         let model = resolvedModelName(task: task, fallback: fallbackModel)
-        let client = try OpenAIClient(configuration: AIClientConfiguration(
+        let client = try AIClientFactory.make(configuration: AIClientConfiguration(
             providerID: profile.id,
             provider: profile.provider,
             apiKey: apiKey,

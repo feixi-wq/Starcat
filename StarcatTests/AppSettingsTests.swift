@@ -763,9 +763,20 @@ struct AppSettingsTests {
         #expect(s.aiChatModel == "gpt-4o-mini")
         #expect(s.aiEmbeddingModel == "text-embedding-3-small")
         #expect(s.aiProviderProfiles.count == 1)
-        #expect(s.aiSummaryTask.providerID == s.aiProviderProfiles[0].id)
-        #expect(s.aiTagsTask.providerID == s.aiProviderProfiles[0].id)
-        #expect(s.aiEmbeddingTask.providerID == s.aiProviderProfiles[0].id)
+        // 2026-09-12 本地 AI 首启动默认（dong4j 拍板）：Apple Silicon 上未配置过的任务
+        // 默认指向内置 Local AI；Intel 回退 legacy provider。
+        if LocalAIHardwareSupport.isLocalAIAvailable {
+            #expect(s.aiSummaryTask.providerID == LocalAIModelCatalog.builtInProfileID)
+            #expect(s.aiTagsTask.providerID == LocalAIModelCatalog.builtInProfileID)
+            #expect(s.aiEmbeddingTask.providerID == LocalAIModelCatalog.builtInProfileID)
+            #expect(s.aiChatTask.providerID == LocalAIModelCatalog.builtInProfileID)
+            #expect(s.aiSummaryTask.modelID == LocalAIModelCatalog.llm.displayName)
+            #expect(s.aiEmbeddingTask.modelID == LocalAIModelCatalog.embedding.displayName)
+        } else {
+            #expect(s.aiSummaryTask.providerID == s.aiProviderProfiles[0].id)
+            #expect(s.aiTagsTask.providerID == s.aiProviderProfiles[0].id)
+            #expect(s.aiEmbeddingTask.providerID == s.aiProviderProfiles[0].id)
+        }
         // 2026-06-14 v4 占位符归一化（dong4j 拍板）：
         // 旧 `{context}` 黑盒拆成 5 个透明占位符（{outputLanguage} + {metadata} +
         // {readme} + {codeContext} + {externalContext}）；旧硬编中文章节标题
@@ -781,7 +792,6 @@ struct AppSettingsTests {
         // - provider 跟 summary 同（首次升级时复用同一 profile + chatModel）
         // - systemPrompt 含全部 6 占位符
         // - userPromptTemplate 留空（chat 用户消息走 messages 数组，不用模板包装）
-        #expect(s.aiChatTask.providerID == s.aiProviderProfiles[0].id)
         #expect(s.aiChatTask.prompt.systemPrompt.contains("{outputLanguage}"))
         #expect(s.aiChatTask.prompt.systemPrompt.contains("{metadata}"))
         #expect(s.aiChatTask.prompt.systemPrompt.contains("{readme}"))
