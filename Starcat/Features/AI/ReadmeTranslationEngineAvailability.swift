@@ -69,7 +69,9 @@ enum ReadmeTranslationEngineAvailability {
         return result
     }
 
-    /// 与 `ReadmeTranslationService.makeClient` 前置条件对齐：有翻译任务、Provider、非空 Key。
+    /// 与 `ReadmeTranslationService.makeClient` 前置条件对齐：有翻译任务、Provider、
+    /// 非空 Key **或 Provider 允许空 Key**。localAI / ollama / lmStudio 都是免 Key
+    /// 服务商——漏掉这个分支会让 AI 翻译引擎在引擎列表里消失（2026-09-12 用户反馈）。
     @MainActor
     static func isAIConfigured(
         settings: AppSettings,
@@ -80,7 +82,7 @@ enum ReadmeTranslationEngineAvailability {
         else { return false }
         let apiKey = (try? keychain.loadAIKey(forProvider: profile.id))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !apiKey.isEmpty else { return false }
+        guard !apiKey.isEmpty || profile.provider.allowsEmptyAPIKey else { return false }
         let model = task.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
         if model.isEmpty {
             let fallback = settings.aiChatModel.trimmingCharacters(in: .whitespacesAndNewlines)

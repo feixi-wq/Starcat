@@ -166,8 +166,9 @@ struct AISettingsTab: View {
         // 的反直觉行为。改成每行模型一个齿轮按钮 + popover，参数与"模型"绑定。
         Form {
             providerSection
-            // 本地 AI 模型管理区：下载 / 暂停 / 删除内置 MLX 模型。Apple Silicon 才展示。
-            if LocalAIHardwareSupport.isLocalAIAvailable {
+            // 本地 AI 模型管理区：仅在服务商选中「Starcat Local AI」时显示
+            // （dong4j 2026-09-12 反馈：选其它服务商时不应一直挂着）；Apple Silicon 才展示。
+            if LocalAIHardwareSupport.isLocalAIAvailable, activeProfile?.provider == .localAI {
                 LocalAIModelsSection(settings: dependencies.settings)
             }
             enabledModelsSection
