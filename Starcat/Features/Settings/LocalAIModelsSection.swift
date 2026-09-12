@@ -31,6 +31,8 @@ struct LocalAIModelsSection: View {
     @State private var pendingClearAllConfirm = false
     /// 每个类别当前在下拉里选中的 entry id；nil = 用默认（已安装优先，其次推荐）。
     @State private var selectedIDs: [LocalAIModelType: String] = [:]
+    /// 当前展开浮层下拉的类别（同一时刻至多一个）。
+    @State private var expandedDropdown: LocalAIModelType?
 
     /// 下拉顺序固定，避免设置页刷新时选项跳动。
     private let displayedTypes: [LocalAIModelType] = [.embedding, .reranker, .llm]
@@ -41,6 +43,9 @@ struct LocalAIModelsSection: View {
     /// 命中区保持 28×28 不影响点击。
     /// 模型下拉固定宽度：选中项变化不改变组件尺寸（dong4j 2026-09-12）。
     private static let modelDropdownWidth: CGFloat = 220
+
+    /// 下拉浮层宽度：容纳名称 + 胶囊徽标，中英文均不换行。
+    private static let modelPopoverWidth: CGFloat = 340
 
     /// 行尾状态区固定宽度：容纳两个 28pt 图标（对勾 + 删除）。
     private static let statusAreaWidth: CGFloat = 62
@@ -185,22 +190,16 @@ struct LocalAIModelsSection: View {
     /// 固定宽度自绘下拉（dong4j 2026-09-12：系统 Picker 随选中项文字长度伸缩，
     /// 切换模型时整行组件乱跳；主窗口 toolbar 打开链接菜单即固定 label 思路）。
     /// label 固定 220pt，选中名超长走中间省略；菜单项由系统渲染，当前项带 ✓。
+    /// 固定宽度自绘下拉（popover 浮层）。不用系统 Menu：NSMenu 只能渲染纯文本，
+    /// 做不出 dong4j 要的推荐/轻量胶囊徽标（2026-09-12）。
     private func modelDropdown(_ type: LocalAIModelType) -> some View {
         let selected = selectedEntry(for: type)
-        return Menu {
-            ForEach(LocalAIModelCatalog.entries(of: type)) { candidate in
-                Button {
-                    selectedIDs[type] = candidate.id
-                } label: {
-                    // 系统 NSMenu 不支持富样式徽标，档位以文本后缀跟在模型名后
-                    //（dong4j 2026-09-12：推荐/轻量放进下拉对应项后面）。
-                    if candidate.id == selected.id {
-                        Label(menuItemTitle(candidate), systemImage: "checkmark")
-                    } else {
-                        Text(menuItemTitle(candidate))
-                    }
-                }
-            }
+        let isOpen = Binding(
+            get: { expandedDropdown == type },
+            set: { if !$0, expandedDropdown == type { expandedDropdown = nil } }
+        )
+        return Button {
+            expandedDropdown = expandedDropdown == nil ? type : nil
         } label: {
             HStack(spacing: 6) {
                 Text(selected.displayName)
@@ -217,21 +216,75 @@ struct LocalAIModelsSection: View {
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
-        .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize()
+        .popover(isPresented: isOpen, arrowEdge: .top) {
+            modelOptionList(type, selected: selected)
+                .frame(width: Self.modelPopoverWidth)
+                .padding(.vertical, 6)
+        }
         .accessibilityLabel(Text(typeLabel(type)))
     }
 
-    /// 下拉菜单项标题：模型名后跟档位后缀（推荐 / 轻量）。
-    private func menuItemTitle(_ entry: LocalAIModelCatalogEntry) -> String {
+    /// 浮层选项列表：对勾 + 模型名 + 档位胶囊徽标（推荐绿色 / 轻量中性）。
+    private func modelOptionList(
+        _ type: LocalAIModelType, selected: LocalAIModelCatalogEntry
+    ) -> some View {
+        VStack(spacing: 2) {
+            ForEach(LocalAIModelCatalog.entries(of: type)) { entry in
+                let isSelected = entry.id == selected.id
+                Button {
+                    selectedIDs[type] = entry.id
+                    expandedDropdown = nil
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark")
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                            .opacity(isSelected ? 1 : 0)
+                            .frame(width: 12)
+                        Text(entry.displayName)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        badgeCapsule(entry)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        isSelected ? Color.accentColor.opacity(0.12) : .clear,
+                        in: RoundedRectangle(cornerRadius: 5)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// 档位胶囊：推荐 = 绿色调，轻量 = 中性；短文案 + 单行，中英文都不换行。
+    @ViewBuilder
+    private func badgeCapsule(_ entry: LocalAIModelCatalogEntry) -> some View {
         if entry.recommended {
-            return entry.displayName + " · " + String.l10n("settings.localai.model.badge.recommended")
+            Text("settings.localai.model.badge.recommended")
+                .font(.caption2)
+                .foregroundStyle(.green)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(.green.opacity(0.14), in: Capsule())
+                .lineLimit(1)
+                .fixedSize()
+        } else if entry.isLite {
+            Text("settings.localai.model.badge.lite")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(.quaternary, in: Capsule())
+                .lineLimit(1)
+                .fixedSize()
         }
-        if entry.isLite {
-            return entry.displayName + " · " + String.l10n("settings.localai.model.badge.lite")
-        }
-        return entry.displayName
     }
 
     /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
