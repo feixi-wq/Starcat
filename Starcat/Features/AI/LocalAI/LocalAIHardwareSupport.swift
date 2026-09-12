@@ -5,9 +5,8 @@
 //  本地 AI（MLX）硬件能力检测。
 //
 //  为什么需要：MLX 只能在 Apple Silicon（统一内存 + Metal）上运行，而全仓此前没有任何
-//  架构判断。Intel Mac 用户不应看到「Starcat Local AI」服务商入口；即使旧配置残留了
-//  localAI 选择，selection 解析也要按 `isAvailableOnThisHardware` 报不可用，而不是让
-//  MLX 在运行期崩溃。
+//  架构判断。Intel Mac 的兜底策略是「不出现 + 不注入」：内置 profile 不 seed、设置页
+//  不展示模型管理区、任务默认回退 legacy provider——避免 MLX 在运行期崩溃。
 //
 //  关键约束：
 //  - 用 `sysctl("hw.optional.arm64")` 而不是编译条件 `#if arch(arm64)`：后者只描述

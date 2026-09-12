@@ -540,22 +540,13 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         }
     }
 
-    /// 该服务商在当前硬件上是否可选。
+    /// 设置页「新增服务商」可选类型列表。
     ///
-    /// MLX 只能跑 Apple Silicon；Intel Mac 不展示 localAI 入口，旧配置残留时由
-    /// selection 解析按同一判定报 `providerUnavailable`。
-    var isAvailableOnThisHardware: Bool {
-        switch self {
-        case .localAI:
-            return LocalAIHardwareSupport.isLocalAIAvailable
-        default:
-            return true
-        }
-    }
-
-    /// 设置页「新增服务商」可选列表（按硬件能力过滤）。
+    /// `localAI` 是内置默认服务商（首启动即注入并默认选中，dong4j 2026-09-12），
+    /// 不是用户可新增的类型，一律不出现在新增列表；其余类型不做硬件过滤
+    /// （新增远端 provider 与本机架构无关）。
     static var userSelectableCases: [AIServiceProvider] {
-        allCases.filter(\.isAvailableOnThisHardware)
+        allCases.filter { $0 != .localAI }
     }
 }
 

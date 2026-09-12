@@ -228,20 +228,22 @@ struct LocalAIModelsSection: View {
                 Button {
                     manager.install(entry: entry)
                 } label: {
-                    Label("settings.localai.model.action.download", systemImage: "arrow.down.circle")
+                    // icon-only（dong4j 2026-09-12）：文案由行内徽标与下方信息承担。
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .help("settings.localai.model.action.download")
+                .accessibilityLabel(Text("settings.localai.model.action.download"))
             } else {
                 // catalog 未收录该模型在当前下载源的镜像（白名单制，禁止静默换源）。
-                Button {
-                    manager.install(entry: entry)
-                } label: {
-                    Label("settings.localai.model.action.download", systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(true)
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
                 Text("settings.localai.source.unavailable")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
