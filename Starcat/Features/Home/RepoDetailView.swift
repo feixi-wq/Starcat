@@ -314,6 +314,9 @@ struct ReadmeStateView: View {
 
     /// Toast 消息绑定（翻译错误 → 底部浮动提示）。
     @State private var translationToast: String?
+    /// 「已是目标语言」轻提示 toast。与错误 toast 分开挂，才能用中性 checkmark 图标、
+    /// 不带「前往设置」按钮；两条 toast 互斥出现（提示只在翻译未启动时置位）。
+    @State private var translationNoticeToast: String?
     /// 当前已渲染文档的两种翻译输入。用 document key 守门，避免切 repo 的一帧窗口误用旧数据。
     @State private var translationSourceDocumentKey: String?
     @State private var translationSourceSnapshot: ReadmeTranslationSourceSnapshot = .empty
@@ -439,6 +442,12 @@ struct ReadmeStateView: View {
             actionLabel: translationToastActionLabel,
             onAction: translationToastOnAction
         )
+        .toast(
+            message: $translationNoticeToast,
+            icon: "checkmark.circle.fill",
+            duration: 5,
+            bottomPadding: 30
+        )
         .onChange(of: translationControl?.translationVM.errorMessage) { _, newValue in
             if let msg = newValue {
                 translationToast = msg
@@ -447,6 +456,16 @@ struct ReadmeStateView: View {
         .onChange(of: translationToast) { _, newValue in
             if newValue == nil {
                 translationControl?.translationVM.dismissError()
+            }
+        }
+        .onChange(of: translationControl?.translationVM.showsAlreadyInTargetNotice == true) { _, shown in
+            guard shown else { return }
+            // 传 catalog key，由 toast 内部 LocalizedStringKey 按当前语言解析。
+            translationNoticeToast = "readme.translate.notice.alreadyInTarget"
+        }
+        .onChange(of: translationNoticeToast) { _, newValue in
+            if newValue == nil {
+                translationControl?.translationVM.dismissAlreadyInTargetNotice()
             }
         }
         .starcatRefreshCommand(

@@ -261017,6 +261017,22 @@
         }
       }
     },
+    "readme.translate.notice.alreadyInTarget" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Already in the target language. No translation needed."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内容已是目标语言，无需翻译"
+          }
+        }
+      }
+    },
     "readme.translate.showOriginal" : {
       "extractionState" : "stale",
       "localizations" : {
