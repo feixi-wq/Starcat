@@ -35,6 +35,11 @@ struct LocalAIModelsSection: View {
     /// 下拉顺序固定，避免设置页刷新时选项跳动。
     private let displayedTypes: [LocalAIModelType] = [.embedding, .reranker, .llm]
 
+    /// 本区块行内 icon 的统一口径（设置页 15pt / 28×28）：下载、绿色对勾、删除共用，
+    /// 保证同一行里图标大小完全一致（dong4j 2026-09-12）。
+    private static let rowIconFont = Font.system(size: 15, weight: .medium)
+    private static let rowIconFrameSize: CGFloat = 28
+
     var body: some View {
         Section {
             sourcePickerRow
@@ -230,8 +235,8 @@ struct LocalAIModelsSection: View {
                 } label: {
                     // icon-only（dong4j 2026-09-12）：文案由行内徽标与下方信息承担。
                     Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 15, weight: .medium))
-                        .frame(width: 28, height: 28)
+                        .font(Self.rowIconFont)
+                        .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -241,9 +246,9 @@ struct LocalAIModelsSection: View {
             } else {
                 // catalog 未收录该模型在当前下载源的镜像（白名单制，禁止静默换源）。
                 Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(Self.rowIconFont)
                     .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
                 Text("settings.localai.source.unavailable")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -308,12 +313,14 @@ struct LocalAIModelsSection: View {
             }
 
         case .installed:
+            // 只保留绿色对勾 + 删除两个同规格图标（15pt / 28pt 命中，dong4j 2026-09-12）；
+            // 安装状态语义由对勾颜色与位置承担，无障碍标签保留「已安装」。
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
+                    .font(Self.rowIconFont)
                     .foregroundStyle(.green)
-                Text("settings.localai.model.status.installed")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
+                    .accessibilityLabel(Text("settings.localai.model.status.installed"))
                 deleteButton(entry)
             }
         }
@@ -331,7 +338,9 @@ struct LocalAIModelsSection: View {
 
     private func deleteButton(_ entry: LocalAIModelCatalogEntry) -> some View {
         DestructiveIconButton(
-            help: Text("settings.localai.model.action.delete")
+            help: Text("settings.localai.model.action.delete"),
+            font: Self.rowIconFont,
+            frameSize: Self.rowIconFrameSize
         ) {
             manager.delete(entryID: entry.id)
         }
