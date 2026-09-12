@@ -1910,7 +1910,9 @@ final class AppSettings {
             key: Keys.aiSummaryTask,
             defaults: defaults
         ) ?? defaultSummaryTask
-        self.aiSummaryTask = Self.migrateLegacyDefaultSummaryPromptIfNeeded(
+        self.aiSummaryTask = Self.localAIDefaultTaskOverride(
+            task: .summary, key: Keys.aiSummaryTask, defaults: defaults
+        ) ?? Self.migrateLegacyDefaultSummaryPromptIfNeeded(
             persistedSummaryTask,
             defaults: defaults
         )
@@ -1919,7 +1921,9 @@ final class AppSettings {
             key: Keys.aiTagsTask,
             defaults: defaults
         ) ?? defaultTagsTask
-        self.aiTagsTask = Self.migrateLegacyDefaultTagsPromptIfNeeded(
+        self.aiTagsTask = Self.localAIDefaultTaskOverride(
+            task: .tags, key: Keys.aiTagsTask, defaults: defaults
+        ) ?? Self.migrateLegacyDefaultTagsPromptIfNeeded(
             persistedTagsTask,
             defaults: defaults
         )
@@ -1933,7 +1937,10 @@ final class AppSettings {
         )
         self.aiTagSuggestionMinCount = clampedTagCounts.minimum
         self.aiTagSuggestionMaxCount = clampedTagCounts.maximum
-        self.aiEmbeddingTask = Self.decodeJSON(AIModelTaskConfiguration.self, key: Keys.aiEmbeddingTask, defaults: defaults) ?? defaultEmbeddingTask
+        self.aiEmbeddingTask = Self.localAIDefaultTaskOverride(
+            task: .embedding, key: Keys.aiEmbeddingTask, defaults: defaults
+        ) ?? Self.decodeJSON(AIModelTaskConfiguration.self, key: Keys.aiEmbeddingTask, defaults: defaults)
+            ?? defaultEmbeddingTask
         // HOM-68 follow-up：翻译任务首次升级时与摘要使用同一 provider+model，
         // 参数走 translationDefault（低温度 + 高 maxToken），用户可在设置页改。
         let defaultTranslationTask = Self.makeDefaultTask(
@@ -1969,7 +1976,9 @@ final class AppSettings {
             key: Keys.aiChatTask,
             defaults: defaults
         ) ?? defaultChatTask
-        self.aiChatTask = Self.migrateLegacyDefaultChatPromptIfNeeded(
+        self.aiChatTask = Self.localAIDefaultTaskOverride(
+            task: .chat, key: Keys.aiChatTask, defaults: defaults
+        ) ?? Self.migrateLegacyDefaultChatPromptIfNeeded(
             persistedChatTask,
             defaults: defaults
         )
@@ -2703,6 +2712,22 @@ final class AppSettings {
                 )
             ]
         )
+    }
+
+    /// 首启动默认覆盖：对应任务的配置键**尚无持久化值**（首次安装 / 恢复出厂后首启）
+    /// 时，任务默认指向内置 Local AI（dong4j 2026-09-12 拍板「下载后开箱即用」）。
+    /// 用户一旦改过该任务，键已持久化，覆盖自动失效；Intel Mac 回退旧默认。
+    private static func localAIDefaultTaskOverride(
+        task: AIModelTask, key: String, defaults: UserDefaults
+    ) -> AIModelTaskConfiguration? {
+        guard defaults.object(forKey: key) == nil,
+            LocalAIHardwareSupport.isLocalAIAvailable
+        else { return nil }
+        let entry = task == .embedding ? LocalAIModelCatalog.embedding : LocalAIModelCatalog.llm
+        return makeDefaultTask(
+            task: task,
+            profileID: LocalAIModelCatalog.builtInProfileID,
+            modelName: entry.displayName)
     }
 
     private static func makeDefaultTask(

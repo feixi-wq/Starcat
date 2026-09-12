@@ -25,8 +25,9 @@ struct LocalAIModelsSection: View {
 
     let settings: AppSettings
 
+    @Environment(\.starcatReduceMotion) private var reduceMotion
+
     @State private var manager = LocalAIModelManager.shared
-    @State private var verifyMessage: String?
     @State private var pendingClearAllConfirm = false
     /// 每个类别当前在下拉里选中的 entry id；nil = 用默认（已安装优先，其次推荐）。
     @State private var selectedIDs: [LocalAIModelType: String] = [:]
@@ -52,17 +53,6 @@ struct LocalAIModelsSection: View {
                 Spacer(minLength: 12)
 
                 Button {
-                    verifyMessage = manager.verifyIntegrity()
-                    if verifyMessage == nil {
-                        verifyMessage = String.l10n("settings.localai.verify.ok")
-                    }
-                } label: {
-                    Label("settings.localai.verify.button", systemImage: "checkmark.seal")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-
-                Button {
                     revealModelsDirectory()
                 } label: {
                     Label("settings.localai.storage.reveal", systemImage: "folder")
@@ -79,13 +69,6 @@ struct LocalAIModelsSection: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .disabled(manager.installedModels.isEmpty)
-            }
-
-            if let verifyMessage {
-                Text(verifyMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         } header: {
             SettingsSectionHeader(
@@ -281,6 +264,34 @@ struct LocalAIModelsSection: View {
         case .downloading:
             pauseButton(entry)
 
+        case .loading:
+            // MLX 不暴露权重加载的字节进度：给不确定进度条（薄荷色，与下载蓝色区分）+ 文案。
+            VStack(alignment: .trailing, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("settings.localai.model.status.loading")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                indeterminateBar
+                    .frame(width: 140)
+            }
+
+        case .loadFailed(let message):
+            VStack(alignment: .trailing, spacing: 4) {
+                Button {
+                    manager.retryLoad(entry: entry)
+                } label: {
+                    Label("settings.localai.model.action.retryLoad", systemImage: "arrow.clockwise.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 240, alignment: .trailing)
+            }
+
         case .failed(let message):
             VStack(alignment: .trailing, spacing: 4) {
                 Button {
@@ -332,6 +343,22 @@ struct LocalAIModelsSection: View {
     }
 
     // MARK: - 进度展示
+
+    /// 加载中的不确定进度条：薄荷色滑块往复运动；开启「减弱动态效果」时静态半格。
+    @ViewBuilder
+    private var indeterminateBar: some View {
+        if reduceMotion {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+                    Capsule().fill(.mint).frame(width: geo.size.width * 0.5)
+                }
+            }
+            .frame(height: 4)
+        } else {
+            IndeterminateCapsuleBar()
+        }
+    }
 
     /// 4pt 细进度条：macOS 默认 `.linear` 样式过粗；自定义 Capsule 保证粗细一致。
     private func thinProgressBar(_ progress: Double) -> some View {
@@ -395,5 +422,31 @@ struct LocalAIModelsSection: View {
         guard let url = manager.modelsRootURL else { return }
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
+    }
+}
+
+
+/// 薄荷色往复滑块：加载阶段 MLX 不暴露字节进度，用不确定动画表达「正在进行」。
+private struct IndeterminateCapsuleBar: View {
+    @State private var trailing: Bool = false
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.quaternary)
+                Capsule()
+                    .fill(.mint)
+                    .frame(width: geo.size.width * 0.35)
+                    .offset(x: trailing ? geo.size.width * 0.65 : 0)
+            }
+        }
+        .frame(height: 4)
+        .accessibilityLabel(Text("settings.localai.model.status.loading"))
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                trailing = true
+            }
+        }
     }
 }

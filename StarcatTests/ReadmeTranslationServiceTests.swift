@@ -486,14 +486,21 @@ struct AppSettingsTranslationTaskTests {
         return AppSettings(defaults: defaults)
     }
 
-    @Test("首次升级：未持久化时 aiTranslationTask 默认值与 aiSummaryTask 共享 provider+model")
+    @Test("首次升级：翻译默认保持 legacy provider，不跟随本地 AI 摘要默认")
     func defaultsAlignWithSummaryProviderAndModel() {
+        // 2026-09-12 本地 AI 默认只覆盖 summary/tags/chat/embedding 四任务；
+        // 翻译不在本地 AI v1 范围，未持久化时仍指向 legacy OpenAI-compatible 默认。
         let settings = makeSettings()
-        let summary = settings.aiSummaryTask
         let translation = settings.aiTranslationTask
 
-        #expect(translation.providerID == summary.providerID, "翻译默认 provider 应与摘要一致")
-        #expect(translation.modelID == summary.modelID, "翻译默认 model 应与摘要一致")
+        if LocalAIHardwareSupport.isLocalAIAvailable {
+            #expect(settings.aiSummaryTask.providerID == LocalAIModelCatalog.builtInProfileID)
+            #expect(translation.providerID != LocalAIModelCatalog.builtInProfileID,
+                    "翻译默认不指向本地 AI")
+        } else {
+            #expect(translation.providerID == settings.aiSummaryTask.providerID,
+                    "翻译默认 provider 应与摘要一致")
+        }
     }
 
     @Test("首次升级：aiTranslationTask 默认参数 = AIModelParameters.translationDefault（低温度 + 大 maxToken）")

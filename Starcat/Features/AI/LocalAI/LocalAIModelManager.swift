@@ -34,6 +34,10 @@ enum LocalAIInstallState: Equatable, Sendable {
     case downloading(
         progress: Double, completedBytes: Int64, totalBytes: Int64, speedBytesPerSecond: Double?)
     case failed(message: String)
+    /// 下载完成后自动进入：完整性检查通过后的 MLX 权重加载阶段（不确定进度，薄荷色条）。
+    case loading
+    /// 容器加载失败（如 mxfp8 在老芯片上不受支持）：文件已装好，可单独重试加载。
+    case loadFailed(message: String)
     case installed
 
     var isInstalled: Bool {
@@ -76,6 +80,16 @@ final class LocalAIModelManager {
     // MARK: - 查询
 
     func installState(for entryID: String) -> LocalAIInstallState {
+        // 加载阶段优先：manifest 已落盘（installedModels 快照已包含该模型），但容器
+        // 仍在加载或加载失败——不能被「已安装」短路，否则 UI 看不到加载进度 / 失败。
+        if let explicit = installStates[entryID] {
+            switch explicit {
+            case .loading, .loadFailed:
+                return explicit
+            default:
+                break
+            }
+        }
         if installedModels.contains(where: { $0.id == entryID }) {
             return .installed
         }
@@ -101,28 +115,71 @@ final class LocalAIModelManager {
         LocalAIModelStorage.totalDiskUsage()
     }
 
-    /// 「检查本地模型」：校验全部已安装模型的 manifest 可读且文件齐全。
-    /// 返回 nil = 通过；否则返回用户可读的错误文案。
-    func verifyIntegrity() -> String? {
-        for manifest in installedModels {
-            guard let entry = LocalAIModelCatalog.entry(id: manifest.id) else { continue }
-            guard let directory = try? LocalAIModelStorage.modelDirectory(
-                entry: entry, revision: manifest.revision)
-            else {
+    /// 单模型完整性检查：manifest 存在且声明的文件都在磁盘上。
+    /// nil = 通过；否则返回用户可读的错误文案。
+    private func integrityIssue(for entry: LocalAIModelCatalogEntry) -> String? {
+        guard let manifest = installedModel(id: entry.id),
+            let directory = installedDirectoryURL(entryID: entry.id)
+        else {
+            return String(
+                format: String.l10n("settings.localai.error.modelNotInstalledFormat"),
+                entry.displayName)
+        }
+        for file in manifest.files {
+            let url = directory.appendingPathComponent(file.name)
+            guard FileManager.default.fileExists(atPath: url.path) else {
                 return String(
-                    format: String.l10n("settings.localai.error.manifestCorruptedFormat"),
-                    manifest.id)
-            }
-            for file in manifest.files {
-                let url = directory.appendingPathComponent(file.name)
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    return String(
-                        format: String.l10n("settings.localai.verify.missingFileFormat"),
-                        entry.displayName, file.name)
-                }
+                    format: String.l10n("settings.localai.verify.missingFileFormat"),
+                    entry.displayName, file.name)
             }
         }
         return nil
+    }
+
+    /// 加载已安装模型的 MLX 容器（下载完成链路 & 加载失败重试共用）。
+    private func loadInstalledContainer(entry: LocalAIModelCatalogEntry) async throws {
+        guard let directory = installedDirectoryURL(entryID: entry.id) else {
+            throw LocalAIError.modelNotInstalled(entry.displayName)
+        }
+        let runtime = LocalMLXRuntime.shared
+        switch entry.type {
+        case .llm: _ = try await runtime.llmContainer(directory: directory)
+        case .embedding: _ = try await runtime.embedderContainer(directory: directory)
+        case .reranker: _ = try await runtime.rerankerContainer(directory: directory)
+        }
+    }
+
+    /// 「重试加载」：loadFailed 状态下只重跑加载，不重新下载。
+    func retryLoad(entry: LocalAIModelCatalogEntry) {
+        guard TestEnvironment.isRunning == false else { return }
+        guard case .loadFailed = installState(for: entry.id) else { return }
+        guard runningInstalls[entry.id] == nil else { return }
+
+        installStates[entry.id] = .loading
+        installGenerations[entry.id, default: 0] += 1
+        let generation = installGenerations[entry.id]!
+        let task = Task {
+            await self.runPreload(entry: entry, generation: generation)
+        }
+        runningInstalls[entry.id] = task
+    }
+
+    private func runPreload(entry: LocalAIModelCatalogEntry, generation: Int) async {
+        do {
+            try await loadInstalledContainer(entry: entry)
+            guard installGenerations[entry.id] == generation else {
+                runningInstalls[entry.id] = nil
+                return
+            }
+            installStates[entry.id] = .installed
+        } catch {
+            guard installGenerations[entry.id] == generation else {
+                runningInstalls[entry.id] = nil
+                return
+            }
+            installStates[entry.id] = .loadFailed(message: error.localizedDescription)
+        }
+        runningInstalls[entry.id] = nil
     }
 
     /// 任务选择器视角：某能力下当前可用（已安装）的模型名列表。
@@ -297,8 +354,30 @@ final class LocalAIModelManager {
             try LocalAIModelStorage.save(manifest, in: directory)
 
             refreshInstalledModels()
-            installStates[entry.id] = .installed
             syncBuiltInProfile()
+
+            // ② 检查：manifest 与磁盘文件对账（下载时已流式计算 SHA256，这里做廉价存在性校验）。
+            if let issue = integrityIssue(for: entry) {
+                installStates[entry.id] = .failed(message: issue)
+                runningInstalls[entry.id] = nil
+                return
+            }
+            // ③ 加载：预热容器，首次真实调用零等待；失败进入 loadFailed（可单独重试）。
+            installStates[entry.id] = .loading
+            do {
+                try await loadInstalledContainer(entry: entry)
+                guard installGenerations[entry.id] == generation else {
+                    runningInstalls[entry.id] = nil
+                    return
+                }
+                installStates[entry.id] = .installed
+            } catch {
+                guard installGenerations[entry.id] == generation else {
+                    runningInstalls[entry.id] = nil
+                    return
+                }
+                installStates[entry.id] = .loadFailed(message: error.localizedDescription)
+            }
         } catch {
             installStates[entry.id] = .failed(
                 message: error.localizedDescription)
