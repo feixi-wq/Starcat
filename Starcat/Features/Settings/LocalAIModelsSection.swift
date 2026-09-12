@@ -41,11 +41,11 @@ struct LocalAIModelsSection: View {
     /// 12pt regular——`checkmark.circle.fill` 是实心填充、视觉重量大，必须比线性图标
     /// 小一档才与下拉箭头等周边图标协调（dong4j 2026-09-12 反馈「做得太大」）；
     /// 命中区保持 28×28 不影响点击。
-    /// 模型下拉固定宽度：选中项变化不改变组件尺寸（dong4j 2026-09-12）。
-    private static let modelDropdownWidth: CGFloat = 220
+    /// 模型下拉固定宽度：选中项变化不改变组件尺寸；右侧不留过多空白（dong4j 2026-09-12）。
+    private static let modelDropdownWidth: CGFloat = 170
 
     /// 下拉浮层宽度：容纳名称 + 胶囊徽标，中英文均不换行。
-    private static let modelPopoverWidth: CGFloat = 340
+    private static let modelPopoverWidth: CGFloat = 280
 
     /// 行尾状态区固定宽度：容纳两个 28pt 图标（对勾 + 删除）。
     private static let statusAreaWidth: CGFloat = 62
@@ -97,16 +97,18 @@ struct LocalAIModelsSection: View {
         } footer: {
             Text("settings.localai.section.footer")
         }
+        // alert 同样在独立宿主呈现：文案走 String.l10n，避免popover 同款的
+        // locale 环境丢失问题（EN 界面出现中文）。
         .alert(
-            "settings.localai.storage.clearAll.confirmTitle",
+            String.l10n("settings.localai.storage.clearAll.confirmTitle"),
             isPresented: $pendingClearAllConfirm
         ) {
-            Button("settings.localai.storage.clearAll.confirm", role: .destructive) {
+            Button(String.l10n("settings.localai.storage.clearAll.confirm"), role: .destructive) {
                 manager.deleteAll()
             }
-            Button("settings.common.cancel", role: .cancel) {}
+            Button(String.l10n("settings.common.cancel"), role: .cancel) {}
         } message: {
-            Text("settings.localai.storage.clearAll.confirmMessage")
+            Text(verbatim: String.l10n("settings.localai.storage.clearAll.confirmMessage"))
         }
     }
 
@@ -268,8 +270,11 @@ struct LocalAIModelsSection: View {
     /// 档位胶囊：推荐 = 绿色调，轻量 = 中性；短文案 + 单行，中英文都不换行。
     @ViewBuilder
     private func badgeCapsule(_ entry: LocalAIModelCatalogEntry) -> some View {
+        // 必须用 String.l10n 而不是 Text(LocalizedStringKey)：popover 浮层宿主
+        // 不继承主视图注入的 locale 环境，Text 会按系统语言解析（EN 界面显示
+        // 中文徽标的根因，dong4j 2026-09-12）。区块内其它文案同口径。
         if entry.recommended {
-            Text("settings.localai.model.badge.recommended")
+            Text(verbatim: String.l10n("settings.localai.model.badge.recommended"))
                 .font(.caption2)
                 .foregroundStyle(.green)
                 .padding(.horizontal, 7)
@@ -278,7 +283,7 @@ struct LocalAIModelsSection: View {
                 .lineLimit(1)
                 .fixedSize()
         } else if entry.isLite {
-            Text("settings.localai.model.badge.lite")
+            Text(verbatim: String.l10n("settings.localai.model.badge.lite"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 7)
