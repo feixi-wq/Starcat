@@ -58,8 +58,22 @@ struct LocalAIModelCatalogTests {
             #expect(entry.memoryRecommendation > 0)
             #expect(entry.files.contains { $0.name == "config.json" })
             #expect(entry.files.contains { $0.name == "model.safetensors" })
-            #expect(entry.source.kind == .huggingFace)
-            #expect(!entry.source.repo.isEmpty)
+            #expect(!entry.sources.isEmpty)
+            #expect(entry.source(for: .huggingFace) != nil)
+        }
+    }
+
+    @Test("ModelScope 仅收录已验证镜像")
+    func modelScopeWhitelist() {
+        // 2026-09-12 核验：这四个模型在魔塔有 mlx-community 镜像；reranker-4bit 未核验。
+        let verifiedOnModelScope = [
+            "qwen3-embedding-0.6b-8bit",
+            "qwen3-reranker-0.6b-mxfp8",
+            "qwen3-4b-instruct-2507-4bit",
+            "qwen3-1.7b-4bit",
+        ]
+        for entry in LocalAIModelCatalog.entries {
+            #expect(entry.isAvailable(on: .modelScope) == verifiedOnModelScope.contains(entry.id))
         }
     }
 

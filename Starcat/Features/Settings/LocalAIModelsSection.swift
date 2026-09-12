@@ -4,11 +4,16 @@
 //
 //  AI 设置页的「本地 AI 模型」管理区。
 //
-//  设计：
+//  结构：
+//  - 顶部「下载源」Picker（Hugging Face / 魔塔 ModelScope），只影响新下载；
+//  - 每个模型类别一行：类别图标 + 模型下拉（该类已收录模型）+ 选中模型的
+//    大小 / 状态 / 进度（4pt 细条 + 速度 / 百分比 / 字节）与操作按钮；
+//  - 底部：存储占用、检查模型、在 Finder 中显示、清除全部（二次确认）。
+//
+//  约束：
 //  - 独立 Section，不依赖内置 profile 的验证状态——用户必须能在这里下载模型，
 //    之后 profile 才会被 `LocalAIModelManager.syncBuiltInProfile()` 标记为已验证。
-//  - UI 只暴露「推荐 / Lite」与下载状态，不暴露量化格式；大小为 catalog 预估值。
-//  - 硬件不满足（Intel）时整区隐藏（由宿主 `AISettingsView` 控制），这里不再重复判断。
+//  - UI 只暴露「推荐 / Lite」与下载状态，不暴露量化格式。
 //  - 遵循设置页规范：独立操作按钮右对齐、`.buttonStyle(.plain)` 必须配
 //    `.focusEffectDisabled()`、危险操作二次确认、颜色只用 .primary/.secondary。
 //
@@ -18,15 +23,23 @@ import SwiftUI
 
 struct LocalAIModelsSection: View {
 
+    let settings: AppSettings
+
     @State private var manager = LocalAIModelManager.shared
     @State private var verifyMessage: String?
     @State private var pendingClearAllConfirm = false
+    /// 每个类别当前在下拉里选中的 entry id；nil = 用默认（已安装优先，其次推荐）。
+    @State private var selectedIDs: [LocalAIModelType: String] = [:]
+
+    /// 下拉顺序固定，避免设置页刷新时选项跳动。
+    private let displayedTypes: [LocalAIModelType] = [.embedding, .reranker, .llm]
 
     var body: some View {
         Section {
-            ForEach(LocalAIModelCatalog.entries) { entry in
-                // 下载进度条与速度/百分比内嵌在模型行内（见 modelRow）。
-                modelRow(entry)
+            sourcePickerRow
+
+            ForEach(displayedTypes) { type in
+                typeGroup(type)
             }
 
             HStack {
@@ -65,7 +78,7 @@ struct LocalAIModelsSection: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                .disabled(manager.installedModels.isEmpty && !hasPartialDownloads)
+                .disabled(manager.installedModels.isEmpty)
             }
 
             if let verifyMessage {
@@ -96,64 +109,88 @@ struct LocalAIModelsSection: View {
         }
     }
 
-    private var hasPartialDownloads: Bool {
-        LocalAIModelCatalog.entries.contains { entry in
-            manager.installState(for: entry.id) != .installed && manager.installState(for: entry.id) != .idle
+    // MARK: - 下载源
+
+    private var sourcePickerRow: some View {
+        HStack {
+            Text("settings.localai.source.label")
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Picker("settings.localai.source.label", selection: sourceBinding) {
+                Text("settings.localai.source.huggingface").tag(LocalAIModelSource.Kind.huggingFace)
+                Text("settings.localai.source.modelscope").tag(LocalAIModelSource.Kind.modelScope)
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
         }
     }
 
-    private var storageUsageText: String {
-        let usage = ByteCountFormatter.string(fromByteCount: manager.totalDiskUsage, countStyle: .file)
-        return String(format: String.l10n("settings.localai.storage.usageFormat"), usage)
+    private var sourceBinding: Binding<LocalAIModelSource.Kind> {
+        Binding(
+            get: { settings.localAIDownloadSource },
+            set: { settings.localAIDownloadSource = $0 })
     }
 
-    // MARK: - 单模型行
+    // MARK: - 类别分组行
 
     @ViewBuilder
-    private func modelRow(_ entry: LocalAIModelCatalogEntry) -> some View {
+    private func typeGroup(_ type: LocalAIModelType) -> some View {
+        let entry = selectedEntry(for: type)
         let state = manager.installState(for: entry.id)
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: icon(for: entry.type))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(entry.displayName)
-                        .foregroundStyle(.primary)
-                    Text(entry.recommended
-                        ? "settings.localai.model.badge.recommended"
-                        : "settings.localai.model.badge.lite")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.quaternary, in: Capsule())
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: type.systemImage)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+
+                Picker(selection: selectionBinding(for: type)) {
+                    ForEach(LocalAIModelCatalog.entries(of: type)) { candidate in
+                        Text(pickerTitle(candidate)).tag(Optional(candidate.id))
+                    }
+                } label: {
+                    Text(typeLabel(type))
                 }
+                .pickerStyle(.menu)
+
+                Spacer(minLength: 12)
+
+                statusView(for: entry, state: state)
+            }
+
+            HStack(spacing: 6) {
+                Text(entry.recommended
+                    ? "settings.localai.model.badge.recommended"
+                    : "settings.localai.model.badge.lite")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.quaternary, in: Capsule())
+
                 Text(sizeCaption(for: entry))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                // 下载中的细进度条 + 速度 / 百分比 / 字节，内嵌在模型行内，
-                // 避免整宽独立行把四个模型隔得太开。
-                if case .downloading(let progress, let completedBytes, let totalBytes, let speed) = state {
-                    thinProgressBar(progress)
-                    Text(progressCaption(
-                        progress: progress,
-                        completedBytes: completedBytes,
-                        totalBytes: totalBytes,
-                        speedBytesPerSecond: speed))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .padding(.leading, 30)
 
-            Spacer(minLength: 12)
-
-            statusView(for: entry, state: state)
+            if case .downloading(let progress, let completedBytes, let totalBytes, let speed) = state {
+                thinProgressBar(progress)
+                    .padding(.leading, 30)
+                Text(progressCaption(
+                    progress: progress,
+                    completedBytes: completedBytes,
+                    totalBytes: totalBytes,
+                    speedBytesPerSecond: speed))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.leading, 30)
+            }
         }
         .padding(.vertical, 2)
         .help(String(format: String.l10n("settings.localai.model.memoryHelpFormat"),
@@ -161,46 +198,44 @@ struct LocalAIModelsSection: View {
                      ByteCountFormatter.string(fromByteCount: Int64(entry.memoryRecommendation), countStyle: .file)))
     }
 
-    /// 4pt 细进度条：macOS 默认 `.linear` 样式过粗；自定义 Capsule 保证粗细一致，
-    /// 宽度动画用 linear 短过渡（进度回调约 0.5s 一次，视觉连续）。
-    private func thinProgressBar(_ progress: Double) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.quaternary)
-                Capsule()
-                    .fill(.tint)
-                    .frame(width: max(0, min(1, progress)) * geo.size.width)
-            }
+    private func pickerTitle(_ entry: LocalAIModelCatalogEntry) -> String {
+        var parts = [entry.displayName]
+        if manager.installState(for: entry.id).isInstalled {
+            parts.append(String.l10n("settings.localai.model.status.installed"))
         }
-        .frame(height: 4)
-        .animation(.linear(duration: 0.25), value: progress)
-        .accessibilityLabel(Text("settings.localai.section.title"))
-        .accessibilityValue(Text("\(Int(progress * 100))%"))
+        return parts.joined(separator: " · ")
     }
 
-    /// 「128.4 MB / 664 MB · 19% · 45.2 MB/s」；首个采样窗口速度未出时省略速度段。
-    private func progressCaption(
-        progress: Double,
-        completedBytes: Int64,
-        totalBytes: Int64,
-        speedBytesPerSecond: Double?
-    ) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        let downloaded = formatter.string(fromByteCount: completedBytes)
-        let total = formatter.string(fromByteCount: totalBytes)
-        let percent = String(format: "%d%%", Int((max(0, min(1, progress)) * 100).rounded()))
-        if let speed = speedBytesPerSecond, speed > 0 {
-            let speedText = formatter.string(fromByteCount: Int64(speed))
-            return String(
-                format: String.l10n("settings.localai.model.progressFormat"),
-                downloaded, total, percent, speedText)
+    /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
+    private func selectedEntry(for type: LocalAIModelType) -> LocalAIModelCatalogEntry {
+        let entries = LocalAIModelCatalog.entries(of: type)
+        guard !entries.isEmpty else {
+            // catalog 保证每类非空；防御性兜底避免强制解包。
+            return LocalAIModelCatalog.entries[0]
         }
-        return String(
-            format: String.l10n("settings.localai.model.progressNoSpeedFormat"),
-            downloaded, total, percent)
+        if let id = selectedIDs[type], let entry = entries.first(where: { $0.id == id }) {
+            return entry
+        }
+        return entries.first { manager.installedModel(id: $0.id) != nil }
+            ?? entries.first { $0.recommended }
+            ?? entries[0]
     }
+
+    private func selectionBinding(for type: LocalAIModelType) -> Binding<String> {
+        Binding(
+            get: { selectedEntry(for: type).id },
+            set: { selectedIDs[type] = $0 })
+    }
+
+    private func typeLabel(_ type: LocalAIModelType) -> String {
+        switch type {
+        case .embedding: return String.l10n("settings.localai.model.type.embedding")
+        case .reranker: return String.l10n("settings.localai.model.type.reranker")
+        case .llm: return String.l10n("settings.localai.model.type.llm")
+        }
+    }
+
+    // MARK: - 状态与操作
 
     @ViewBuilder
     private func statusView(
@@ -209,13 +244,30 @@ struct LocalAIModelsSection: View {
     ) -> some View {
         switch state {
         case .idle:
-            Button {
-                manager.install(entry: entry)
-            } label: {
-                Label("settings.localai.model.action.download", systemImage: "arrow.down.circle")
+            if entry.isAvailable(on: settings.localAIDownloadSource) {
+                Button {
+                    manager.install(entry: entry)
+                } label: {
+                    Label("settings.localai.model.action.download", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+            } else {
+                // catalog 未收录该模型在当前下载源的镜像（白名单制，禁止静默换源）。
+                Button {
+                    manager.install(entry: entry)
+                } label: {
+                    Label("settings.localai.model.action.download", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .disabled(true)
+                Text("settings.localai.source.unavailable")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 120, alignment: .trailing)
+                    .lineLimit(2)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
 
         case .preparing:
             HStack(spacing: 6) {
@@ -279,12 +331,46 @@ struct LocalAIModelsSection: View {
         .accessibilityLabel(Text("settings.localai.model.action.delete"))
     }
 
-    private func icon(for type: LocalAIModelType) -> String {
-        switch type {
-        case .embedding: return "point.3.connected.trianglepath.dotted"
-        case .reranker: return "arrow.up.arrow.down"
-        case .llm: return "bubble.left.and.text.bubble.right"
+    // MARK: - 进度展示
+
+    /// 4pt 细进度条：macOS 默认 `.linear` 样式过粗；自定义 Capsule 保证粗细一致。
+    private func thinProgressBar(_ progress: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.quaternary)
+                Capsule()
+                    .fill(.tint)
+                    .frame(width: max(0, min(1, progress)) * geo.size.width)
+            }
         }
+        .frame(height: 4)
+        .animation(.linear(duration: 0.25), value: progress)
+        .accessibilityLabel(Text("settings.localai.section.title"))
+        .accessibilityValue(Text("\(Int(progress * 100))%"))
+    }
+
+    /// 「128.4 MB / 664 MB · 19% · 45.2 MB/s」；首个采样窗口速度未出时省略速度段。
+    private func progressCaption(
+        progress: Double,
+        completedBytes: Int64,
+        totalBytes: Int64,
+        speedBytesPerSecond: Double?
+    ) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let downloaded = formatter.string(fromByteCount: completedBytes)
+        let total = formatter.string(fromByteCount: totalBytes)
+        let percent = String(format: "%d%%", Int((max(0, min(1, progress)) * 100).rounded()))
+        if let speed = speedBytesPerSecond, speed > 0 {
+            let speedText = formatter.string(fromByteCount: Int64(speed))
+            return String(
+                format: String.l10n("settings.localai.model.progressFormat"),
+                downloaded, total, percent, speedText)
+        }
+        return String(
+            format: String.l10n("settings.localai.model.progressNoSpeedFormat"),
+            downloaded, total, percent)
     }
 
     private func sizeCaption(for entry: LocalAIModelCatalogEntry) -> String {
@@ -295,16 +381,14 @@ struct LocalAIModelsSection: View {
             parts.append(String(
                 format: String.l10n("settings.localai.model.dimensionFormat"), dimension))
         }
-        parts.append(typeLabel(for: entry.type))
         return parts.joined(separator: " · ")
     }
 
-    private func typeLabel(for type: LocalAIModelType) -> String {
-        switch type {
-        case .embedding: return String.l10n("settings.localai.model.type.embedding")
-        case .reranker: return String.l10n("settings.localai.model.type.reranker")
-        case .llm: return String.l10n("settings.localai.model.type.llm")
-        }
+    // MARK: - 其它动作
+
+    private var storageUsageText: String {
+        let usage = ByteCountFormatter.string(fromByteCount: manager.totalDiskUsage, countStyle: .file)
+        return String(format: String.l10n("settings.localai.storage.usageFormat"), usage)
     }
 
     private func revealModelsDirectory() {

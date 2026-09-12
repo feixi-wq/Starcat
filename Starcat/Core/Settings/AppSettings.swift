@@ -1001,6 +1001,19 @@ final class AppSettings {
         didSet { persist(key: Keys.aiEmbeddingModel, value: aiEmbeddingModel) }
     }
 
+    /// 本地 AI 模型下载源（Hugging Face / ModelScope）。
+    ///
+    /// 只影响**新下载**：已安装模型不受切源影响（manifest 记录各自来源）。
+    /// catalog 中未收录某源镜像的模型，在该源下按钮置灰并提示「暂未收录」。
+    var localAIDownloadSource: LocalAIModelSource.Kind {
+        get {
+            LocalAIModelSource.Kind(
+                rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
+            ) ?? .huggingFace
+        }
+        set { persist(key: Keys.localAIDownloadSource, value: newValue.rawValue) }
+    }
+
     /// 多服务商 AI 配置。
     ///
     /// 为什么放 UserDefaults JSON：
@@ -2755,6 +2768,7 @@ final class AppSettings {
         static let aiChatModel = "settings.ai.chatModel"
         static let aiEmbeddingModel = "settings.ai.embeddingModel"
         static let aiProviderProfiles = "settings.ai.providerProfiles.v2"
+        static let localAIDownloadSource = "settings.localai.downloadSource.v1"
         static let aiSummaryTask = "settings.ai.task.summary.v2"
         static let aiTagsTask = "settings.ai.task.tags.v2"
         static let aiTagSuggestionMinCount = "settings.ai.tagSuggestion.minCount.v1"

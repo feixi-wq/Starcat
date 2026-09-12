@@ -65,6 +65,9 @@ final class LocalAIModelManager {
         var speed: Double?
     }
     private var speedSamples: [String: SpeedSample] = [:]
+    /// 暂停防抖代数：pause/install 各自 +1，使飞行中的进度回调立即过期，
+    /// 避免暂停后按钮在「下载 / 进度」之间抖动直到底层取消完成。
+    private var installGenerations: [String: Int] = [:]
 
     private init() {
         refreshInstalledModels()
@@ -132,23 +135,34 @@ final class LocalAIModelManager {
 
     // MARK: - 安装 / 暂停 / 删除
 
-    /// 下载并安装一个 catalog 模型。重复调用同 id 时忽略（UI 按钮已置灰，防御性兜底）。
+    /// 下载并安装一个 catalog 模型（使用设置页当前选择的下载源）。
+    /// 重复调用同 id 时忽略（UI 按钮已置灰，防御性兜底）。
     func install(entry: LocalAIModelCatalogEntry) {
         if TestEnvironment.isRunning { return }
         guard runningInstalls[entry.id] == nil else { return }
         guard !installState(for: entry.id).isInstalled else { return }
 
+        let sourceKind = AppSettings.shared.localAIDownloadSource
+        guard let source = entry.source(for: sourceKind) else {
+            installStates[entry.id] = .failed(
+                message: String.l10n("settings.localai.source.unavailable"))
+            return
+        }
+
         installStates[entry.id] = .preparing
         speedSamples[entry.id] = nil
+        installGenerations[entry.id, default: 0] += 1
+        let generation = installGenerations[entry.id]!
         // 强持有 self：manager 是进程级单例，安装期间不释放；weak 会让 Task 句柄变成 Void?。
         let task = Task {
-            await self.runInstall(entry: entry)
+            await self.runInstall(entry: entry, source: source, generation: generation)
         }
         runningInstalls[entry.id] = task
     }
 
     /// 暂停（取消当前下载）。`.part` 保留，下次 install 从断点续传。
     func pause(entryID: String) {
+        installGenerations[entryID, default: 0] += 1
         runningInstalls[entryID]?.cancel()
         runningInstalls[entryID] = nil
         speedSamples[entryID] = nil
@@ -192,9 +206,11 @@ final class LocalAIModelManager {
 
     // MARK: - 内部安装流程
 
-    private func runInstall(entry: LocalAIModelCatalogEntry) async {
+    private func runInstall(
+        entry: LocalAIModelCatalogEntry, source: LocalAIModelSource, generation: Int
+    ) async {
         do {
-            let revision = try await resolveRevision(for: entry.source)
+            let revision = try await resolveRevision(for: source)
             let directory = try LocalAIModelStorage.modelDirectory(
                 entry: entry, revision: revision)
             var records: [LocalAIFileRecord] = []
@@ -203,7 +219,9 @@ final class LocalAIModelManager {
 
             // 文件大小计划：HF tree API 取真实字节做加权；失败时按文件数均分预估体积，
             // 保证进度语义仍然单调（只是权重不准）。
-            let fileSizes = await resolveFileSizes(for: entry, revision: revision)
+            let fileSizes = source.kind == .huggingFace
+                ? await resolveFileSizes(for: entry, source: source, revision: revision)
+                : [:]
             let knownTotal = entry.files.compactMap { fileSizes[$0.name] }.reduce(0, +)
             let fallbackFileSize: Int64 = knownTotal > 0
                 ? 0
@@ -225,13 +243,13 @@ final class LocalAIModelManager {
                 let doneBeforeSnapshot = doneBytesBefore
                 do {
                     let record = try await downloadOne(
-                        entry: entry, revision: revision, file: file.name,
+                        entry: entry, source: source, revision: revision, file: file.name,
                         directory: directory,
                         onFileProgress: { [weak self] fileFraction in
                             // 整体进度 = 已完成文件字节 + 当前文件加权字节；
                             // 状态机与速度采样都在 MainActor 上，统一 hop 过去。
                             Task { @MainActor [weak self] in
-                                guard let self else { return }
+                                guard let self, self.installGenerations[entry.id] == generation else { return }
                                 let completed = doneBeforeSnapshot + Int64(Double(fileSize) * fileFraction)
                                 let speed = self.updateSpeedSampler(
                                     entryID: entry.id, completedBytes: completed)
@@ -245,6 +263,10 @@ final class LocalAIModelManager {
                             }
                         })
                     records.append(record)
+                    guard installGenerations[entry.id] == generation else {
+                        runningInstalls[entry.id] = nil
+                        return
+                    }
                     doneBytesBefore += fileSize
                 } catch let error as LocalAIDownloadError {
                     if error == .cancelled {
@@ -268,7 +290,7 @@ final class LocalAIModelManager {
                 type: entry.type,
                 revision: revision,
                 installedAt: Date(),
-                sourceKind: entry.source.kind,
+                sourceKind: source.kind,
                 files: records,
                 embeddingDimension: entry.embeddingDimension,
                 totalBytes: records.reduce(0) { $0 + $1.sizeBytes })
@@ -286,22 +308,27 @@ final class LocalAIModelManager {
 
     private func downloadOne(
         entry: LocalAIModelCatalogEntry,
+        source: LocalAIModelSource,
         revision: String,
         file: String,
         directory: URL,
         onFileProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> LocalAIFileRecord {
         let remoteURL: URL
-        switch entry.source.kind {
+        switch source.kind {
         case .huggingFace:
-            guard let url = URL(string: "https://huggingface.co/\(entry.source.repo)/resolve/\(revision)/\(file)"
+            guard let url = URL(string: "https://huggingface.co/\(source.repo)/resolve/\(revision)/\(file)"
             ) else {
                 throw LocalAIDownloadError.invalidURL(file)
             }
             remoteURL = url
         case .modelScope:
-            // v1 catalog 不登记 ModelScope；保留分支使源枚举完备。
-            throw LocalAIDownloadError.invalidURL(file)
+            // ModelScope 镜像为社区同步，固定 master 快照；revision 记进 manifest 可追溯。
+            guard let url = URL(string: "https://modelscope.cn/models/\(source.repo)/resolve/master/\(file)"
+            ) else {
+                throw LocalAIDownloadError.invalidURL(file)
+            }
+            remoteURL = url
         }
         let result = try await downloader.downloadFile(
             remoteURL: remoteURL,
@@ -315,10 +342,13 @@ final class LocalAIModelManager {
             name: result.name, sha256: result.sha256, sizeBytes: result.sizeBytes)
     }
 
-    /// 解析远端 revision：固定值直接用；否则查 HF API 取当前 commit SHA（记录进 manifest 可追溯）。
+    /// 解析远端 revision：固定值直接用；HF 查 API 取当前 commit SHA（记录进 manifest
+    /// 可追溯）；ModelScope 镜像为社区同步，固定 master 快照。
     private func resolveRevision(for source: LocalAIModelSource) async throws -> String {
         if let revision = source.revision { return revision }
         switch source.kind {
+        case .modelScope:
+            return "master"
         case .huggingFace:
             guard let url = URL(string: "https://huggingface.co/api/models/\(source.repo)") else {
                 throw LocalAIDownloadError.invalidURL(source.repo)
@@ -358,10 +388,10 @@ final class LocalAIModelManager {
     /// HF tree API：返回仓库文件的精确字节大小（LFS 文件取 `lfs.size`）。
     /// 失败返回空字典，调用方回退到均分预估，不阻断下载。
     private func resolveFileSizes(
-        for entry: LocalAIModelCatalogEntry, revision: String
+        for entry: LocalAIModelCatalogEntry, source: LocalAIModelSource, revision: String
     ) async -> [String: Int64] {
-        guard entry.source.kind == .huggingFace,
-            let url = URL(string: "https://huggingface.co/api/models/\(entry.source.repo)/tree/\(revision)?recursive=true")
+        guard source.kind == .huggingFace,
+            let url = URL(string: "https://huggingface.co/api/models/\(source.repo)/tree/\(revision)?recursive=true")
         else { return [:] }
         var request = URLRequest(url: url)
         request.setValue(AppConstants.httpUserAgent, forHTTPHeaderField: "User-Agent")

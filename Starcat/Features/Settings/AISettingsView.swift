@@ -168,7 +168,7 @@ struct AISettingsTab: View {
             providerSection
             // 本地 AI 模型管理区：下载 / 暂停 / 删除内置 MLX 模型。Apple Silicon 才展示。
             if LocalAIHardwareSupport.isLocalAIAvailable {
-                LocalAIModelsSection()
+                LocalAIModelsSection(settings: dependencies.settings)
             }
             enabledModelsSection
             taskModelsSection
