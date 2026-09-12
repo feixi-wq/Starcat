@@ -60,8 +60,11 @@ struct GitHubNotificationDetailView: View {
             .background(.background)
     }
 
+    @ViewBuilder
     private func populatedDetail(_ item: ActivityItem) -> some View {
-        VStack(spacing: 0) {
+        // 观察者 / toast 必须挂在独立子表达式：下面这条链已顶到 Swift 类型检查器上限，
+        // 直接内联新 modifier 会让整个 VStack 报 "unable to type-check in reasonable time"。
+        let content = VStack(spacing: 0) {
             // 仓库名占中栏筛选条同一高度，横线才能和中栏对齐。
             if let payload = item.notification {
                 headerRepoRow(payload)
@@ -1881,7 +1884,8 @@ private struct GitHubNotificationTranslationControls: View {
             return "readme.translate.tooltip.stop"
         }
         if isShowingTranslation { return "readme.translate.tooltip.showOriginal" }
-        return "readme.translate.tooltip.translate"
+        // 引擎可变后文案不再写死 AI，统一指向「所选翻译服务」。
+        return "readme.translate.tooltip.translateService"
     }
 }
 

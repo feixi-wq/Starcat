@@ -1205,7 +1205,8 @@ struct ReadmeTranslationFooterButton: View {
             return "readme.translate.tooltip.stop"
         }
         if isShowingTranslation { return "readme.translate.tooltip.showOriginal" }
-        return "readme.translate.tooltip.translate"
+        // 引擎可变后文案不再写死 AI，统一指向「所选翻译服务」。
+        return "readme.translate.tooltip.translateService"
     }
 
     /// 右侧 chevron 下拉菜单：引擎 / 方式 / 语言 / 重新翻译。

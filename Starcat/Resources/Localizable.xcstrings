@@ -261598,6 +261598,22 @@
         }
       }
     },
+    "readme.translate.tooltip.translateService" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Translate using the selected service and mode (cached locally)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用所选翻译服务和方式翻译，结果会缓存到本地"
+          }
+        }
+      }
+    },
     "relative.justNow" : {
       "extractionState" : "stale",
       "localizations" : {
