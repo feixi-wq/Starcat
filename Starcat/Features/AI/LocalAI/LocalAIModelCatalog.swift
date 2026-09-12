@@ -13,9 +13,10 @@
 //    ——下载源选了 ModelScope 而某模型没有镜像时，该模型显示「暂未收录」。
 //  - ModelScope 镜像为社区同步（master 分支），revision 记录为 master 快照；
 //    HF 为权威源（安装时解析 commit SHA）。
-//  - 每类至少 2 个模型；embedding / 生成已满足 ≥3，reranker 上游仅核验到 2 个
-//    （8bit / bf16 / 4B / 8B / bge-reranker-v2-m3 均不存在）。9 个模型已全部
-//    核验 Hugging Face + ModelScope 双源（2026-09-12 补查，此前两次超时系网络抖动）。
+//  - 2026-09-12 二轮扩充：Embedding 4 / Reranker 3 / LLM 4（Qwen3.5 已入册）。
+//    Nemotron-3-Embed（model_type ministral3）上游 registry 不支持，未收录；
+//    jina-reranker-v3 为 CC BY-NC 非商业许可，未收录；Qwen3-VL-Reranker 为
+//    视觉语言架构，文本管线暂不支持。11 个模型均已核验 HF + ModelScope 双源。
 //  - 换默认模型 = 改这里，业务层无感。
 //
 
@@ -182,6 +183,23 @@ enum LocalAIModelCatalog {
         ],
         files: mlxConfigFiles)
 
+    static let embeddingGemma = LocalAIModelCatalogEntry(
+        id: "embeddinggemma-300m-4bit",
+        displayName: "EmbeddingGemma 300M 4bit",
+        type: .embedding,
+        capability: .embedding,
+        recommended: false,
+        isLite: true,
+        estimatedDownloadSize: 215_000_000,
+        memoryRecommendation: 600_000_000,
+        contextLength: 2_048,
+        embeddingDimension: 768,
+        sources: [
+            LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/embeddinggemma-300m-4bit", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/embeddinggemma-300m-4bit", revision: nil),
+        ],
+        files: mlxConfigFiles)
+
     // MARK: - Reranker（2；上游可核验的只有这两个）
 
     static let reranker = LocalAIModelCatalogEntry(
@@ -215,6 +233,23 @@ enum LocalAIModelCatalog {
         sources: [
             LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/Qwen3-Reranker-0.6B-mxfp8", revision: nil),
             LocalAIModelSource(kind: .modelScope, repo: "mlx-community/Qwen3-Reranker-0.6B-mxfp8", revision: nil),
+        ],
+        files: mlxConfigFiles)
+
+    static let reranker4B = LocalAIModelCatalogEntry(
+        id: "qwen3-reranker-4b-mxfp8",
+        displayName: "Qwen3 Reranker 4B mxfp8",
+        type: .reranker,
+        capability: .rerank,
+        recommended: false,
+        isLite: false,
+        estimatedDownloadSize: 4_200_000_000,
+        memoryRecommendation: 7_000_000_000,
+        contextLength: 32_768,
+        embeddingDimension: nil,
+        sources: [
+            LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/Qwen3-Reranker-4B-mxfp8", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/Qwen3-Reranker-4B-mxfp8", revision: nil),
         ],
         files: mlxConfigFiles)
 
@@ -293,10 +328,12 @@ enum LocalAIModelCatalog {
     /// 全部目录项。顺序即下拉顺序（推荐在前）。
     static let entries: [LocalAIModelCatalogEntry] = [
         embedding,
+        embeddingGemma,
         embeddingLFM8bit,
         embeddingLFM4bit,
         reranker,
         rerankerMXFP8,
+        reranker4B,
         llm,
         llmQwen3_4B,
         llmQwen35Lite,

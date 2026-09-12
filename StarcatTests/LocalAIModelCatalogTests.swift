@@ -65,8 +65,8 @@ struct LocalAIModelCatalogTests {
 
     @Test("ModelScope 仅收录已验证镜像")
     func modelScopeWhitelist() {
-        // 2026-09-12 补查后 9 个模型在魔塔全部有 mlx-community 镜像（此前两次
-        // 查询超时系网络抖动，误判为未收录）。
+        // 2026-09-12 全量核验：11 个模型在 HF 与魔塔均有 mlx-community 镜像
+        //（新入册 embeddinggemma / reranker-4B 亦已双源验证）。
         for entry in LocalAIModelCatalog.entries {
             #expect(entry.isAvailable(on: .modelScope), "\(entry.id) 应有魔塔镜像")
             #expect(entry.isAvailable(on: .huggingFace), "\(entry.id) 应有 HF 仓库")
