@@ -184,6 +184,9 @@ struct LocalAIModelsSection: View {
                     .truncationMode(.tail)
                     .padding(.leading, 30)
             }
+
+            stateMessageCaption(state)
+                .padding(.leading, 30)
         }
         .padding(.vertical, 2)
         .help(String(format: String.l10n("settings.localai.model.memoryHelpFormat"),
@@ -324,6 +327,9 @@ struct LocalAIModelsSection: View {
 
     // MARK: - 状态与操作
 
+    /// 行尾状态区：只放 62pt 定宽内装得下的图标（dong4j 2026-09-12——
+    /// 「Preparing…」等带文字状态被定宽挤压成竖排的修正）。
+    /// 失败原因 / 加载中等长文案一律放到行下方整行 caption。
     @ViewBuilder
     private func statusView(
         for entry: LocalAIModelCatalogEntry,
@@ -335,7 +341,6 @@ struct LocalAIModelsSection: View {
                 Button {
                     manager.install(entry: entry)
                 } label: {
-                    // icon-only（dong4j 2026-09-12）：文案由行内徽标与下方信息承担。
                     Image(systemName: "arrow.down.circle")
                         .font(Self.rowIconFont)
                         .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
@@ -351,19 +356,13 @@ struct LocalAIModelsSection: View {
                     .font(Self.rowIconFont)
                     .foregroundStyle(.secondary)
                     .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
-                Text("settings.localai.source.unavailable")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: 120, alignment: .trailing)
-                    .lineLimit(2)
+                    .help(Text("settings.localai.source.unavailable"))
             }
 
         case .preparing:
-            HStack(spacing: 6) {
+            // 点击与首个进度回调之间的瞬态：转圈 + 可暂停，不需要文字。
+            HStack(spacing: 4) {
                 ProgressView().controlSize(.small)
-                Text("settings.localai.model.status.preparing")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 pauseButton(entry)
             }
 
@@ -371,52 +370,38 @@ struct LocalAIModelsSection: View {
             pauseButton(entry)
 
         case .loading:
-            // MLX 不暴露权重加载的字节进度：给不确定进度条（薄荷色，与下载蓝色区分）+ 文案。
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("settings.localai.model.status.loading")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                indeterminateBar
-                    .frame(width: 140)
-            }
+            // MLX 不暴露权重加载的字节进度：只给薄荷色不确定细条，宽度对齐状态区。
+            indeterminateBar
+                .frame(width: Self.statusAreaWidth - 4)
+                .help(Text("settings.localai.model.status.loading"))
 
-        case .loadFailed(let message):
-            VStack(alignment: .trailing, spacing: 4) {
-                Button {
-                    manager.retryLoad(entry: entry)
-                } label: {
-                    Label("settings.localai.model.action.retryLoad", systemImage: "arrow.clockwise.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: 240, alignment: .trailing)
+        case .failed:
+            Button {
+                manager.install(entry: entry)
+            } label: {
+                Image(systemName: "arrow.clockwise.circle")
+                    .font(Self.rowIconFont)
+                    .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .help("settings.localai.model.action.retry")
 
-        case .failed(let message):
-            VStack(alignment: .trailing, spacing: 4) {
-                Button {
-                    manager.install(entry: entry)
-                } label: {
-                    Label("settings.localai.model.action.retry", systemImage: "arrow.clockwise.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: 240, alignment: .trailing)
+        case .loadFailed:
+            Button {
+                manager.retryLoad(entry: entry)
+            } label: {
+                Image(systemName: "arrow.clockwise.circle")
+                    .font(Self.rowIconFont)
+                    .frame(width: Self.rowIconFrameSize, height: Self.rowIconFrameSize)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .help("settings.localai.model.action.retryLoad")
 
         case .installed:
-            // 只保留绿色对勾 + 删除两个同规格图标（15pt / 28pt 命中，dong4j 2026-09-12）；
-            // 安装状态语义由对勾颜色与位置承担，无障碍标签保留「已安装」。
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(Self.rowIconFont)
@@ -425,6 +410,27 @@ struct LocalAIModelsSection: View {
                     .accessibilityLabel(Text("settings.localai.model.status.installed"))
                 deleteButton(entry)
             }
+        }
+    }
+
+    /// 行下方整行 caption：下载 / 加载失败的原因（状态区放不下长文案）。
+    @ViewBuilder
+    private func stateMessageCaption(_ state: LocalAIInstallState) -> some View {
+        switch state {
+        case .failed(let message):
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+        case .loadFailed(let message):
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+        default:
+            EmptyView()
         }
     }
 
