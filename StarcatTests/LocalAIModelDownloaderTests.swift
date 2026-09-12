@@ -40,6 +40,7 @@ struct LocalAIModelDownloaderTests {
         let result = try await downloader.downloadFile(
             remoteURL: URL(string: "https://models.test.invalid/model.safetensors")!,
             fileName: "model.safetensors",
+            sourceKind: .huggingFace,
             into: directory,
             expectedTotalBytes: Int64(payload.count),
             onProgress: nil)
@@ -48,7 +49,7 @@ struct LocalAIModelDownloaderTests {
         #expect(result.sizeBytes == Int64(payload.count))
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.safetensors").path))
         // 下载完成后 .part 不应残留。
-        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.safetensors.part").path))
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.safetensors.huggingface.part").path))
     }
 
     @Test("已有 .part 时走 206 续传并拼接哈希")
@@ -64,7 +65,7 @@ struct LocalAIModelDownloaderTests {
             .appendingPathComponent("localai-dl-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try prefix.write(to: directory.appendingPathComponent("model.safetensors.part"))
+        try prefix.write(to: directory.appendingPathComponent("model.safetensors.huggingface.part"))
 
         URLProtocolStub.requestHandler = { request in
             let range = request.value(forHTTPHeaderField: "Range")
@@ -83,6 +84,7 @@ struct LocalAIModelDownloaderTests {
         let result = try await downloader.downloadFile(
             remoteURL: URL(string: "https://models.test.invalid/model.safetensors")!,
             fileName: "model.safetensors",
+            sourceKind: .huggingFace,
             into: directory,
             expectedTotalBytes: Int64(full.count),
             onProgress: nil)
@@ -104,7 +106,7 @@ struct LocalAIModelDownloaderTests {
             .appendingPathComponent("localai-dl-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data("stale".utf8).write(to: directory.appendingPathComponent("model.safetensors.part"))
+        try Data("stale".utf8).write(to: directory.appendingPathComponent("model.safetensors.huggingface.part"))
 
         URLProtocolStub.requestHandler = { request in
             #expect(request.value(forHTTPHeaderField: "Range") != nil)
@@ -116,6 +118,7 @@ struct LocalAIModelDownloaderTests {
         let result = try await downloader.downloadFile(
             remoteURL: URL(string: "https://models.test.invalid/model.safetensors")!,
             fileName: "model.safetensors",
+            sourceKind: .huggingFace,
             into: directory,
             expectedTotalBytes: Int64(payload.count),
             onProgress: nil)
@@ -142,6 +145,7 @@ struct LocalAIModelDownloaderTests {
             _ = try await downloader.downloadFile(
                 remoteURL: URL(string: "https://models.test.invalid/missing.safetensors")!,
                 fileName: "missing.safetensors",
+                sourceKind: .huggingFace,
                 into: directory,
                 expectedTotalBytes: nil,
                 onProgress: nil)
@@ -172,6 +176,7 @@ struct LocalAIModelDownloaderTests {
             _ = try await downloader.downloadFile(
                 remoteURL: URL(string: "https://models.test.invalid/model.safetensors")!,
                 fileName: "model.safetensors",
+                sourceKind: .huggingFace,
                 into: directory,
                 expectedTotalBytes: nil,
                 onProgress: nil)

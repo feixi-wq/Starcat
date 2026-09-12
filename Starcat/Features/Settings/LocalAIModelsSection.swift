@@ -131,7 +131,12 @@ struct LocalAIModelsSection: View {
     private var sourceBinding: Binding<LocalAIModelSource.Kind> {
         Binding(
             get: { settings.localAIDownloadSource },
-            set: { settings.localAIDownloadSource = $0 })
+            set: {
+                settings.localAIDownloadSource = $0
+                // 断点续传文件按源隔离 + 切源即清：HF 的 part 前缀拼上魔塔的后续数据
+                // 会产出损坏权重（禁止静默混流，dong4j 2026-09-12）。
+                LocalAIModelStorage.cleanPartialFiles()
+            })
     }
 
     // MARK: - 类别分组行
@@ -501,20 +506,18 @@ struct LocalAIModelsSection: View {
         totalBytes: Int64,
         speedBytesPerSecond: Double?
     ) -> String {
+        // 不用 String(format:) 的位置参数格式串：%1$@ 与 %% 混用会把参数错位读成
+        // 指针垃圾（曾显示 849191526%，dong4j 2026-09-12）。数字+单位本身语言中立，
+        // 直接插值拼装。
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
-        let downloaded = formatter.string(fromByteCount: completedBytes)
-        let total = formatter.string(fromByteCount: totalBytes)
-        let percent = String(format: "%d%%", Int((max(0, min(1, progress)) * 100).rounded()))
+        let percent = Int((max(0, min(1, progress)) * 100).rounded())
+        var text = "\(formatter.string(fromByteCount: completedBytes)) / "
+            + "\(formatter.string(fromByteCount: totalBytes)) · \(percent)%"
         if let speed = speedBytesPerSecond, speed > 0 {
-            let speedText = formatter.string(fromByteCount: Int64(speed))
-            return String(
-                format: String.l10n("settings.localai.model.progressFormat"),
-                downloaded, total, percent, speedText)
+            text += " · \(formatter.string(fromByteCount: Int64(speed)))/s"
         }
-        return String(
-            format: String.l10n("settings.localai.model.progressNoSpeedFormat"),
-            downloaded, total, percent)
+        return text
     }
 
     private func sizeCaption(for entry: LocalAIModelCatalogEntry) -> String {

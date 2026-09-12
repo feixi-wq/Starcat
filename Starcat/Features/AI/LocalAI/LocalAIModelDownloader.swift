@@ -88,11 +88,15 @@ actor LocalAIModelDownloader {
     func downloadFile(
         remoteURL: URL,
         fileName: String,
+        sourceKind: LocalAIModelSource.Kind,
         into destinationDirectory: URL,
         expectedTotalBytes: Int64?,
         onProgress: ProgressHandler?
     ) async throws -> LocalAIDownloadResult {
-        let partURL = destinationDirectory.appendingPathComponent("\(fileName).part")
+        // .part 按下载源隔离：不同源的权重内容不保证逐字节一致（镜像/版本差异），
+        // 跨源复用断点会把两份数据混写成一个文件。
+        let partURL = destinationDirectory.appendingPathComponent(
+            "\(fileName).\(sourceKind.rawValue).part")
         let finalURL = destinationDirectory.appendingPathComponent(fileName)
 
         // 目录准备 + 已完成文件短路（重试场景：前面的文件已下好）。

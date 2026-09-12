@@ -412,6 +412,7 @@ final class LocalAIModelManager {
         let result = try await downloader.downloadFile(
             remoteURL: remoteURL,
             fileName: file,
+            sourceKind: source.kind,
             into: directory,
             expectedTotalBytes: entry.estimatedDownloadSize,
             onProgress: { progress in
