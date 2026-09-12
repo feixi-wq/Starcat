@@ -14,7 +14,8 @@
 //  - ModelScope 镜像为社区同步（master 分支），revision 记录为 master 快照；
 //    HF 为权威源（安装时解析 commit SHA）。
 //  - 每类至少 2 个模型；embedding / 生成已满足 ≥3，reranker 上游仅核验到 2 个
-//    （8bit / bf16 / 4B / 8B / bge-reranker-v2-m3 均不存在）。
+//    （8bit / bf16 / 4B / 8B / bge-reranker-v2-m3 均不存在）。9 个模型已全部
+//    核验 Hugging Face + ModelScope 双源（2026-09-12 补查，此前两次超时系网络抖动）。
 //  - 换默认模型 = 改这里，业务层无感。
 //
 
@@ -159,8 +160,8 @@ enum LocalAIModelCatalog {
         contextLength: nil,
         embeddingDimension: 1024,
         sources: [
-            // 8bit 的魔塔镜像两次核验超时，暂只收 HF。
             LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/LFM2.5-Embedding-350M-8bit", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/LFM2.5-Embedding-350M-8bit", revision: nil),
         ],
         files: mlxConfigFiles)
 
@@ -195,8 +196,8 @@ enum LocalAIModelCatalog {
         contextLength: 32_768,
         embeddingDimension: nil,
         sources: [
-            // ModelScope 镜像未核验，v1 只收 Hugging Face。
             LocalAIModelSource(kind: .huggingFace, repo: "mlx-community/Qwen3-Reranker-0.6B-4bit", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "mlx-community/Qwen3-Reranker-0.6B-4bit", revision: nil),
         ],
         files: mlxConfigFiles)
 

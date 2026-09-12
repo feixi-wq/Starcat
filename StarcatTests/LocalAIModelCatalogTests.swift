@@ -65,19 +65,11 @@ struct LocalAIModelCatalogTests {
 
     @Test("ModelScope 仅收录已验证镜像")
     func modelScopeWhitelist() {
-        // 2026-09-12 核验：以下七个模型在魔塔有 mlx-community 镜像；
-        // reranker-4bit 与 LFM2.5 8bit 未核验（超时/缺失），只收 HF。
-        let verifiedOnModelScope = [
-            "qwen3-embedding-0.6b-8bit",
-            "lfm2.5-embedding-350m-4bit",
-            "qwen3-reranker-0.6b-mxfp8",
-            "qwen3.5-4b-mlx-4bit",
-            "qwen3.5-0.8b-mlx-4bit",
-            "qwen3-4b-instruct-2507-4bit",
-            "qwen3-1.7b-4bit",
-        ]
+        // 2026-09-12 补查后 9 个模型在魔塔全部有 mlx-community 镜像（此前两次
+        // 查询超时系网络抖动，误判为未收录）。
         for entry in LocalAIModelCatalog.entries {
-            #expect(entry.isAvailable(on: .modelScope) == verifiedOnModelScope.contains(entry.id))
+            #expect(entry.isAvailable(on: .modelScope), "\(entry.id) 应有魔塔镜像")
+            #expect(entry.isAvailable(on: .huggingFace), "\(entry.id) 应有 HF 仓库")
         }
     }
 
