@@ -270,19 +270,18 @@ struct LocalAIModelsSection: View {
     /// 档位胶囊：推荐 = 绿色调，轻量 = 中性；短文案 + 单行，中英文都不换行。
     @ViewBuilder
     private func badgeCapsule(_ entry: LocalAIModelCatalogEntry) -> some View {
-        // 必须用 String.l10n 而不是 Text(LocalizedStringKey)：popover 浮层宿主
-        // 不继承主视图注入的 locale 环境，Text 会按系统语言解析（EN 界面显示
-        // 中文徽标的根因，dong4j 2026-09-12）。区块内其它文案同口径。
+        // 推荐档用黄色星星图标（dong4j 2026-09-12：Recommended 文案太长，
+        // 会挤压模型全称）；轻量保留中性短文案胶囊。
         if entry.recommended {
-            Text(verbatim: String.l10n("settings.localai.model.badge.recommended"))
-                .font(.caption2)
-                .foregroundStyle(.green)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(.green.opacity(0.14), in: Capsule())
-                .lineLimit(1)
-                .fixedSize()
+            Image(systemName: "star.fill")
+                .font(.caption)
+                .foregroundStyle(.yellow)
+                .help(Text("settings.localai.model.badge.recommended"))
+                .accessibilityLabel(Text("settings.localai.model.badge.recommended"))
         } else if entry.isLite {
+            // 必须用 String.l10n 而不是 Text(LocalizedStringKey)：popover 浮层宿主
+            // 不继承主视图注入的 locale 环境，Text 会按系统语言解析（EN 界面显示
+            // 中文徽标的根因）。区块内其它文案同口径。
             Text(verbatim: String.l10n("settings.localai.model.badge.lite"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
