@@ -76,8 +76,8 @@ struct AgentRuntimePathRow<Actions: View>: View {
 
             HStack(spacing: 8) {
                 Text(verbatim: displayedPath)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.primary)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)

@@ -21,9 +21,9 @@ import SwiftUI
 
 // MARK: - 跨 Tab 跳转事件
 //
-// 2026-06-13 Y3/Y5：AISettingsTab 的「管理已生成的上下文 →」按钮需要把
-// settings 窗口从 .ai 切到 .storage。SettingsView 当前用 @State 自管
-// selectedTab，没有外部入口可以直接改它的值；项目惯例（见 ReadmeViewModel /
+// 2026-06-13 Y3/Y5：设置内的跨分类操作需要切换到目标页面并定位具体区块。
+// SettingsView 用 @State 自管 selectedTab，没有外部入口可以直接改它的值；
+// 项目惯例（见 ReadmeViewModel /
 // RepoNote）是「跨 View 通信用 Notification.Name」，于是在 settings feature
 // 模块内部约定一个事件名：发起方 (AISettingsView) post，接收方 (SettingsView
 // .onReceive) 读取 object: String 决定切到哪个 tag。
@@ -34,10 +34,8 @@ import SwiftUI
 //   2. 未识别的 object 字符串直接忽略，不 crash；
 //   3. 名字加 `starcat.` 前缀防止与系统 / 三方框架冲突。
 extension Notification.Name {
-    /// 跨 Settings Tab 跳转。`object: String` 取值：`"general"` / `"storage"` /
-    /// `"pro"` / `"ai"` / `"ai.chat"` / `"ai.embedding"` / `"ai.repoContext"` / `"services"` / `"integrations"` /
-    /// `"integrations.agentRuntime"` / `"integrations.localAPIKey"` / `"integrations.externalSearch"` /
-    /// `"integrations.codebaseMemory"` / `"diagnostics"`。
+    /// 跨 Settings 分类跳转。字符串保留旧入口兼容；新页面由 `settingsLocation(for:)`
+    /// 统一映射，发起方不需要依赖私有的 `SettingsTab`。
     static let starcatJumpToSettingsTab: Notification.Name = .init("starcat.settings.jumpToTab")
     /// SettingsView 切到 AI Tab 并完成一轮布局后，再通知 AISettingsView 展开并定位。
     static let starcatJumpToAIRepoContextSection: Notification.Name = .init(
@@ -46,6 +44,10 @@ extension Notification.Name {
     /// 知识库索引入口需要直达「模型配置 → 向量化」，不能只把用户丢在 AI Tab 顶部。
     static let starcatJumpToAIEmbeddingSection: Notification.Name = .init(
         "starcat.settings.jumpToAIEmbeddingSection"
+    )
+    /// 搜索入口直达「搜索与上下文 → AI 索引」，避免先落到联网搜索再让用户查找。
+    static let starcatJumpToAIIndexSection: Notification.Name = .init(
+        "starcat.settings.jumpToAIIndexSection"
     )
     /// 工作台入口缺少有效模型时，直达「模型配置 → 对话」。
     static let starcatJumpToAIChatModelSection: Notification.Name = .init(
@@ -110,14 +112,23 @@ struct SettingsView: View {
         case pro
         /// 2026-09-06 新增：权限类配置（OAuth scope、数据贡献）独立成页。
         case privacy
-        case ai
-        /// README 翻译服务（系统 MT 等）；AI 翻译配置仍在 ai tab。
+        /// AI 的依赖配置优先于自动化与索引：供应商 / 本地模型 / 任务模型集中在本页。
+        case aiModels
+        /// README 翻译服务（系统 MT、Google、AI）；默认系统翻译无需额外配置。
         case translation
+        /// 消费模型配置的后台能力：自动整理与 GitHub Lists 自动分组。
+        case aiAutomation
+        /// 全文索引与代码上下文共享同一条本地 AI 数据准备链路。
+        case aiIndexContext
+        /// 外部搜索独立配置，不与本地索引和代码上下文混在同一页。
+        case externalSearch
         case mcp
         /// 2026-06-08 新增：第三方 / 自建后端服务的 URL 配置。
         case services
-        /// 直接嵌入 Starcat 的第三方工具，与后端服务配置分开管理。
-        case integrations
+        /// 面向普通用户的浏览器插件与共享本地凭据。
+        case browserExtensions
+        /// Direct Agent Runtime、CodeFlow 与 CodebaseMemory 等开发者工具。
+        case localTools
         /// 原 RAG 独立窗口的三个分类直接提升为主设置一级侧栏条目。
         case ragInference
         case ragPrompts
@@ -130,18 +141,22 @@ struct SettingsView: View {
         var titleKeyString: String {
             switch self {
             case .general:      return "settings.general.title"
-            case .pro:          return "Pro"
-            case .privacy:      return "settings.privacy.title"
-            case .ai:           return "settings.ai.title"
+            case .pro:          return "settings.navigation.item.proLicense"
+            case .privacy:      return "settings.navigation.item.privacyPermissions"
+            case .aiModels:     return "settings.navigation.item.aiModels"
             case .translation:  return "settings.translation.title"
+            case .aiAutomation: return "settings.navigation.item.aiAutomation"
+            case .aiIndexContext: return "settings.navigation.item.aiIndexContext"
+            case .externalSearch: return "settings.navigation.item.externalSearch"
             case .mcp:          return "settings.mcp.title"
-            case .services:     return "settings.services.title"
-            case .integrations: return "settings.integrations.title"
+            case .services:     return "settings.navigation.item.customServices"
+            case .browserExtensions: return "settings.navigation.item.browserExtensions"
+            case .localTools:   return "settings.navigation.item.localTools"
             case .ragInference: return "rag.workspace.settings.section.inference"
             case .ragPrompts:   return "rag.workspace.settings.section.prompts"
             case .ragRetrieval: return "rag.workspace.settings.section.retrieval"
-            case .storage:      return "settings.storage.title"
-            case .diagnostics:  return "settings.diagnostics.title"
+            case .storage:      return "settings.navigation.item.dataStorage"
+            case .diagnostics:  return "settings.navigation.item.diagnosticsSupport"
             }
         }
 
@@ -154,11 +169,15 @@ struct SettingsView: View {
             case .general:      return "gearshape"
             case .pro:          return "crown.fill"
             case .privacy:      return "lock.shield"
-            case .ai:           return "sparkles"
+            case .aiModels:     return "cpu"
             case .translation:  return "character.bubble"
+            case .aiAutomation: return "arrow.triangle.2.circlepath"
+            case .aiIndexContext: return "magnifyingglass.circle"
+            case .externalSearch: return "globe"
             case .mcp:          return "point.3.connected.trianglepath.dotted"
-            case .services:     return "network"
-            case .integrations: return "puzzlepiece.extension"
+            case .services:     return "server.rack"
+            case .browserExtensions: return "puzzlepiece.extension"
+            case .localTools:   return "hammer"
             case .ragInference: return RAGSettingsSection.inference.systemImage
             case .ragPrompts:   return RAGSettingsSection.prompts.systemImage
             case .ragRetrieval: return RAGSettingsSection.retrieval.systemImage
@@ -305,29 +324,36 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         List(selection: settingsTabSelection) {
-            Section("settings.sidebar.group.basic") {
+            Section("settings.navigation.group.account") {
                 settingsSidebarRow(.general)
                 settingsSidebarRow(.pro)
                 settingsSidebarRow(.privacy)
             }
 
-            Section("settings.sidebar.group.intelligence") {
-                settingsSidebarRow(.ai)
+            Section("settings.navigation.group.ai") {
+                settingsSidebarRow(.aiModels)
                 settingsSidebarRow(.translation)
-                settingsSidebarRow(.mcp)
-                settingsSidebarRow(.services)
-                settingsSidebarRow(.integrations)
+                settingsSidebarRow(.aiAutomation)
+                settingsSidebarRow(.aiIndexContext)
+                settingsSidebarRow(.externalSearch)
             }
 
-            // 原独立窗口的三项导航直接并入主设置 Sidebar；RAG 是与「基础」
-            // 等并列的分组标题，不再额外增加「RAG 工作台」占位条目或二级侧栏。
+            // RAG 保留已经确认的三个直接入口；先保证推理可用，再调检索，默认
+            // Prompt 最后，避免把无需修改的高级配置放在依赖项前面。
             Section("RAG") {
                 settingsSidebarRow(.ragInference)
-                settingsSidebarRow(.ragPrompts)
                 settingsSidebarRow(.ragRetrieval)
+                settingsSidebarRow(.ragPrompts)
             }
 
-            Section("settings.sidebar.group.maintenance") {
+            Section("settings.navigation.group.extensions") {
+                settingsSidebarRow(.browserExtensions)
+                settingsSidebarRow(.mcp)
+                settingsSidebarRow(.localTools)
+                settingsSidebarRow(.services)
+            }
+
+            Section("settings.navigation.group.support") {
                 settingsSidebarRow(.storage)
                 settingsSidebarRow(.diagnostics)
             }
@@ -382,16 +408,24 @@ struct SettingsView: View {
             ProSettingsTab()
         case .privacy:
             privacyTab
-        case .ai:
-            AISettingsTab()
+        case .aiModels:
+            AISettingsTab(page: .models)
         case .translation:
             TranslationSettingsTab()
+        case .aiAutomation:
+            AISettingsTab(page: .automation)
+        case .aiIndexContext:
+            AISettingsTab(page: .indexAndContext)
+        case .externalSearch:
+            AISettingsTab(page: .externalSearch)
         case .mcp:
             MCPSettingsTab()
         case .services:
             ServicesSettingsTab()
-        case .integrations:
-            IntegrationSettingsTab()
+        case .browserExtensions:
+            IntegrationSettingsTab(page: .browserExtensions)
+        case .localTools:
+            IntegrationSettingsTab(page: .localTools)
         case .ragInference, .ragPrompts, .ragRetrieval:
             RAGWorkspaceSettingsView(
                 settings: settings,
@@ -418,57 +452,69 @@ struct SettingsView: View {
                                keywords: ["通知", "notification", "提醒"]),
             SettingsSearchItem("general.accessibility", titleKey: "settings.general.accessibility", tab: .general,
                                keywords: ["动画", "无障碍", "accessibility", "motion"]),
-            SettingsSearchItem("pro", titleKey: "Pro", tab: .pro,
+            SettingsSearchItem("pro", titleKey: "settings.navigation.item.proLicense", tab: .pro,
                                keywords: ["订阅", "授权", "激活", "license", "subscription", "purchase"]),
-            SettingsSearchItem("privacy", titleKey: "settings.privacy.title", tab: .privacy,
+            SettingsSearchItem("privacy", titleKey: "settings.navigation.item.privacyPermissions", tab: .privacy,
                                keywords: ["隐私", "权限", "OAuth", "数据贡献", "推荐", "privacy"]),
             SettingsSearchItem("privacy.oauthScopes", titleKey: "settings.general.oauthScopes.section", tab: .privacy,
                                keywords: ["OAuth", "scope", "权限", "组织"]),
             SettingsSearchItem("privacy.dataContribution", titleKey: "settings.general.dataContribution.section", tab: .privacy,
                                keywords: ["数据贡献", "匿名", "推荐", "隐私"]),
-            SettingsSearchItem("ai", titleKey: "settings.ai.title", tab: .ai,
+            SettingsSearchItem("privacy.telemetry", titleKey: "settings.diagnostics.telemetry.section", tab: .privacy,
+                               keywords: ["遥测", "诊断数据", "telemetry", "privacy"]),
+            SettingsSearchItem("privacy.ai", titleKey: "settings.ai.privacy.section", tab: .privacy,
+                               keywords: ["AI 隐私", "模型数据", "api key", "privacy"]),
+            SettingsSearchItem("ai", titleKey: "settings.navigation.item.aiModels", tab: .aiModels,
                                keywords: ["人工智能", "模型", "provider", "model", "api key"]),
-            SettingsSearchItem("ai.provider", titleKey: "settings.ai.provider.sectionTitle", tab: .ai,
+            SettingsSearchItem("ai.provider", titleKey: "settings.ai.provider.sectionTitle", tab: .aiModels,
                                keywords: ["服务商", "provider", "api key"]),
-            SettingsSearchItem("ai.chat", titleKey: "settings.ai.taskModels.title", tab: .ai, target: "ai.chat",
+            SettingsSearchItem("ai.chat", titleKey: "settings.ai.taskModels.title", tab: .aiModels, target: "ai.chat",
                                keywords: ["对话", "任务模型", "chat", "model"]),
-            SettingsSearchItem("ai.prompt", titleKey: "settings.ai.prompt.title", tab: .ai,
+            SettingsSearchItem("ai.prompt", titleKey: "settings.ai.prompt.title", tab: .aiModels,
                                keywords: ["提示词", "prompt", "system", "user"]),
-            SettingsSearchItem("ai.embedding", titleKey: "settings.aiIndex.section", tab: .ai, target: "ai.embedding",
+            SettingsSearchItem("ai.embedding", titleKey: "settings.ai.taskModels.title", tab: .aiModels, target: "ai.embedding",
+                               keywords: ["向量模型", "向量化模型", "embedding", "model"]),
+            SettingsSearchItem("ai.automation", titleKey: "settings.navigation.item.aiAutomation", tab: .aiAutomation,
+                               keywords: ["自动整理", "仓库分组", "github lists", "automation"]),
+            SettingsSearchItem("ai.indexContext", titleKey: "settings.navigation.item.aiIndexContext", tab: .aiIndexContext,
+                               keywords: ["全文索引", "代码上下文", "索引", "上下文", "index", "context"]),
+            SettingsSearchItem("ai.index", titleKey: "settings.aiIndex.section", tab: .aiIndexContext, target: "ai.index",
                                keywords: ["向量", "向量化", "索引", "embedding", "vector"]),
-            SettingsSearchItem("ai.repoContext", titleKey: "ai.context.settings.title", tab: .ai, target: "ai.repoContext",
+            SettingsSearchItem("ai.repoContext", titleKey: "ai.context.settings.title", tab: .aiIndexContext, target: "ai.repoContext",
                                keywords: ["代码上下文", "仓库上下文", "context", "token"]),
+            SettingsSearchItem("ai.externalSearch", titleKey: "settings.navigation.item.externalSearch",
+                               tab: .externalSearch, target: "ai.externalSearch",
+                               keywords: ["外部搜索", "anysearch", "search api"]),
             SettingsSearchItem("mcp", titleKey: "settings.mcp.title", tab: .mcp,
                                keywords: ["model context protocol", "server", "端口", "隐私"]),
-            SettingsSearchItem("services", titleKey: "settings.services.title", tab: .services,
-                               keywords: ["服务地址", "trending", "weekly", "api", "endpoint", "状态"]),
-            SettingsSearchItem("integrations", titleKey: "settings.integrations.title", tab: .integrations,
-                               keywords: ["集成", "integration", "工具"]),
+            SettingsSearchItem("services", titleKey: "settings.navigation.item.customServices", tab: .services,
+                               keywords: ["自定义服务", "自托管", "trending", "weekly", "api", "endpoint", "状态"]),
+            SettingsSearchItem("browserExtensions", titleKey: "settings.navigation.item.browserExtensions", tab: .browserExtensions,
+                               keywords: ["浏览器", "chrome", "safari", "extension", "plugin", "本地 api"]),
             SettingsSearchItem("integrations.agentRuntime", titleKey: "settings.integration.agentRuntime.title",
-                               tab: .integrations, target: "integrations.agentRuntime",
+                               tab: .localTools, target: "integrations.agentRuntime",
                                keywords: ["agent runtime", "codex", "deepseek"]),
             SettingsSearchItem("integrations.localAPIKey", titleKey: "settings.integration.localAPIKey.title",
-                               tab: .integrations, target: "integrations.localAPIKey",
+                               tab: .browserExtensions, target: "integrations.localAPIKey",
                                keywords: ["本地 api key", "local api key", "鉴权"]),
             SettingsSearchItem("integrations.browserPlugin", titleKey: "settings.integration.browserPlugin.title",
-                               tab: .integrations, target: "integrations.browserPlugin",
+                               tab: .browserExtensions, target: "integrations.browserPlugin",
                                keywords: ["浏览器", "chrome", "safari", "extension", "plugin"]),
-            SettingsSearchItem("integrations.externalSearch", titleKey: "settings.externalSearch.section",
-                               tab: .integrations, target: "integrations.externalSearch",
-                               keywords: ["外部搜索", "anysearch", "search api"]),
-            SettingsSearchItem("integrations.codebaseMemory", titleKey: "settings.integrations.title",
-                               tab: .integrations, target: "integrations.codebaseMemory",
+            SettingsSearchItem("localTools", titleKey: "settings.navigation.item.localTools", tab: .localTools,
+                               keywords: ["本地工具", "agent runtime", "codeflow", "codebase memory"]),
+            SettingsSearchItem("integrations.codebaseMemory", titleKey: "settings.navigation.item.localTools",
+                               tab: .localTools, target: "integrations.codebaseMemory",
                                keywords: ["codebase memory", "codebasememory", "代码索引"]),
             SettingsSearchItem("rag.inference", titleKey: "rag.workspace.settings.section.inference", tab: .ragInference,
                                keywords: ["推理", "后端", "inference", "backend", "codex", "claude"]),
+            SettingsSearchItem("rag.retrieval", titleKey: "rag.workspace.settings.section.retrieval", tab: .ragRetrieval,
+                               keywords: ["检索", "重排", "向量", "自托管", "retrieval", "rerank", "vector", "meilisearch", "qdrant"]),
             SettingsSearchItem("rag.prompts", titleKey: "rag.workspace.settings.section.prompts", tab: .ragPrompts,
                                keywords: ["提示词", "模板", "prompt", "system", "user"]),
-            SettingsSearchItem("rag.retrieval", titleKey: "rag.workspace.settings.section.retrieval", tab: .ragRetrieval,
-                               keywords: ["检索", "重排", "向量", "retrieval", "rerank", "vector"]),
-            SettingsSearchItem("storage", titleKey: "settings.storage.title", tab: .storage,
+            SettingsSearchItem("storage", titleKey: "settings.navigation.item.dataStorage", tab: .storage,
                                keywords: ["存储", "缓存", "数据库", "清理", "导出", "storage", "cache", "database"]),
-            SettingsSearchItem("diagnostics", titleKey: "settings.diagnostics.title", tab: .diagnostics,
-                               keywords: ["诊断", "日志", "遥测", "网络", "diagnostics", "logs", "telemetry"]),
+            SettingsSearchItem("diagnostics", titleKey: "settings.navigation.item.diagnosticsSupport", tab: .diagnostics,
+                               keywords: ["诊断", "日志", "网络", "diagnostics", "logs", "support"]),
         ]
     }
 
@@ -498,19 +544,31 @@ struct SettingsView: View {
             return SettingsLocation(tab: .general)
         case "pro":
             return SettingsLocation(tab: .pro)
-        case "privacy", "privacy.oauthScopes", "privacy.dataContribution":
+        case "privacy", "privacy.oauthScopes", "privacy.dataContribution", "privacy.telemetry",
+             "privacy.ai", "diagnostics.telemetry", "diagnostics.privacy":
             return SettingsLocation(tab: .privacy)
-        case "ai", "ai.chat", "ai.embedding", "ai.repoContext":
-            return SettingsLocation(tab: .ai, target: target == "ai" ? nil : target)
+        case "ai", "ai.models", "ai.prompt":
+            return SettingsLocation(tab: .aiModels)
+        case "ai.chat", "ai.embedding":
+            return SettingsLocation(tab: .aiModels, target: target)
+        case "ai.automation":
+            return SettingsLocation(tab: .aiAutomation)
+        case "ai.searchContext", "ai.indexContext":
+            return SettingsLocation(tab: .aiIndexContext)
+        case "ai.index", "ai.repoContext":
+            return SettingsLocation(tab: .aiIndexContext, target: target)
+        case "ai.externalSearch", "integrations.externalSearch":
+            return SettingsLocation(tab: .externalSearch, target: target)
         case "translation":
             return SettingsLocation(tab: .translation)
         case "mcp":
             return SettingsLocation(tab: .mcp)
         case "services":
             return SettingsLocation(tab: .services)
-        case "integrations", "integrations.agentRuntime", "integrations.localAPIKey",
-             "integrations.browserPlugin", "integrations.externalSearch", "integrations.codebaseMemory":
-            return SettingsLocation(tab: .integrations, target: target == "integrations" ? nil : target)
+        case "integrations", "integrations.localAPIKey", "integrations.browserPlugin":
+            return SettingsLocation(tab: .browserExtensions, target: target == "integrations" ? nil : target)
+        case "integrations.agentRuntime", "integrations.codebaseMemory":
+            return SettingsLocation(tab: .localTools, target: target)
         case "rag", "rag.inference":
             return SettingsLocation(tab: .ragInference)
         case "rag.prompts":
@@ -549,10 +607,12 @@ struct SettingsView: View {
                 NotificationCenter.default.post(name: .starcatJumpToAIChatModelSection, object: nil)
             case "ai.embedding":
                 NotificationCenter.default.post(name: .starcatJumpToAIEmbeddingSection, object: nil)
+            case "ai.index":
+                NotificationCenter.default.post(name: .starcatJumpToAIIndexSection, object: nil)
             case "ai.repoContext":
                 NotificationCenter.default.post(name: .starcatJumpToAIRepoContextSection, object: nil)
             case "integrations.agentRuntime", "integrations.localAPIKey", "integrations.browserPlugin",
-                 "integrations.externalSearch", "integrations.codebaseMemory":
+                 "integrations.externalSearch", "ai.externalSearch", "integrations.codebaseMemory":
                 isRedispatchingSettingsJump = true
                 NotificationCenter.default.post(name: .starcatJumpToSettingsTab, object: target)
                 isRedispatchingSettingsJump = false
@@ -688,36 +748,6 @@ struct SettingsView: View {
                 )
             }
 
-            // HOM-SNAKE-MODES 2026-06-05：贡献草坪贪吃蛇玩法。
-            // 用 Menu 风格 Picker 而非 segmented——6 个选项 segmented 会过宽，
-            // 而且每项都带 SF Symbol，菜单展开形态视觉信息密度更高。
-            // 设计取舍：把贪吃蛇配置放在 General 而非新建 "Sidebar" Tab，是因为
-            // 当前 Sidebar 可配置项只有这一个，单独开 Tab 显得空；后续若新增
-            // sidebar 偏好（如折叠默认态、密度）再拆分。
-            Section {
-                Picker(selection: $settings.snakeStyle) {
-                    ForEach(SnakeStyle.allCases) { style in
-                        Label(LocalizedStringKey(style.displayNameKey),
-                              systemImage: style.systemImage)
-                            .tag(style)
-                    }
-                } label: {
-                    Text("settings.snakeStyle.title")
-                }
-                .pickerStyle(.menu)
-
-                Text("settings.snakeStyle.description")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.snakeStyle.section",
-                    systemImage: "arcade.stick.console.fill",
-                    style: .prominent
-                )
-            }
-
             Section {
                 Toggle(isOn: $settings.openFirstDetailOnCategoryChange) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -747,6 +777,38 @@ struct SettingsView: View {
             }
 
             InterestedLanguagesSettingsSection(languages: $settings.interestedLanguages)
+
+            // 2026-06-20：系统通知策略入口。
+            // 通知只用于「用户离开 App 后需要回来处理」的低频事件；普通状态变化继续留在
+            // toolbar 状态面板，避免把通知中心变成运行日志。
+            Section {
+                Toggle(isOn: $settings.notificationsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.notifications.enabled.title")
+                        Text("settings.notifications.enabled.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Toggle("settings.notifications.release.title", isOn: $settings.releaseNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.githubInbox.title", isOn: $settings.githubInboxNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.batchAI.title", isOn: $settings.batchAINotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.syncIssues.title", isOn: $settings.syncIssueNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.mcpIssues.title", isOn: $settings.mcpIssueNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.notifications.title",
+                    systemImage: "bell",
+                    style: .prominent
+                )
+            }
 
             // 快捷键偏好集中在 General，都是本机交互习惯，不属于 AI 模型配置。
             Section {
@@ -873,43 +935,21 @@ struct SettingsView: View {
                 )
             }
 
-            // 2026-06-20：系统通知策略入口。
-            // 通知只用于「用户离开 App 后需要回来处理」的低频事件；普通状态变化继续留在
-            // toolbar 状态面板，避免把通知中心变成运行日志。
             Section {
-                Toggle(isOn: $settings.notificationsEnabled) {
+                Toggle(isOn: $settings.hideDockIcon) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.notifications.enabled.title")
-                        Text("settings.notifications.enabled.help")
+                        Text("settings.general.hideDockIcon.title")
+                        Text("settings.general.hideDockIcon.help")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
-                Toggle("settings.notifications.release.title", isOn: $settings.releaseNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.githubInbox.title", isOn: $settings.githubInboxNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.batchAI.title", isOn: $settings.batchAINotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.syncIssues.title", isOn: $settings.syncIssueNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.mcpIssues.title", isOn: $settings.mcpIssueNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.notifications.title",
-                    systemImage: "bell",
-                    style: .prominent
-                )
-            }
-
-            Section {
-                Toggle(isOn: $settings.githubIssueEventTimelineEnabled) {
+                Toggle(isOn: $settings.spotlightSearchEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.activity.issueEvents.title")
-                        Text("settings.activity.issueEvents.help")
+                        Text("settings.general.spotlightSearch.title")
+                        Text("settings.general.spotlightSearch.help")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -917,8 +957,8 @@ struct SettingsView: View {
                 }
             } header: {
                 SettingsSectionHeader(
-                    "settings.activity.section",
-                    systemImage: "list.bullet.rectangle",
+                    "settings.general.macOSIntegration",
+                    systemImage: "macwindow.on.rectangle",
                     style: .prominent
                 )
             }
@@ -952,21 +992,17 @@ struct SettingsView: View {
                 )
             }
 
-            Section {
-                Toggle(isOn: $settings.hideDockIcon) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.general.hideDockIcon.title")
-                        Text("settings.general.hideDockIcon.help")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+            // Sparkle 自动更新只存在于 Direct 分发；App Store 构建必须整段隐藏，
+            // 避免审核包暴露自更新入口（与菜单栏 / Help「检查更新」同一门控）。
+            if DistributionChannel.current.isDirect {
+                directUpdateSection
+            }
 
-                Toggle(isOn: $settings.spotlightSearchEnabled) {
+            Section {
+                Toggle(isOn: $settings.githubIssueEventTimelineEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.general.spotlightSearch.title")
-                        Text("settings.general.spotlightSearch.help")
+                        Text("settings.activity.issueEvents.title")
+                        Text("settings.activity.issueEvents.help")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -974,16 +1010,40 @@ struct SettingsView: View {
                 }
             } header: {
                 SettingsSectionHeader(
-                    "settings.general.macOSIntegration",
-                    systemImage: "macwindow.on.rectangle",
+                    "settings.activity.section",
+                    systemImage: "list.bullet.rectangle",
                     style: .prominent
                 )
             }
 
-            // Sparkle 自动更新只存在于 Direct 分发；App Store 构建必须整段隐藏，
-            // 避免审核包暴露自更新入口（与菜单栏 / Help「检查更新」同一门控）。
-            if DistributionChannel.current.isDirect {
-                directUpdateSection
+            // HOM-SNAKE-MODES 2026-06-05：贡献草坪贪吃蛇玩法。
+            // 用 Menu 风格 Picker 而非 segmented——6 个选项 segmented 会过宽，
+            // 而且每项都带 SF Symbol，菜单展开形态视觉信息密度更高。
+            // 设计取舍：把贪吃蛇配置放在 General 而非新建 "Sidebar" Tab，是因为
+            // 当前 Sidebar 可配置项只有这一个，单独开 Tab 显得空；后续若新增
+            // sidebar 偏好（如折叠默认态、密度）再拆分。
+            Section {
+                Picker(selection: $settings.snakeStyle) {
+                    ForEach(SnakeStyle.allCases) { style in
+                        Label(LocalizedStringKey(style.displayNameKey),
+                              systemImage: style.systemImage)
+                            .tag(style)
+                    }
+                } label: {
+                    Text("settings.snakeStyle.title")
+                }
+                .pickerStyle(.menu)
+
+                Text("settings.snakeStyle.description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.snakeStyle.section",
+                    systemImage: "arcade.stick.console.fill",
+                    style: .prominent
+                )
             }
 
             Section {
@@ -1026,13 +1086,13 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    /// 2026-09-06 dong4j 需求：新增「隐私」侧栏页，收拢权限类配置。
-    /// GitHub OAuth 权限（登录申请的 scope）与隐私与推荐（数据贡献开关）从
-    /// 通用页整体迁入：两者本质都是「用户数据授权边界」，独立成页后用户能
-    /// 在一处看全 Starcat 申请了哪些权限、贡献了哪些数据；通用页只保留
-    /// 界面 / 行为偏好。两个 Section 的标题、图标与内容保持迁入前原样。
+    /// 「隐私与权限」统一呈现 OAuth scope、数据贡献、遥测和 AI 数据边界。
+    /// 这些配置都回答“应用会访问或发送什么”，不再分散在通用、AI 与诊断页；
+    /// 原有绑定和默认值保持不变，仅调整用户寻找它们的路径。
     private var privacyTab: some View {
-        Form {
+        @Bindable var settings = settings
+
+        return Form {
             Section {
                 Text("settings.general.oauthScopes.summary")
                     .font(.caption)
@@ -1093,6 +1153,41 @@ struct SettingsView: View {
                 SettingsSectionHeader(
                     "settings.general.dataContribution.section",
                     systemImage: "hand.raised.fill",
+                    style: .prominent
+                )
+            }
+
+            Section {
+                Toggle(isOn: $settings.telemetryEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.diagnostics.telemetry.enabled.title")
+                        Text("settings.diagnostics.telemetry.enabled.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Text("settings.diagnostics.telemetry.privacy")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.diagnostics.telemetry.section",
+                    systemImage: "chart.bar",
+                    style: .prominent
+                )
+            }
+
+            Section {
+                Text("settings.ai.privacy.notice")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.ai.privacy.section",
+                    systemImage: "lock.shield",
                     style: .prominent
                 )
             }
@@ -1564,9 +1659,7 @@ private struct DiagnosticsSettingsTab: View {
     @State private var exportError: String?
 
     var body: some View {
-        @Bindable var settings = settings
-
-        return Form {
+        Form {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .center, spacing: 12) {
@@ -1616,29 +1709,7 @@ private struct DiagnosticsSettingsTab: View {
                 )
             }
 
-            Section {
-                Toggle(isOn: $settings.telemetryEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.diagnostics.telemetry.enabled.title")
-                        Text("settings.diagnostics.telemetry.enabled.help")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                Text("settings.diagnostics.telemetry.privacy")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.diagnostics.telemetry.section",
-                    systemImage: "chart.bar",
-                    style: .prominent
-                )
-            }
-
+            // 这段说明约束的是导出产物本身，紧跟导出入口比放在全局隐私页更容易理解。
             Section {
                 Text("settings.diagnostics.privacy.description")
                     .font(.callout)
@@ -1646,11 +1717,12 @@ private struct DiagnosticsSettingsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             } header: {
                 SettingsSectionHeader(
-                    "settings.diagnostics.privacy.section",
-                    systemImage: "lock.shield",
+                    "settings.diagnostics.bundleContents.section",
+                    systemImage: "doc.text.magnifyingglass",
                     style: .prominent
                 )
             }
+
         }
         .formStyle(.grouped)
         .alert(

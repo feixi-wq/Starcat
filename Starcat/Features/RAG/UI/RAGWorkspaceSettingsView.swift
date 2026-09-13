@@ -71,7 +71,7 @@ enum RAGSettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .inference: return ["inference", "backend", "cli", "codex", "claude", "推理", "后端"]
         case .prompts: return ["prompt", "system", "user", "template", "提示词", "模板"]
-        case .retrieval: return ["retrieval", "rerank", "evidence", "vector", "检索", "重排", "证据"]
+        case .retrieval: return ["retrieval", "rerank", "evidence", "vector", "meilisearch", "qdrant", "检索", "重排", "证据", "自托管"]
         }
     }
 
@@ -271,7 +271,7 @@ struct RAGWorkspaceSettingsView: View {
         _rerankCandidateLimit = State(initialValue: String(rerank.candidateLimit))
     }
 
-    /// 直接订阅设置档位，避免独立窗口只缩放外框、字体仍停在 standard。
+    /// 设置档位仍控制间距与编辑器尺寸；文字统一使用主设置的系统语义字号。
     private var interfaceScale: InterfaceScale { settings.interfaceScale }
 
     private var availableInferenceBackends: [RAGInferenceBackend] {
@@ -283,7 +283,6 @@ struct RAGWorkspaceSettingsView: View {
         if case .embeddedInMainSettings(let section) = presentation {
             embeddedSettingsPage(section: section)
                 .environment(\.starcatInterfaceScale, interfaceScale)
-                .dynamicTypeSize(interfaceScale.dynamicTypeSize)
         }
     }
 
@@ -393,9 +392,9 @@ struct RAGWorkspaceSettingsView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "curlybraces")
-                    .font(interfaceScale.font(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text("rag.workspace.prompt.placeholders.open")
-                    .font(ragFont(.caption, scale: interfaceScale, weight: .medium))
+                    .font(.caption.weight(.medium))
             }
             .foregroundStyle(.secondary)
             .contentShape(Rectangle())
@@ -420,9 +419,9 @@ struct RAGWorkspaceSettingsView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .font(interfaceScale.font(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text("rag.workspace.prompt.default.open")
-                    .font(ragFont(.caption, scale: interfaceScale, weight: .medium))
+                    .font(.caption.weight(.medium))
             }
             .foregroundStyle(.secondary)
             .contentShape(Rectangle())
@@ -518,8 +517,8 @@ struct RAGWorkspaceSettingsView: View {
                         SyncIconButton(
                             isRefreshing: isInspectingCLIRuntimes,
                             disabled: isInspectingCLIRuntimes,
-                            font: interfaceScale.font(size: 15, weight: .medium),
-                            frameSize: interfaceScale.scaled(28),
+                            font: .system(size: 15, weight: .medium),
+                            frameSize: 28,
                             tooltip: String.l10n("rag.workspace.inference.refresh.help")
                         ) {
                             Task { await inspectCLIRuntimes() }
@@ -529,7 +528,7 @@ struct RAGWorkspaceSettingsView: View {
                 }
 
                 Text("rag.workspace.inference.backend.summary")
-                    .font(ragFont(.caption, scale: interfaceScale))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
 
                 VStack(spacing: interfaceScale.scaled(10)) {
@@ -547,7 +546,7 @@ struct RAGWorkspaceSettingsView: View {
 
                 if availableInferenceBackends.contains(where: \.isCLI) {
                     Label("rag.workspace.inference.loginNotice", systemImage: "person.badge.key")
-                        .font(ragFont(.caption, scale: interfaceScale))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -562,7 +561,7 @@ struct RAGWorkspaceSettingsView: View {
                     Label("rag.workspace.inference.boundary.tools", systemImage: "nosign")
                     Label("rag.workspace.inference.boundary.otherFeatures", systemImage: "arrow.triangle.branch")
                 }
-                .font(ragFont(.caption, scale: interfaceScale))
+                .font(.caption)
                 .foregroundStyle(.secondary)
             }
         }
@@ -635,6 +634,13 @@ struct RAGWorkspaceSettingsView: View {
                 systemImage: "arrow.up.arrow.down.circle"
             ) {
                 rerankSection
+            }
+            // 检索后端依赖前面的召回 / 重排语义，放在本页末尾作为高级基础设施配置。
+            retrievalSettingsGroup(
+                titleKey: "settings.rag.backends.section",
+                systemImage: "magnifyingglass"
+            ) {
+                RAGBackendSettingsView()
             }
         }
     }
@@ -1000,18 +1006,9 @@ struct RAGWorkspaceSettingsView: View {
         retrievalPreset = RAGRetrievalPreset.matching(settings: buildRetrievalSettings())
     }
 
-    /// 与主设置页 `SettingsSectionHeader.prominent` 同款：13pt 图标、20pt 图标框、13pt semibold 标题。
+    /// RAG 已嵌入主设置，标题直接复用统一组件，避免维护第二套字号和图标尺寸。
     private func sectionTitle(_ key: LocalizedStringKey, systemImage: String) -> some View {
-        HStack(spacing: interfaceScale.scaled(6)) {
-            Image(systemName: systemImage)
-                .font(interfaceScale.font(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: interfaceScale.scaled(20), height: interfaceScale.scaled(20))
-                .accessibilityHidden(true)
-            Text(key)
-                .font(ragFont(.body, scale: interfaceScale, weight: .semibold))
-                .foregroundStyle(.primary)
-        }
+        SettingsSectionHeader(key, systemImage: systemImage, style: .prominent)
     }
 
     private func settingRow(titleKey: LocalizedStringKey, value: String) -> some View {
@@ -1246,10 +1243,10 @@ struct RAGWorkspaceSettingsView: View {
         let isLimited = compatibility.state == .limited
         return HStack(spacing: interfaceScale.scaled(5)) {
             Image(systemName: isLimited ? "exclamationmark.triangle.fill" : "checkmark.circle")
-                .font(interfaceScale.font(size: 10, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .accessibilityHidden(true)
             Text(promptCompatibilityStatusKey(compatibility.state))
-                .font(ragFont(.caption, scale: interfaceScale, weight: .medium))
+                .font(.caption.weight(.medium))
                 .lineLimit(1)
         }
         .foregroundStyle(isLimited ? Color.orange : Color.secondary)
@@ -1272,7 +1269,7 @@ struct RAGWorkspaceSettingsView: View {
             if !missing.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: interfaceScale.scaled(6)) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(interfaceScale.font(size: 11, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.orange)
                         .accessibilityHidden(true)
                     Text(
@@ -1281,19 +1278,19 @@ struct RAGWorkspaceSettingsView: View {
                             missing.count
                         )
                     )
-                    .font(ragFont(.caption, scale: interfaceScale, weight: .medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.primary)
                 }
 
                 Text(missing.joined(separator: "  "))
-                    .font(interfaceScale.font(.code))
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if missing.contains("{repositoryInsightsSection}") {
                     Text("rag.workspace.prompt.compatibility.repositoryInsights")
-                        .font(ragFont(.caption, scale: interfaceScale))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1302,7 +1299,7 @@ struct RAGWorkspaceSettingsView: View {
             if !duplicated.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: interfaceScale.scaled(6)) {
                     Image(systemName: "doc.on.doc.fill")
-                        .font(interfaceScale.font(size: 11, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.orange)
                         .accessibilityHidden(true)
                     Text(
@@ -1313,18 +1310,18 @@ struct RAGWorkspaceSettingsView: View {
                             duplicated.count
                         )
                     )
-                    .font(ragFont(.caption, scale: interfaceScale, weight: .medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.primary)
                 }
 
                 Text(duplicated.joined(separator: "  "))
-                    .font(interfaceScale.font(.code))
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text("rag.workspace.prompt.compatibility.duplicatedHint")
-                    .font(ragFont(.caption, scale: interfaceScale))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1373,7 +1370,7 @@ struct RAGWorkspaceSettingsView: View {
         minHeight: CGFloat
     ) -> some View {
         TextEditor(text: text)
-            .font(interfaceScale.font(.code))
+            .font(.system(.caption, design: .monospaced))
             .scrollContentBackground(.hidden)
             .padding(interfaceScale.scaled(8))
             .frame(maxWidth: .infinity, minHeight: minHeight)
@@ -1402,20 +1399,20 @@ private struct RAGDefaultPromptPopover: View {
         VStack(alignment: .leading, spacing: interfaceScale.scaled(12)) {
             HStack(alignment: .firstTextBaseline, spacing: interfaceScale.scaled(8)) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .font(interfaceScale.font(size: 13, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text("rag.workspace.prompt.default.title")
-                    .font(ragFont(.callout, scale: interfaceScale, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
                 Spacer(minLength: interfaceScale.scaled(8))
                 Text(tabTitle)
-                    .font(ragFont(.caption, scale: interfaceScale, weight: .medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
 
             Text("rag.workspace.prompt.default.description")
-                .font(ragFont(.caption, scale: interfaceScale))
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -1440,7 +1437,6 @@ private struct RAGDefaultPromptPopover: View {
         .padding(interfaceScale.scaled(16))
         .frame(width: 500 * interfaceScale.multiplier)
         .environment(\.starcatInterfaceScale, interfaceScale)
-        .dynamicTypeSize(interfaceScale.dynamicTypeSize)
     }
 
     private func promptBlock(
@@ -1451,7 +1447,7 @@ private struct RAGDefaultPromptPopover: View {
         VStack(alignment: .leading, spacing: interfaceScale.scaled(6)) {
             HStack(spacing: interfaceScale.scaled(8)) {
                 Text(title)
-                    .font(ragFont(.caption, scale: interfaceScale, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.primary)
                 Spacer(minLength: interfaceScale.scaled(8))
                 CopyFeedbackButton(
@@ -1461,7 +1457,7 @@ private struct RAGDefaultPromptPopover: View {
                     Image(systemName: didCopy ? "checkmark.circle.fill" : "doc.on.doc")
                         // 默认 Prompt 弹层的标题行比标准设置行更紧凑；glyph 主动降到
                         // 11pt，仍保留 28pt 命中区，避免图标压过 Section 标题。
-                        .font(interfaceScale.font(size: 11, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(didCopy ? Color.green : Color.secondary)
                         .frame(
                             width: interfaceScale.scaled(28),
@@ -1472,7 +1468,7 @@ private struct RAGDefaultPromptPopover: View {
             }
 
             Text(content)
-                .font(interfaceScale.font(.code))
+                .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1502,11 +1498,11 @@ private struct RAGPromptPlaceholderPopover: View {
         VStack(alignment: .leading, spacing: interfaceScale.scaled(12)) {
             HStack(spacing: interfaceScale.scaled(6)) {
                 Image(systemName: "curlybraces")
-                    .font(interfaceScale.font(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text("rag.workspace.prompt.placeholders.title")
-                    .font(ragFont(.callout, scale: interfaceScale, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
             }
 
@@ -1515,18 +1511,18 @@ private struct RAGPromptPlaceholderPopover: View {
                     HStack(alignment: .top, spacing: interfaceScale.scaled(8)) {
                         // 与设置分组同款：默认色图标，不抢 token 阅读。
                         Image(systemName: item.systemImage)
-                            .font(interfaceScale.font(size: 11, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: interfaceScale.scaled(14), alignment: .center)
                             .padding(.top, 2)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.token)
-                                .font(interfaceScale.font(.code, weight: .semibold))
+                                .font(.system(.caption, design: .monospaced).weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .textSelection(.enabled)
                             Text(item.meaningKey)
-                                .font(ragFont(.caption, scale: interfaceScale))
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -1536,13 +1532,12 @@ private struct RAGPromptPlaceholderPopover: View {
             }
 
             Text("rag.workspace.prompt.placeholders.note")
-                .font(ragFont(.caption2, scale: interfaceScale))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(interfaceScale.scaled(16))
         .frame(width: 360 * interfaceScale.multiplier)
         .environment(\.starcatInterfaceScale, interfaceScale)
-        .dynamicTypeSize(interfaceScale.dynamicTypeSize)
     }
 }
