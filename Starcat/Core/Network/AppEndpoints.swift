@@ -475,6 +475,14 @@ enum AppEndpoints {
                 "/repos/\(owner)/\(repo)/merge-upstream"
             }
 
+            /// `GET /repos/{owner}/{repo}/compare/{base}...{head}`
+            ///
+            /// 只读顶层 `ahead_by` / `behind_by`。响应里的 files/commits 可能很大，
+            /// 仅在 GraphQL `ref.compare` 拿不到整数时作兜底，不要当详情页热路径。
+            static func repoCompare(owner: String, repo: String, base: String, head: String) -> String {
+                "/repos/\(owner)/\(repo)/compare/\(base)...\(head)"
+            }
+
             // —— Events（Activity 公告与关注 PR-2，2026-06-16）——
 
             /// `GET /users/{username}/received_events/public` —— 当前用户收到的「我关注的人/仓库」的公开活动 feed。

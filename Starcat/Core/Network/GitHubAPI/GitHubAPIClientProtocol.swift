@@ -84,7 +84,10 @@ protocol GitHubAPIClientProtocol: Sendable {
     ///
     /// parent 来自 `GET /repos`；ahead/behind 走 GraphQL `ref.compare`，避免 REST compare
     /// 把整段 files/commits 拉回来。compare 失败时仍返回 parent，计数为 nil。
-    func forkRelation(owner: String, repo: String) async throws -> GitHubForkRelation
+    ///
+    /// - Parameter restFallback: 仅首次进入详情为 true。Sync 成功后的刷新关掉它，
+    ///   避免 awesome-* 这类巨大 diff 把 REST compare 打到超时，看起来像同步失败。
+    func forkRelation(owner: String, repo: String, restFallback: Bool) async throws -> GitHubForkRelation
 
     /// `POST /repos/{owner}/{repo}/merge-upstream`。409 由 `NetworkError.clientError` 抛出。
     func mergeUpstream(owner: String, repo: String, branch: String) async throws -> GitHubMergeUpstreamResult
@@ -395,8 +398,12 @@ extension GitHubAPIClientProtocol {
         throw NetworkError.clientError(statusCode: 501, message: "Organization Issues is not implemented by this client")
     }
 
-    func forkRelation(owner: String, repo: String) async throws -> GitHubForkRelation {
+    func forkRelation(owner: String, repo: String, restFallback: Bool) async throws -> GitHubForkRelation {
         throw NetworkError.clientError(statusCode: 501, message: "Fork relation is not implemented by this client")
+    }
+
+    func forkRelation(owner: String, repo: String) async throws -> GitHubForkRelation {
+        try await forkRelation(owner: owner, repo: repo, restFallback: true)
     }
 
     func mergeUpstream(owner: String, repo: String, branch: String) async throws -> GitHubMergeUpstreamResult {

@@ -9,8 +9,9 @@
 //    自己的 fork 需要「上游 + Contribute + Sync」，和 Watch 订阅不是同一组端点。
 //  - parent 只出现在 `GET /repos/{owner}/{repo}`。列表同步拿到的只有 `is_fork`，
 //    不能靠本地库判断 fork 自谁，必须打开详情后再拉。
-//  - ahead/behind 不用 REST compare：落后上千 commit 时 REST 会带 files + commits，
-//    payload 可能到数十 MB。GraphQL `ref.compare` 只取两个整数。
+//  - ahead/behind 优先 GraphQL `ref.compare`（只取两个整数）。GraphQL 失败或 compare
+//    为 null 时再 GET REST compare，只解码顶层 ahead_by / behind_by；files 仍会下载，
+//    所以这是兜底不是热路径。
 //
 //  GraphQL 方向（必须写进注释，避免以后改反）：
 //  查询打在 **fork** 上，`headRef` 是上游 `owner:repo:branch`。此时
@@ -44,6 +45,25 @@ struct GitHubForkRelation: Equatable, Sendable {
 
     var needsSync: Bool { (behindBy ?? 0) > 0 }
     var canContribute: Bool { (aheadBy ?? 0) > 0 }
+
+    /// merge-upstream HTTP 200 表示 Git 侧已经做完，不需要轮询任务。
+    /// 先把 behind 置 0，避免清缓存后第二行闪「上游不可用」。
+    func markingUpstreamSynced() -> GitHubForkRelation {
+        withCompare(aheadBy: aheadBy, behindBy: 0)
+    }
+
+    func withCompare(aheadBy: Int?, behindBy: Int?) -> GitHubForkRelation {
+        GitHubForkRelation(
+            parentFullName: parentFullName,
+            parentHTMLURL: parentHTMLURL,
+            parentOwner: parentOwner,
+            parentRepoName: parentRepoName,
+            parentDefaultBranch: parentDefaultBranch,
+            forkDefaultBranch: forkDefaultBranch,
+            aheadBy: aheadBy,
+            behindBy: behindBy
+        )
+    }
 }
 
 /// `POST .../merge-upstream` 成功体。
@@ -78,7 +98,7 @@ enum RepoForkStatKindResolver {
 
 extension GitHubAPIClient {
 
-    func forkRelation(owner: String, repo: String) async throws -> GitHubForkRelation {
+    func forkRelation(owner: String, repo: String, restFallback: Bool = true) async throws -> GitHubForkRelation {
         let dto = try await self.repo(owner: owner, repo: repo)
         guard dto.fork, let parent = dto.parent else {
             throw GitHubForkRelationError.parentUnavailable
@@ -93,6 +113,7 @@ extension GitHubAPIClient {
         let forkBranch = dto.defaultBranch ?? parent.defaultBranch ?? "main"
         let parentBranch = parent.defaultBranch ?? forkBranch
 
+        let headRef = "\(parentOwner):\(parentRepoName):\(parentBranch)"
         var aheadBy: Int?
         var behindBy: Int?
         do {
@@ -101,9 +122,10 @@ extension GitHubAPIClient {
                 variables: [
                     "owner": owner,
                     "name": repo,
-                    "headRef": "\(parentOwner):\(parentRepoName):\(parentBranch)"
+                    "headRef": headRef
                 ],
-                as: ForkCompareGraphQL.self
+                as: ForkCompareGraphQL.self,
+                allowPartialData: true
             )
             if let comparison = payload.repository?.defaultBranchRef?.compare {
                 let mapped = GitHubForkCompareMapping.uiAheadBehind(
@@ -118,6 +140,32 @@ extension GitHubAPIClient {
             AppLog.network.error(
                 "Fork compare failed for \(owner, privacy: .public)/\(repo, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
+        }
+
+        // GraphQL 被 errors 打断、或 compare 为 null 时，REST 仍能给出网页上那两个整数。
+        // Sync 后的刷新关掉 REST：files 列表可能数 MB，超时后 UI 会误显示「上游不可用」。
+        if restFallback, aheadBy == nil, behindBy == nil {
+            do {
+                let response: APIResponse<GitHubCompareSummaryDTO> = try await get(
+                    path: AppEndpoints.GitHubREST.Paths.repoCompare(
+                        owner: owner,
+                        repo: repo,
+                        base: forkBranch,
+                        head: headRef
+                    ),
+                    queryItems: [URLQueryItem(name: "per_page", value: "1")]
+                )
+                let mapped = GitHubForkCompareMapping.uiAheadBehind(
+                    graphQLAheadBy: response.value.aheadBy,
+                    graphQLBehindBy: response.value.behindBy
+                )
+                aheadBy = mapped.ahead
+                behindBy = mapped.behind
+            } catch {
+                AppLog.network.error(
+                    "Fork REST compare failed for \(owner, privacy: .public)/\(repo, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
 
         return GitHubForkRelation(
@@ -165,6 +213,13 @@ extension GitHubAPIClient {
 
 private struct GitHubMergeUpstreamRequest: Encodable {
     let branch: String
+}
+
+/// REST compare 只取两个计数。decoder 已开 convertFromSnakeCase：`ahead_by` → `aheadBy`。
+/// 方向与 GraphQL `ref.compare` 相同（base=fork，head=上游），继续走 `GitHubForkCompareMapping`。
+private struct GitHubCompareSummaryDTO: Decodable {
+    let aheadBy: Int
+    let behindBy: Int
 }
 
 private struct GitHubMergeUpstreamDTO: Decodable {

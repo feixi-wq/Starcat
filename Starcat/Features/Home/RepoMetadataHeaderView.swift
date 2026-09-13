@@ -163,9 +163,6 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
                     }
                 }
                 badgeRow
-                if repo.isFork {
-                    ForkedFromCaption(repo: repo)
-                }
                 inlineTopicsRow
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -198,9 +195,6 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             if repo.isArchived {
                 RepoBadgeChip(text: "repo.archived", systemImage: "archivebox", tint: .orange)
             }
-            if repo.isFork {
-                RepoBadgeChip(text: "repo.fork", systemImage: "tuningfork", tint: .gray)
-            }
             if repo.isPrivate {
                 RepoBadgeChip(text: "repo.private", systemImage: "lock.fill", tint: .purple)
             }
@@ -227,6 +221,12 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
                     systemImage: "scale.3d",
                     tint: .secondary
                 )
+            }
+            // fork 来源不再单独占第三行，也不再用灰色 Fork 胶囊占位。
+            // 有 parent 时接到 license 后面，点名字打开上游。
+            if repo.isFork {
+                ForkedFromCaption(repo: repo)
+                    .layoutPriority(-1)
             }
         }
         .lineLimit(1)
