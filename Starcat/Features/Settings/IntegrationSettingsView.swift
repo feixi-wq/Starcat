@@ -63,8 +63,7 @@ struct IntegrationSettingsTab: View {
                     } header: {
                         SettingsSectionHeader(
                             "settings.integration.agentRuntime.title",
-                            systemImage: "point.3.connected.trianglepath.dotted",
-                            style: .prominent
+                            systemImage: "point.3.connected.trianglepath.dotted"
                         )
                     }
                     .id(Self.agentRuntimeAnchor)
@@ -102,17 +101,9 @@ struct IntegrationSettingsTab: View {
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
                         .fixedSize()
-                    Button {
+                    RevealInFinderIconButton(help: Text("settings.integration.codeFlow.outputDir.revealHelp")) {
                         revealOutputDirectory()
-                    } label: {
-                        Image(systemName: "folder")
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: 28, height: 28)
                     }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-                    .help("settings.integration.codeFlow.outputDir.revealHelp")
-                    .accessibilityLabel(Text("settings.integration.codeFlow.outputDir.revealHelp"))
                     .fixedSize()
                     ResetIconButton(help: Text("settings.integration.codeFlow.outputDir.resetHelp")) {
                         resetOutputDirectory()
@@ -149,8 +140,7 @@ struct IntegrationSettingsTab: View {
                     } header: {
                         SettingsSectionHeader(
                             verbatim: "CodeFlow",
-                            systemImage: "point.3.connected.trianglepath.dotted",
-                            style: .prominent
+                            systemImage: "point.3.connected.trianglepath.dotted"
                         )
                     }
                     Section {
@@ -179,15 +169,9 @@ struct IntegrationSettingsTab: View {
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
                         .fixedSize()
-                    Button { revealCodebaseMemoryOutputDirectory() } label: {
-                        Image(systemName: "folder")
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: 28, height: 28)
+                    RevealInFinderIconButton(help: Text("settings.integration.codeFlow.outputDir.revealHelp")) {
+                        revealCodebaseMemoryOutputDirectory()
                     }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-                    .help("settings.integration.codeFlow.outputDir.revealHelp")
-                    .accessibilityLabel(Text("settings.integration.codeFlow.outputDir.revealHelp"))
                     .fixedSize()
                     ResetIconButton(help: Text("settings.integration.codeFlow.outputDir.resetHelp")) {
                         resetCodebaseMemoryOutputDirectory()
@@ -226,8 +210,7 @@ struct IntegrationSettingsTab: View {
                     } header: {
                         SettingsSectionHeader(
                             verbatim: "CodebaseMemory",
-                            systemImage: "point.3.filled.connected.trianglepath.dotted",
-                            style: .prominent
+                            systemImage: "point.3.filled.connected.trianglepath.dotted"
                         )
                     }
                     .id(Self.codebaseMemoryAnchor)
@@ -339,8 +322,7 @@ struct IntegrationSettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.integration.localAPIKey.title",
-                systemImage: "key.horizontal",
-                style: .prominent
+                systemImage: "key.horizontal"
             )
         }
     }
@@ -401,8 +383,7 @@ struct IntegrationSettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.integration.browserPlugin.title",
-                systemImage: "puzzlepiece.extension",
-                style: .prominent
+                systemImage: "puzzlepiece.extension"
             )
         }
     }

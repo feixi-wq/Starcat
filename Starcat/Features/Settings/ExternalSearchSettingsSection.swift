@@ -84,8 +84,7 @@ struct ExternalSearchSettingsSection: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.navigation.item.externalSearch",
-                    systemImage: "globe",
-                    style: .prominent
+                    systemImage: "globe"
                 )
             }
         }
@@ -144,7 +143,7 @@ struct ExternalSearchSettingsSection: View {
                             toggleAPIKeyVisibility(provider)
                         } label: {
                             Image(systemName: visibleExternalSearchAPIKeys.contains(provider) ? "eye.slash" : "eye")
-                                .font(.system(size: 15, weight: .medium))
+                                .font(SettingsIconMetrics.standardGlyph)
                                 .frame(width: 28, height: 28)
                         }
                         .buttonStyle(.plain)

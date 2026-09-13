@@ -717,8 +717,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.appearance",
-                    systemImage: "paintbrush.fill",
-                    style: .prominent
+                    systemImage: "paintbrush.fill"
                 )
             }
 
@@ -758,8 +757,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.language",
-                    systemImage: "globe",
-                    style: .prominent
+                    systemImage: "globe"
                 )
             }
 
@@ -786,8 +784,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.detailBehavior",
-                    systemImage: "sidebar.left",
-                    style: .prominent
+                    systemImage: "sidebar.left"
                 )
             }
 
@@ -816,8 +813,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.macOSIntegration",
-                    systemImage: "macwindow.on.rectangle",
-                    style: .prominent
+                    systemImage: "macwindow.on.rectangle"
                 )
             }
 
@@ -845,8 +841,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.accessibility",
-                    systemImage: "figure.roll",
-                    style: .prominent
+                    systemImage: "figure.roll"
                 )
             }
 
@@ -869,8 +864,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.activity.section",
-                    systemImage: "list.bullet.rectangle",
-                    style: .prominent
+                    systemImage: "list.bullet.rectangle"
                 )
             }
 
@@ -899,8 +893,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.snakeStyle.section",
-                    systemImage: "arcade.stick.console.fill",
-                    style: .prominent
+                    systemImage: "arcade.stick.console.fill"
                 )
             }
 
@@ -936,8 +929,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.other",
-                    systemImage: "ellipsis.circle",
-                    style: .prominent
+                    systemImage: "ellipsis.circle"
                 )
             }
         }
@@ -975,8 +967,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.notifications.title",
-                    systemImage: "bell",
-                    style: .prominent
+                    systemImage: "bell"
                 )
             }
         }
@@ -1095,8 +1086,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.shortcuts",
-                    systemImage: "keyboard",
-                    style: .prominent
+                    systemImage: "keyboard"
                 )
             }
         }
@@ -1137,8 +1127,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.oauthScopes.section",
-                    systemImage: "lock.shield.fill",
-                    style: .prominent
+                    systemImage: "lock.shield.fill"
                 )
             }
 
@@ -1169,8 +1158,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.general.dataContribution.section",
-                    systemImage: "hand.raised.fill",
-                    style: .prominent
+                    systemImage: "hand.raised.fill"
                 )
             }
 
@@ -1192,8 +1180,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.diagnostics.telemetry.section",
-                    systemImage: "chart.bar",
-                    style: .prominent
+                    systemImage: "chart.bar"
                 )
             }
 
@@ -1204,8 +1191,7 @@ struct SettingsView: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.ai.privacy.section",
-                    systemImage: "lock.shield",
-                    style: .prominent
+                    systemImage: "lock.shield"
                 )
             }
         }
@@ -1260,8 +1246,7 @@ struct SettingsView: View {
         } header: {
             SettingsSectionHeader(
                 "settings.pro.direct.updates.section",
-                systemImage: "arrow.triangle.2.circlepath",
-                style: .prominent
+                systemImage: "arrow.triangle.2.circlepath"
             )
         } footer: {
             Text(LocalizedStringKey(dependencies.directUpdateController.isConfigured
@@ -1420,8 +1405,7 @@ private struct InterestedLanguagesSettingsSection: View {
         } header: {
             SettingsSectionHeader(
                 "settings.filters.interestedLanguages.section",
-                systemImage: "chevron.left.forwardslash.chevron.right",
-                style: .prominent
+                systemImage: "chevron.left.forwardslash.chevron.right"
             )
         }
     }
@@ -1481,10 +1465,10 @@ private struct InterestedLanguagesSettingsSection: View {
     }
 
     private var addLanguageIcon: some View {
-        // 对齐集成页 `tokenActionIcon` 的标准小工具图标规格：13pt / 24×22 / 圆角 6，
-        // 避免这个 + 比设置页其它图标按钮更抢眼。
+        // chip 内联添加钮：glyph 引用 `SettingsIconMetrics.smallGlyph`（13pt，与分组
+        // 图标同源），命中框保持 24×22 / 圆角 6 —— 28×28 会撑破 chip 行（规范 §9 例外）。
         Image(systemName: "plus")
-            .font(.system(size: 13, weight: .medium))
+            .font(SettingsIconMetrics.smallGlyph)
             .foregroundStyle(Color.secondary)
             .frame(width: 24, height: 22)
             .background(
@@ -1597,15 +1581,9 @@ private struct FlowTagList: View {
                     Text(LanguageDisplayName.shortened(for: language))
                         .font(.caption)
                         .lineLimit(1)
-                    Button {
+                    ChipRemoveButton(help: Text("settings.filters.interestedLanguages.remove")) {
                         removeAction(language)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption)
                     }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-                    .accessibilityLabel(Text("settings.filters.interestedLanguages.remove"))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -1717,8 +1695,7 @@ private struct DiagnosticsSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.diagnostics.export.section",
-                    systemImage: "square.and.arrow.up",
-                    style: .prominent
+                    systemImage: "square.and.arrow.up"
                 )
             }
 
@@ -1731,8 +1708,7 @@ private struct DiagnosticsSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.diagnostics.bundleContents.section",
-                    systemImage: "doc.text.magnifyingglass",
-                    style: .prominent
+                    systemImage: "doc.text.magnifyingglass"
                 )
             }
 
@@ -2001,8 +1977,7 @@ private struct StorageSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.storage.readmePrefetch.section",
-                    systemImage: "doc.text.magnifyingglass",
-                    style: .prominent
+                    systemImage: "doc.text.magnifyingglass"
                 )
             }
 
@@ -2028,8 +2003,7 @@ private struct StorageSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.storage.chatHistoryBackend.section",
-                    systemImage: "bubble.left.and.bubble.right",
-                    style: .prominent
+                    systemImage: "bubble.left.and.bubble.right"
                 )
             }
 
@@ -2153,8 +2127,7 @@ private struct StorageSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.storage.cacheUsage",
-                    systemImage: "internaldrive",
-                    style: .prominent
+                    systemImage: "internaldrive"
                 )
             }
 
@@ -2164,8 +2137,7 @@ private struct StorageSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "activity.category.undoStar",
-                    systemImage: "arrow.uturn.backward.circle",
-                    style: .prominent
+                    systemImage: "arrow.uturn.backward.circle"
                 )
             }
 
@@ -2198,8 +2170,7 @@ private struct StorageSettingsTab: View {
             } header: {
                 SettingsSectionHeader(
                     "settings.storage.dangerZone",
-                    systemImage: "exclamationmark.triangle.fill",
-                    style: .prominent
+                    systemImage: "exclamationmark.triangle.fill"
                 )
             }
 
@@ -2376,17 +2347,9 @@ private struct StorageSettingsTab: View {
 
     /// 缓存用量行统一的 Finder 打开按钮。
     private func revealInFinderButton(item: CacheDirectoryLocator.Item) -> some View {
-        Button {
+        RevealInFinderIconButton(help: Text("settings.storage.revealInFinder")) {
             revealCacheLocation(item)
-        } label: {
-            Image(systemName: "folder")
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 28)
         }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .help(Text("settings.storage.revealInFinder"))
-        .accessibilityLabel(Text("settings.storage.revealInFinder"))
         .disabled(shouldDisableStorageActions || isWorking)
     }
 

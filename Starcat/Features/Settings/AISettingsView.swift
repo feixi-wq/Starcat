@@ -426,38 +426,24 @@ struct AISettingsTab: View {
 
                 Spacer(minLength: 12)
 
-                Button {
+                AddIconButton(help: Text("settings.ai.provider.addHelp")) {
                     // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12：包 withAnimation 让下方
                     // Provider 行 + 输入区伴随 transition 滑入，而不是瞬切。
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                         beginDraft(provider: .openAICompatible)
                     }
-                } label: {
-                    Label("settings.ai.provider.add", systemImage: "plus")
-                        .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 28)
-                .help("settings.ai.provider.addHelp")
-                .accessibilityLabel(Text("settings.ai.provider.addHelp"))
                 .disabled(draftProfile != nil)
 
-                Button(role: .destructive) {
-                    // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12：先弹二次确认 dialog，
-                    // dialog 内点「删除」才真正执行 `deleteProfile(id:)`。
+                // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12：先弹二次确认 dialog，
+                // dialog 内点「删除」才真正执行 `deleteProfile(id:)`。
+                DestructiveIconButton(
+                    help: Text("settings.ai.provider.deleteHelp"),
+                    font: SettingsIconMetrics.standardGlyph,
+                    frameSize: SettingsIconMetrics.actionFrameSize
+                ) {
                     pendingDeleteProfileID = selectedProfileID
-                } label: {
-                    Label("settings.ai.provider.delete", systemImage: "trash")
-                        .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 28)
-                .help("settings.ai.provider.deleteHelp")
-                .accessibilityLabel(Text("settings.ai.provider.deleteHelp"))
                 // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
                 .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
             }
@@ -553,8 +539,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.ai.provider.sectionTitle",
-                systemImage: "server.rack",
-                style: .prominent
+                systemImage: "server.rack"
             )
         } footer: {
             Text("settings.ai.provider.sectionFooter")
@@ -585,8 +570,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.ai.discoveredModels.title",
-                systemImage: "list.bullet.rectangle",
-                style: .prominent
+                systemImage: "list.bullet.rectangle"
             )
         }
     }
@@ -617,8 +601,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.ai.taskModels.title",
-                systemImage: "slider.horizontal.3",
-                style: .prominent
+                systemImage: "slider.horizontal.3"
             )
         }
     }
@@ -795,9 +778,11 @@ struct AISettingsTab: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 11, weight: .medium))
+                    // 与 SettingsSectionHeader prominent 的分组图标同口径（13pt / 20×20），
+                    // 让 DisclosureGroup 标题和 Section 分组标题在 Form 里同一视觉层级。
+                    .font(SettingsIconMetrics.smallGlyph)
                     .foregroundStyle(.secondary)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 20, height: 20)
                 Text(titleKey)
                 Spacer(minLength: 0)
             }
@@ -832,8 +817,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.autoTidy.section",
-                systemImage: "wand.and.stars",
-                style: .prominent
+                systemImage: "wand.and.stars"
             )
         }
     }
@@ -892,8 +876,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.githubListGrouping.section",
-                systemImage: "folder.badge.gearshape",
-                style: .prominent
+                systemImage: "folder.badge.gearshape"
             )
         } footer: {
             Text("settings.githubListGrouping.footer")
@@ -1272,7 +1255,7 @@ struct AISettingsTab: View {
             if autoTidyScheduler.isAutoTidyRunning {
                 HStack(spacing: 4) {
                     ProgressView()
-                        .controlSize(.mini)
+                        .controlSize(.small)
                     Text(verbatim: autoTidyScheduler.autoTidyProgressText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -1484,8 +1467,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.ai.prompt.title",
-                systemImage: "text.quote",
-                style: .prominent
+                systemImage: "text.quote"
             )
         }
     }
@@ -1497,11 +1479,11 @@ struct AISettingsTab: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "curlybraces")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                 Text("settings.ai.prompt.placeholders.open")
                     .font(.caption.weight(.medium))
                 Image(systemName: "info.circle")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
             }
             .foregroundStyle(.secondary)
             .contentShape(Rectangle())
@@ -1566,8 +1548,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.aiIndex.section",
-                systemImage: "brain.head.profile",
-                style: .prominent
+                systemImage: "brain.head.profile"
             )
         }
     }
@@ -1970,8 +1951,7 @@ struct AISettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "ai.context.settings.title",
-                systemImage: "shippingbox.fill",
-                style: .prominent
+                systemImage: "shippingbox.fill"
             )
         }
     }
@@ -2116,17 +2096,9 @@ struct AISettingsTab: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .fixedSize()
-                Button {
+                RevealInFinderIconButton(help: Text("ai.context.storage.revealHelp")) {
                     revealAIContextOutputDirectory()
-                } label: {
-                    Image(systemName: "folder")
-                        .font(.system(size: 15, weight: .medium))
-                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .help(Text("ai.context.storage.revealHelp"))
-                .accessibilityLabel(Text("ai.context.storage.revealHelp"))
                 .fixedSize()
                 ResetIconButton(help: Text("ai.context.storage.resetHelp")) {
                     resetAIContextOutputDirectory()

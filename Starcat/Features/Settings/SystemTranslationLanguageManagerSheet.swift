@@ -72,8 +72,10 @@ struct SystemTranslationLanguageManagerSheet: View {
             SyncIconButton(
                 isRefreshing: catalog.isRefreshing,
                 disabled: catalog.isRefreshing || pendingSourceIdentifier != nil,
-                font: .system(size: 15, weight: .medium),
-                frameSize: 28,
+                // 设置页 icon-only 标准口径；SyncIconButton 自身默认是全 App 刷新按钮的
+                // 18pt 基准，设置域内显式覆盖为 15pt / 28×28。
+                font: SettingsIconMetrics.standardGlyph,
+                frameSize: SettingsIconMetrics.actionFrameSize,
                 tooltip: String.l10n("settings.translation.system.refresh")
             ) {
                 Task { await catalog.refresh(target: resolvedTarget, force: true) }

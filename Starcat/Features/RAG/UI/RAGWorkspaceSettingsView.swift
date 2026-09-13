@@ -517,8 +517,10 @@ struct RAGWorkspaceSettingsView: View {
                         SyncIconButton(
                             isRefreshing: isInspectingCLIRuntimes,
                             disabled: isInspectingCLIRuntimes,
-                            font: .system(size: 15, weight: .medium),
-                            frameSize: 28,
+                            // 设置页 icon-only 标准口径（SyncIconButton 默认是全 App
+                            // 18pt 基准，设置域内显式覆盖为 15pt / 28×28）。
+                            font: SettingsIconMetrics.standardGlyph,
+                            frameSize: SettingsIconMetrics.actionFrameSize,
                             tooltip: String.l10n("rag.workspace.inference.refresh.help")
                         ) {
                             Task { await inspectCLIRuntimes() }
@@ -1008,7 +1010,7 @@ struct RAGWorkspaceSettingsView: View {
 
     /// RAG 已嵌入主设置，标题直接复用统一组件，避免维护第二套字号和图标尺寸。
     private func sectionTitle(_ key: LocalizedStringKey, systemImage: String) -> some View {
-        SettingsSectionHeader(key, systemImage: systemImage, style: .prominent)
+        SettingsSectionHeader(key, systemImage: systemImage)
     }
 
     private func settingRow(titleKey: LocalizedStringKey, value: String) -> some View {

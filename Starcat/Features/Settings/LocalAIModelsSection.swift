@@ -48,8 +48,10 @@ struct LocalAIModelsSection: View {
     /// 行尾状态区固定宽度：容纳两个 28pt 图标（对勾 + 删除）。
     private static let statusAreaWidth: CGFloat = 62
 
-    private static let rowIconFont = Font.system(size: 12, weight: .regular)
-    private static let rowIconFrameSize: CGFloat = 28
+    /// 行内状态图标与行尾按钮统一引用设置页 icon-only 口径（15pt medium / 28×28），
+    /// 不再自定 12pt 规则字重，避免和其它设置页行尾按钮大小不一。
+    private static let rowIconFont = SettingsIconMetrics.standardGlyph
+    private static let rowIconFrameSize: CGFloat = SettingsIconMetrics.actionFrameSize
 
     /// 进度说明拆成定宽列：数值更新只改变列内文字，不再推动后面的百分比与速度横跳。
     /// 当前 catalog 最大模型不足 5 GB，这组宽度可覆盖 `999.9 MB` / `4.2 GB` 等格式。
@@ -95,8 +97,7 @@ struct LocalAIModelsSection: View {
         } header: {
             SettingsSectionHeader(
                 "settings.localai.section.title",
-                systemImage: "cpu",
-                style: .prominent
+                systemImage: "cpu"
             )
         } footer: {
             Text("settings.localai.section.footer")

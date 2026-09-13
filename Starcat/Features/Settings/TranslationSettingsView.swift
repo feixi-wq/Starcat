@@ -133,8 +133,7 @@ struct TranslationSettingsTab: View {
         } header: {
             SettingsSectionHeader(
                 "settings.translation.section.system",
-                systemImage: "character.bubble",
-                style: .prominent
+                systemImage: "character.bubble"
             )
         } footer: {
             Text("settings.translation.section.system.footer")
@@ -391,11 +390,11 @@ struct TranslationSettingsTab: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "curlybraces")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                 Text("settings.ai.prompt.placeholders.open")
                     .font(.caption.weight(.medium))
                 Image(systemName: "info.circle")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
             }
             .foregroundStyle(.secondary)
             .contentShape(Rectangle())
