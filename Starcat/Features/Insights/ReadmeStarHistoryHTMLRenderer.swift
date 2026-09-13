@@ -186,7 +186,8 @@ enum ReadmeStarHistoryHTMLRenderer {
                 \(icon("clock"))<span>\(escape(historyUpdated))</span>
               </div>
               <div class="starcat-star-history-footer-actions">
-                <span class="starcat-star-history-attribution">\(icon("sparkles"))\(text("readme.starHistory.poweredByPrefix")) <strong>Starcat</strong></span>
+                <!-- 署名整段指向 history-api 开源仓库；ReadmeWebView 的 linkActivated 会转系统浏览器打开。 -->
+                <a class="starcat-star-history-attribution" href="https://github.com/starcat-app/starcat-history-api">\(icon("sparkles"))\(text("readme.starHistory.poweredByPrefix")) <strong>Starcat</strong></a>
               </div>
             </footer>
           </div>
