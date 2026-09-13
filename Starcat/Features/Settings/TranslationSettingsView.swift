@@ -371,9 +371,10 @@ struct TranslationSettingsTab: View {
     /// 与 AI 服务页任务模型下拉语义一致。
     private var modelBinding: Binding<String> {
         Binding(
-            get: { settings.aiTranslationTask.modelID },
+            get: { settings.resolvedAITask(settings.aiTranslationTask).modelID },
             set: { modelName in
                 var config = settings.aiTranslationTask
+                settings.selectLocalAIModel(named: modelName, providerID: config.providerID)
                 config.modelID = modelName
                 config.useCustomModel = false
                 settings.aiTranslationTask = config

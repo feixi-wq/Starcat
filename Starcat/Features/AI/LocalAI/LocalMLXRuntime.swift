@@ -147,7 +147,9 @@ actor LocalMLXRuntime {
         Memory.clearCache()
         await gate.release()
         try Task.checkCancellation()
-        if task.isCancelled { throw CancellationError() }
+        // 重复保护也会取消 producer 来停止 GPU 工作，但必须保留它的真实失败原因。
+        // 只有底层被取消却仍返回成功时才转成取消；外部父任务取消已由上行检查优先处理。
+        if task.isCancelled, case .success = result { throw CancellationError() }
         return try result.get()
     }
 
@@ -386,7 +388,7 @@ extension LocalMLXRuntime {
         container: ModelContainer,
         request: AIChatRequest,
         onEvent: @escaping @Sendable (AIChatStreamEvent) -> Void
-    ) async throws {
+    ) async throws -> AIChatResponse {
         if !request.tools.isEmpty {
             throw LocalAIError.toolsUnsupported
         }
@@ -402,11 +404,16 @@ extension LocalMLXRuntime {
                 "\n\nIMPORTANT: Respond with a single valid JSON value only. No markdown fences, no commentary."
         }
         let parameters = GenerateParameters(
-            maxTokens: min(request.parameters.maxCompletionTokens, 8_192),
+            maxTokens: min(max(request.parameters.maxCompletionTokens, 1), LocalAIMemoryPolicy.outputTokens),
             maxKVSize: LocalAIMemoryPolicy.inputTokens + LocalAIMemoryPolicy.outputTokens,
             temperature: Float(request.parameters.temperature),
             topP: Float(request.parameters.topP),
             topK: request.parameters.topK,
+            minP: 0,
+            repetitionPenalty: request.model == LocalAIModelCatalog.llmMiniCPM5.displayName ? 1.05 : nil,
+            repetitionContextSize: 512,
+            presencePenalty: request.model.hasPrefix("Qwen3") ? 1.5 : nil,
+            presenceContextSize: 512,
             prefill: .init(stepSize: 128))
         // 注意：Starcat 模块里已有内部的 `ChatSession`（RepoAIChatViewModel 的
         // 聊天历史模型），它在本文件作用域里遮蔽 MLXLMCommon.ChatSession，
@@ -438,13 +445,22 @@ extension LocalMLXRuntime {
         }
         var output = ""
         var reasoningOutput = ""
+        var completion: GenerateCompletionInfo?
+        var repetitionGuard = LocalAIRepetitionGuard()
         var reasoningRouter = AIStreamReasoningNormalizer(
             openingTag: reasoningConfiguration?.startDelimiter ?? "<think>",
             closingTag: reasoningConfiguration?.endDelimiter ?? "</think>",
             startsInsideReasoning: reasoningSetup.startsInsideReasoning)
+        var iterator = session.streamDetails(to: messages).makeAsyncIterator()
         do {
-            for try await chunk in session.streamResponse(to: messages) {
+            while let generation = try await iterator.next() {
                 try Task.checkCancellation()
+                if let info = generation.info {
+                    completion = info
+                    continue
+                }
+                guard let chunk = generation.chunk else { throw LocalAIError.toolsUnsupported }
+                guard !repetitionGuard.ingest(chunk) else { throw LocalAIError.repetitiveOutput }
                 for event in reasoningRouter.ingest(content: chunk, nativeReasoning: nil) {
                     switch event {
                     case .reasoningDelta(let text):
@@ -458,6 +474,11 @@ extension LocalMLXRuntime {
                 }
             }
         } catch {
+            // 这里运行在 LocalMLXClient 的独立生成子任务内。普通 throw 不等价于取消
+            // AsyncStream 的 producer；取消并推进一次 iterator，确保 SDK 的 onTermination
+            // 已通知底层停止，再等待 GPU 锁归还。保留原始错误，不能把重复误报为用户取消。
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = try? await iterator.next()
             await session.synchronize()
             await session.clear()
             throw error
@@ -477,15 +498,26 @@ extension LocalMLXRuntime {
             }
             onEvent(event)
         }
-        onEvent(
-            .completed(
-                AIChatResponse(
-                    content: output,
-                    reasoningContent: reasoningOutput.isEmpty ? nil : reasoningOutput,
-                    toolCalls: [],
-                    usage: nil,
-                    model: request.model,
-                    finishReason: "stop")))
+        guard let completion else { throw AIClientError.emptyResponse }
+        let finishReason: String
+        switch completion.stopReason {
+        case .stop: finishReason = "stop"
+        case .length: finishReason = "length"
+        case .cancelled: throw CancellationError()
+        }
+        let usage = AIChatUsage(
+            inputTokens: completion.promptTokenCount,
+            outputTokens: completion.generationTokenCount,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: completion.promptTokenCount + completion.generationTokenCount)
+        onEvent(.usage(usage))
+        return AIChatResponse(
+            content: output,
+            reasoningContent: reasoningOutput.isEmpty ? nil : reasoningOutput,
+            usage: usage,
+            model: request.model,
+            finishReason: finishReason)
     }
 
     /// 把请求级 `disableThinking` 映射到模型自己的 chat-template 开关。
@@ -553,6 +585,7 @@ enum LocalAIError: LocalizedError, Equatable {
     case unavailableInTests
     case modelNotInstalled(String)
     case toolsUnsupported
+    case repetitiveOutput
     case memoryBudgetExceeded
     case contextTooLong
     case embeddingDimensionMismatch(expected: Int, actual: Int)
@@ -568,6 +601,8 @@ enum LocalAIError: LocalizedError, Equatable {
                 format: String.l10n("settings.localai.error.modelNotInstalledFormat"), name)
         case .toolsUnsupported:
             return String.l10n("settings.localai.error.toolsUnsupported")
+        case .repetitiveOutput:
+            return String.l10n("settings.localai.error.repetitiveOutput")
         case .memoryBudgetExceeded:
             return String.l10n("toolbar.localai.memoryBudgetExceeded")
         case .contextTooLong:

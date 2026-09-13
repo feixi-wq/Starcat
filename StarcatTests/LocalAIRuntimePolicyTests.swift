@@ -81,11 +81,14 @@ struct LocalAIRuntimePolicyTests {
         settings.aiEmbeddingTask.providerID = "test-local-runtime"
         settings.aiEmbeddingTask.modelID = "test-local-embedding"
         settings.aiEmbeddingTask.useCustomModel = false
-        #expect(settings.configuredLocalAIModelNames.contains("test-local-embedding"))
+        let embedding = LocalAIModelCatalog.embedding
+        settings.localAIModelSelections["embedding"] = embedding.id
+        #expect(settings.configuredLocalAIModelNames.contains(embedding.displayName))
+        #expect(!settings.configuredLocalAIModelNames.contains("test-local-embedding"))
         #expect(!settings.configuredLocalAIModelNames.contains(settings.aiChatTask.resolvedModelName))
     }
 
-    @Test("相同的空模型配置仍按任务类型保留各自默认模型")
+    @Test("相同的空任务配置按类别保留本地选择，不沿用远程 fallback")
     @MainActor func fallbackModelsAreResolvedByTaskKind() {
         let suite = "LocalAIRuntimePolicyTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -101,7 +104,11 @@ struct LocalAIRuntimePolicyTests {
         settings.aiChatTask.modelID = ""
         settings.aiChatTask.useCustomModel = false
         settings.aiEmbeddingTask = settings.aiChatTask
-        #expect(settings.configuredLocalAIModelNames.contains("fallback-chat"))
-        #expect(settings.configuredLocalAIModelNames.contains("fallback-embedding"))
+        let chat = settings.selectedLocalAIModel(for: .llm)
+        let embedding = settings.selectedLocalAIModel(for: .embedding)
+        #expect(settings.configuredLocalAIModelNames.contains(chat.displayName))
+        #expect(settings.configuredLocalAIModelNames.contains(embedding.displayName))
+        #expect(!settings.configuredLocalAIModelNames.contains("fallback-chat"))
+        #expect(!settings.configuredLocalAIModelNames.contains("fallback-embedding"))
     }
 }

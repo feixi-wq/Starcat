@@ -1016,9 +1016,12 @@ final class AppSettings {
     }
 
     /// 三类本地模型下拉的选择，按类别 rawValue 保存 catalog entry ID。
-    /// 与任务模型配置分离，避免浏览下载选项时意外改变实际推理模型。
+    /// 普通本地任务的模型真源；改变选择只影响后续请求，正在执行的请求保留自己的快照。
     var localAIModelSelections: [String: String] = [:] {
-        didSet { persistJSON(key: Keys.localAIModelSelections, value: localAIModelSelections) }
+        didSet {
+            persistJSON(key: Keys.localAIModelSelections, value: localAIModelSelections)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 多服务商 AI 配置。
@@ -2717,7 +2720,7 @@ final class AppSettings {
     func effectiveParameters(for task: AIModelTaskConfiguration) -> AIModelParameters {
         if let profile = aiProviderProfiles.first(where: { $0.id == task.providerID }),
            let model = profile.models.first(where: { $0.name == task.modelID }) {
-            return model.parameters ?? AIModelParameters.defaults(for: model.capability)
+            return model.effectiveParameters
         }
         return task.parameters
     }

@@ -108,8 +108,8 @@ struct LocalAISettingsSelectionTests {
         }
     }
 
-    @Test("更新展示选择不改变实际任务路由")
-    func doesNotChangeTaskRouting() {
+    @Test("本地默认选择不改写任务中保存的远程配置")
+    func preservesPersistedTaskConfiguration() {
         withSettings { settings, _ in
             let tasks = [settings.aiChatTask, settings.aiSummaryTask, settings.aiTranslationTask, settings.aiEmbeddingTask]
             settings.aiSettingsSelectedProfileID = "api"
@@ -118,18 +118,158 @@ struct LocalAISettingsSelectionTests {
         }
     }
 
+    @Test("普通生成任务统一使用 MiniCPM，旧任务中的 Qwen3 不再决定请求")
+    func generationTasksUseSelectedLocalModel() throws {
+        try withSettings { settings, _ in
+            configureInstalledModels(settings)
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
+            let tasks = [settings.aiSummaryTask, settings.aiTagsTask, settings.aiChatTask, settings.aiTranslationTask]
+            for original in tasks {
+                var task = original
+                task.providerID = LocalAIModelCatalog.builtInProfileID
+                task.modelID = LocalAIModelCatalog.llm.displayName
+                task.useCustomModel = false
+                let resolved = settings.resolvedAITask(task)
+                #expect(resolved.resolvedModelName == LocalAIModelCatalog.llmMiniCPM5.displayName)
+                #expect(resolved.parameters.temperature == 1.0)
+                #expect(resolved.prompt == original.prompt)
+                let selection = try settings.resolveChatSelection(for: task)
+                #expect(selection.modelName == resolved.resolvedModelName)
+            }
+        }
+    }
+
+    @Test("请求快照在切换模型和修改参数后保持不变")
+    func freezesModelAndParameters() {
+        withSettings { settings, _ in
+            configureInstalledModels(settings)
+            var task = settings.aiSummaryTask
+            task.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
+            let snapshot = settings.resolvedAITask(task)
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llm.id
+            settings.aiProviderProfiles[0].models[0].parameters = .tagsDefault
+            #expect(snapshot.resolvedModelName == LocalAIModelCatalog.llmMiniCPM5.displayName)
+            #expect(snapshot.parameters.temperature == 1.0)
+            #expect(settings.resolvedAITask(task).resolvedModelName == LocalAIModelCatalog.llm.displayName)
+        }
+    }
+
+    @Test("摘要缓存键与入口可用性使用当前本地选择")
+    func cacheAndAvailabilityUseSelectedModel() throws {
+        try withSettings { settings, _ in
+            configureInstalledModels(settings)
+            settings.aiSummaryTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.aiSummaryTask.modelID = "stale-summary-model"
+            settings.aiChatTask.modelID = "stale-chat-model"
+            let database = try InMemoryDatabaseManager()
+            let service = RepoAIInsightService(
+                summaryRepository: GRDBAISummaryRepository(database: database),
+                readmeRepository: ReadmeRepository(database: database),
+                settings: settings, keychain: InMemoryKeychain())
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
+            let miniKey = service.cacheModelKey()
+            #expect(settings.hasConfiguredChatModel)
+            #expect(miniKey.contains("summary:\(LocalAIModelCatalog.builtInProfileID)/\(LocalAIModelCatalog.llmMiniCPM5.displayName)"))
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llm.id
+            #expect(service.cacheModelKey() != miniKey)
+            #expect(!service.cacheModelKey().contains("stale-summary-model"))
+        }
+    }
+
+    @Test("明确选择未安装模型时失败，不回退其它权重")
+    func doesNotFallbackToInstalledLLM() throws {
+        try withSettings { settings, _ in
+            configureInstalledModels(settings, entries: [LocalAIModelCatalog.llm])
+            var task = settings.aiSummaryTask
+            task.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
+            #expect(settings.resolvedAITask(task).modelID == LocalAIModelCatalog.llmMiniCPM5.displayName)
+            #expect(throws: AIChatSelectionError.self) { try settings.resolveChatSelection(for: task) }
+        }
+    }
+
+    @Test("向量化选择独立于生成，卸载保留集合与实际模型一致")
+    func embeddingAndResidencyFollowSelections() throws {
+        try withSettings { settings, _ in
+            configureInstalledModels(settings)
+            let embedding = LocalAIModelCatalog.entries(of: .embedding).last!
+            settings.aiEmbeddingTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.aiSummaryTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.localAIModelSelections = ["embedding": embedding.id, "llm": LocalAIModelCatalog.llmMiniCPM5.id]
+            let selection = try settings.resolveEmbeddingSelection()
+            #expect(selection.modelName == embedding.displayName)
+            #expect(settings.configuredLocalAIModelNames.contains(embedding.displayName))
+            #expect(settings.configuredLocalAIModelNames.contains(LocalAIModelCatalog.llmMiniCPM5.displayName))
+            #expect(!settings.configuredLocalAIModelNames.contains(LocalAIModelCatalog.llm.displayName))
+        }
+    }
+
+    @Test("API 任务的模型和参数不被本地选择覆盖")
+    func remoteTaskIsUnchanged() {
+        withSettings { settings, _ in
+            var task = settings.aiSummaryTask
+            task.providerID = "api"
+            task.modelID = "remote-model"
+            task.useCustomModel = false
+            task.parameters.temperature = 0.31
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
+            #expect(settings.resolvedAITask(task) == task)
+        }
+    }
+
+    @Test("同步模型目录保留参数覆盖与禁用状态，并移除已删除模型")
+    func preservesModelOverridesOnSync() throws {
+        let entry = LocalAIModelCatalog.llmMiniCPM5
+        let previous = AIModelDescriptor(
+            providerID: LocalAIModelCatalog.builtInProfileID, name: entry.displayName,
+            capability: .chat, isEnabled: false, parameters: .translationDefault)
+        let models = LocalAIModelManager.installedModelDescriptors(
+            installedModels: [installedModel(entry)], previousModels: [previous])
+        let model = try #require(models.first)
+        #expect(model.parameters == previous.parameters)
+        #expect(!model.isEnabled)
+        #expect(LocalAIModelManager.installedModelDescriptors(installedModels: [], previousModels: models).isEmpty)
+    }
+
+    @Test("本地重排序使用所选目录而非固定 4bit 模型")
+    func rerankerUsesSelectedModel() {
+        let entry = LocalAIModelCatalog.entries(of: .reranker).last!
+        let reranker = LocalMLXRAGReranker(configuration: .init(), model: entry)
+        #expect(reranker.debugModel == entry.displayName)
+    }
+
+    @Test("Agent 在加载或读取凭据前拒绝不支持工具调用的本地模型")
+    func agentRejectsLocalToolCalling() throws {
+        try withSettings { settings, _ in
+            configureInstalledModels(settings)
+            settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
+            #expect(throws: AgentLoopModelError.self) { try AgentLoopModelClientFactory.make(settings: settings) }
+        }
+    }
+
+    /// 只提供已验证安装目录的描述；所有解析测试不执行磁盘扫描或模型加载。
+    private func configureInstalledModels(_ settings: AppSettings, entries: [LocalAIModelCatalogEntry] = LocalAIModelCatalog.entries) {
+        settings.aiProviderProfiles[0].models = entries.map {
+            AIModelDescriptor(providerID: LocalAIModelCatalog.builtInProfileID, name: $0.displayName, capability: $0.capability)
+        }
+        settings.aiProviderProfiles[0].lastTestStatus = .success(modelCount: entries.count)
+    }
+
     /// 每个用例独立持久化域，避免碰到用户正在使用的服务商配置。
-    private func withSettings(_ body: (AppSettings, UserDefaults) -> Void) {
+    private func withSettings(_ body: (AppSettings, UserDefaults) throws -> Void) rethrows {
         let suite = "LocalAISettingsSelectionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = AppSettings(defaults: defaults)
         settings.aiProviderProfiles = [
-            AIProviderProfile(id: "local", provider: .localAI, models: [], lastTestStatus: .notTested),
+            AIProviderProfile(id: LocalAIModelCatalog.builtInProfileID, provider: .localAI, models: [], lastTestStatus: .notTested),
             AIProviderProfile(id: "api", provider: .openAICompatible, models: [], lastTestStatus: .notTested),
         ]
-        settings.aiSettingsSelectedProfileID = "local"
-        body(settings, defaults)
+        settings.aiSettingsSelectedProfileID = LocalAIModelCatalog.builtInProfileID
+        try body(settings, defaults)
     }
 
     /// 安装清单夹具只提供身份信息，真实文件与内存状态都不参与选择解析。

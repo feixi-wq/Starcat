@@ -593,9 +593,9 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
         translatedByHash: inout [String: String],
         onBatch: BatchProgressHandler?
     ) async throws -> ReadmeTranslation {
-        let task = settings.aiTranslationTask
+        let task = settings.resolvedAITask(settings.aiTranslationTask)
         let (client, model) = try makeClient(task: task, fallbackModel: settings.aiChatModel)
-        let parameters = settings.effectiveParameters(for: task)
+        let parameters = task.parameters
         let configuredPrompt = request.mode == .segmented
             ? task.prompt
             : settings.aiFullTranslationPrompt
@@ -835,8 +835,8 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
             apiKey: apiKey,
             baseURL: profile.baseURL,
             chatModel: model,
-            embeddingModel: settings.aiEmbeddingTask.resolvedModelName,
-            timeoutInterval: settings.effectiveParameters(for: task).timeoutSeconds
+            embeddingModel: settings.resolvedAITask(settings.aiEmbeddingTask, type: .embedding).resolvedModelName,
+            timeoutInterval: task.parameters.timeoutSeconds
         ))
         return (client, model)
     }

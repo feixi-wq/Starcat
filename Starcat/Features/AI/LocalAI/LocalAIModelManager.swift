@@ -589,8 +589,10 @@ final class LocalAIModelManager {
 
         let settings = AppSettings.shared
         var profiles = settings.aiProviderProfiles
-        let descriptors = installedModelDescriptors()
         let index = profiles.firstIndex { $0.id == LocalAIModelCatalog.builtInProfileID }
+        let descriptors = Self.installedModelDescriptors(
+            installedModels: installedModels,
+            previousModels: index.map { profiles[$0].models } ?? [])
 
         if let index {
             var profile = profiles[index]
@@ -617,17 +619,23 @@ final class LocalAIModelManager {
     ///
     /// name 用 catalog 稳定名（用户在任务配置里看到的名字）；revision 由
     /// `LocalMLXClient` 经 manager 解析，用户不感知。
-    private func installedModelDescriptors() -> [AIModelDescriptor] {
+    /// 安装清单只更新可用模型集合；参数覆盖与禁用状态属于用户配置，不能在同步时重置。
+    static func installedModelDescriptors(
+        installedModels: [LocalAIInstalledModel], previousModels: [AIModelDescriptor]
+    ) -> [AIModelDescriptor] {
         let catalogByID = Dictionary(
             uniqueKeysWithValues: LocalAIModelCatalog.entries.map { ($0.id, $0) })
         return installedModels.compactMap { manifest in
             guard let entry = catalogByID[manifest.id] else { return nil }
+            let previous = previousModels.first { $0.name == entry.displayName }
             return AIModelDescriptor(
+                id: previous?.id,
                 providerID: LocalAIModelCatalog.builtInProfileID,
                 name: entry.displayName,
                 ownedBy: "Starcat Local AI",
                 capability: entry.capability,
-                isEnabled: true)
+                isEnabled: previous?.isEnabled ?? true,
+                parameters: previous?.parameters)
         }
     }
 }

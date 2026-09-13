@@ -1191,7 +1191,8 @@ final class KnowledgeRAGIndexBuilder {
     }
 
     private func resolvedEmbeddingModel() -> String {
-        settings.aiEmbeddingTask.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.resolvedAITask(settings.aiEmbeddingTask, type: .embedding).resolvedModelName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var isCurrentWorkGeneration: Bool {

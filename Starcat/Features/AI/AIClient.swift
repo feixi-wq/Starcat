@@ -375,7 +375,7 @@ protocol AIClientProtocol: AITextGenerating {
 enum AIClientFactory {
     static func make(configuration: AIClientConfiguration) throws -> any AIClientProtocol {
         if configuration.provider == .localAI {
-            return try LocalMLXClient.makeClient(modelName: configuration.chatModel)
+            return LocalMLXClient.makeClient(configuration: configuration)
         }
         return try OpenAIClient(configuration: configuration)
     }

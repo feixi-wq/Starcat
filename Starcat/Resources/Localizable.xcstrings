@@ -4290,6 +4290,12 @@
         }
       }
     },
+    "settings.localai.error.repetitiveOutput" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local model generation stopped because it kept repeating content. Try adjusting the model parameters or switching models." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型持续重复输出，已停止生成。请调整模型参数或切换模型后重试。" } }
+      }
+    },
     "settings.localai.error.toolsUnsupported" : {
       "extractionState" : "manual",
       "localizations" : {

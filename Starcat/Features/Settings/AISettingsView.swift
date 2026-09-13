@@ -2925,6 +2925,7 @@ struct AISettingsTab: View {
         Binding(
             get: { taskConfig(task).modelID },
             set: { modelName in
+                settings.selectLocalAIModel(named: modelName, providerID: taskConfig(task).providerID)
                 updateTask(task) { config in
                     config.modelID = modelName
                     // 选列表模型时关掉自定义开关，但保留 customModelName，
@@ -3046,13 +3047,15 @@ struct AISettingsTab: View {
     }
 
     private func taskConfig(_ task: AIModelTask) -> AIModelTaskConfiguration {
+        let config: AIModelTaskConfiguration
         switch task {
-        case .summary:     return settings.aiSummaryTask
-        case .tags:        return settings.aiTagsTask
-        case .embedding:   return settings.aiEmbeddingTask
-        case .translation: return settings.aiTranslationTask
-        case .chat:        return settings.aiChatTask
+        case .summary:     config = settings.aiSummaryTask
+        case .tags:        config = settings.aiTagsTask
+        case .embedding:   config = settings.aiEmbeddingTask
+        case .translation: config = settings.aiTranslationTask
+        case .chat:        config = settings.aiChatTask
         }
+        return settings.resolvedAITask(config, type: task.requiredCapability == .embedding ? .embedding : .llm)
     }
 
     private func updateTask(_ task: AIModelTask, mutate: (inout AIModelTaskConfiguration) -> Void) {
@@ -3086,6 +3089,8 @@ struct AISettingsTab: View {
     private func repairTasksAfterProfileChange() {
         for task in AIModelTask.allCases {
             let config = taskConfig(task)
+            // 明确选中的本地模型未下载/已卸载时应提示安装，不能静默换成远程服务商。
+            if profile(config.providerID)?.provider == .localAI { continue }
             let models = enabledModels(providerID: config.providerID, capability: task.requiredCapability)
             let eligibleProfiles = eligibleVerifiedProfiles(for: task)
             let currentProfileIsEligible = eligibleProfiles.contains { $0.id == config.providerID }

@@ -205,8 +205,18 @@ struct AIModelDescriptor: Codable, Identifiable, Equatable, Sendable {
     /// `parameters == nil`，或落库值与 capability 默认语义等价（含打开弹窗误写回的默认值副本），都不算自定义。
     var hasCustomizedParameters: Bool {
         guard let parameters else { return false }
-        return !parameters.isEffectivelyDefault(for: capability)
+        return !parameters.isEffectivelyEqual(to: defaultParameters)
     }
+
+    /// 本地模型有各自采样默认值；不能把远程摘要的低温参数套给所有 MLX 模型。
+    var defaultParameters: AIModelParameters {
+        if providerID == LocalAIModelCatalog.builtInProfileID {
+            return LocalAIGenerationPolicy.defaultParameters(model: name, capability: capability)
+        }
+        return .defaults(for: capability)
+    }
+
+    var effectiveParameters: AIModelParameters { parameters ?? defaultParameters }
 }
 
 /// 一个可调用的 AI 服务商配置。
@@ -437,7 +447,7 @@ extension AppSettings {
     /// 不能读取 API Key：本地 Provider 可以合法地没有 Key，且连接测试结果已经是
     /// Provider 可用性的单一设置真源。
     var hasConfiguredChatModel: Bool {
-        let task = aiChatTask
+        let task = resolvedAITask(aiChatTask)
         let resolvedName = task.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !resolvedName.isEmpty,
               let profile = aiProviderProfiles.first(where: { $0.id == task.providerID }),
@@ -464,6 +474,7 @@ extension AppSettings {
     /// 创建客户端的业务服务负责。自定义模型没有 descriptor，只要 Provider 已验证且
     /// 名称非空即可放行；实际端点兼容性由请求期错误负责。
     func resolveChatSelection(for task: AIModelTaskConfiguration) throws -> AIChatSelection {
+        let task = resolvedAITask(task)
         guard let profile = aiProviderProfiles.first(where: { $0.id == task.providerID }) else {
             throw AIChatSelectionError.missingProvider
         }
@@ -493,7 +504,7 @@ extension AppSettings {
     /// 这里仅检查无需网络请求即可确定的错误；自定义模型在 Provider 已验证且名称非空时放行，
     /// 它是否真正支持 embeddings 由请求期错误映射负责判断。
     func resolveEmbeddingSelection() throws -> AIEmbeddingSelection {
-        let task = aiEmbeddingTask
+        let task = resolvedAITask(aiEmbeddingTask, type: .embedding)
         guard let profile = aiProviderProfiles.first(where: { $0.id == task.providerID }) else {
             throw AIEmbeddingError.missingProvider
         }
@@ -523,7 +534,7 @@ extension AppSettings {
         return AIEmbeddingSelection(
             profile: profile,
             modelName: modelName,
-            parameters: effectiveParameters(for: task)
+            parameters: task.parameters
         )
     }
 

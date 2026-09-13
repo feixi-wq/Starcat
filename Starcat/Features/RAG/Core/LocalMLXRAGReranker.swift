@@ -24,19 +24,22 @@ struct LocalMLXRAGReranker: RAGReranking {
 
     private let configuration: RAGRerankConfiguration
     private let runtime: LocalMLXRuntime
+    private let model: LocalAIModelCatalogEntry
 
     var debugCandidateLimit: Int? { configuration.candidateLimit }
-    /// Debug Trace 显示当前安装的本地 reranker 名；未安装为 nil。
+    /// Debug Trace 记录本次选择的模型；安装状态在调用时校验，不静默回退其它权重。
     var debugModel: String? {
-        LocalAIModelCatalog.reranker.displayName
+        model.displayName
     }
 
     init(
         configuration: RAGRerankConfiguration,
+        model: LocalAIModelCatalogEntry,
         runtime: LocalMLXRuntime = .shared
     ) {
         self.configuration = configuration.normalized
         self.runtime = runtime
+        self.model = model
     }
 
     /// Qwen3-Reranker 官方建议指令：与 query 一起进 prompt 提升判别质量。
@@ -50,9 +53,9 @@ struct LocalMLXRAGReranker: RAGReranking {
         guard !hits.isEmpty else { return [] }
 
         guard let directory = LocalAIModelStorage.installedDirectoryURL(
-            entryID: LocalAIModelCatalog.reranker.id)
+            entryID: model.id)
         else {
-            throw LocalAIError.modelNotInstalled(LocalAIModelCatalog.reranker.displayName)
+            throw LocalAIError.modelNotInstalled(model.displayName)
         }
 
         // 与远程 Provider 的文档拼装口径一致：标题 + 路径 + 正文前 6000 字符。

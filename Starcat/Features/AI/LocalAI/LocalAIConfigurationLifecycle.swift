@@ -10,23 +10,17 @@ import Foundation
 
 extension AppSettings {
     var configuredLocalAIModelNames: Set<String> {
-        let tasks = [
-            (aiChatTask, aiChatModel), (aiSummaryTask, aiChatModel),
-            (aiTagsTask, aiChatModel), (aiTranslationTask, aiChatModel),
-            (aiEmbeddingTask, aiEmbeddingModel),
-        ]
-        var names = Set(
-            tasks.filter { isTaskResolvedToLocalAI($0.0) }.map { task, fallback in
-                // 任务配置内容相同也不代表同一种任务；fallback 必须按功能配对。
-                task.resolvedModelName.isEmpty ? fallback : task.resolvedModelName
-            })
+        let tasks = [aiChatTask, aiSummaryTask, aiTagsTask, aiTranslationTask].map { resolvedAITask($0) }
+            + [resolvedAITask(aiEmbeddingTask, type: .embedding)]
+        // 卸载与请求必须使用同一选择结果，不能因 task 中遗留 Qwen3 就保留错的权重。
+        var names = Set(tasks.filter { isTaskResolvedToLocalAI($0) }.map(\.resolvedModelName))
         for profile in aiProviderProfiles where profile.provider == .localAI {
             if let selected = profile.models.first(where: { $0.id == ragWorkspaceSelectedModelID }) {
                 names.insert(selected.name)
             }
         }
         if ragRerankConfiguration.isEnabled, ragRerankConfiguration.provider == .localMLX {
-            names.insert(LocalAIModelCatalog.reranker.displayName)
+            names.insert(selectedLocalAIModel(for: .reranker).displayName)
         }
         return names
     }

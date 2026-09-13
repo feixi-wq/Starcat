@@ -208,9 +208,9 @@ struct AIModelListView: View {
     private func nonNullParametersBinding(for model: AIModelDescriptor) -> Binding<AIModelParameters> {
         let nullable = parametersBinding(model)
         return Binding(
-            get: { nullable.wrappedValue ?? AIModelParameters.defaults(for: model.capability) },
+            get: { nullable.wrappedValue ?? model.defaultParameters },
             set: { newValue in
-                if newValue.isEffectivelyDefault(for: model.capability) {
+                if newValue.isEffectivelyEqual(to: model.defaultParameters) {
                     if nullable.wrappedValue != nil {
                         nullable.wrappedValue = nil
                     }

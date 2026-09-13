@@ -27,15 +27,21 @@ import MLXLMCommon
 struct LocalMLXClient: AIClientProtocol {
 
     private let runtime: LocalMLXRuntime
+    private let configuration: AIClientConfiguration?
+    private let usageRecorder: any AIUsageRecording
     /// 模型展示名（= catalog displayName）→ 安装目录。未安装抛 `LocalAIError.modelNotInstalled`。
     private let directoryForModelName: @Sendable (String) throws -> URL
 
     init(
         runtime: LocalMLXRuntime = .shared,
-        directoryForModelName: @escaping @Sendable (String) throws -> URL
+        directoryForModelName: @escaping @Sendable (String) throws -> URL,
+        configuration: AIClientConfiguration? = nil,
+        usageRecorder: any AIUsageRecording = AIUsageRecorder.shared
     ) {
         self.runtime = runtime
         self.directoryForModelName = directoryForModelName
+        self.configuration = configuration
+        self.usageRecorder = usageRecorder
     }
 
     /// 装配入口（`AIClientFactory` 调用）。
@@ -43,8 +49,8 @@ struct LocalMLXClient: AIClientProtocol {
     /// 注意不在这里校验 chat 模型已安装：同一 profile 下可能是「embedding 本地 +
     /// chat 名字只是配置残留」的混合形态，强校验会把纯 embedding 路径误杀；
     /// 每次调用时的目录解析才是精确校验点（未安装抛 `modelNotInstalled`）。
-    public static func makeClient(modelName: String) -> LocalMLXClient {
-        LocalMLXClient(directoryForModelName: directoryResolver)
+    public static func makeClient(configuration: AIClientConfiguration) -> LocalMLXClient {
+        LocalMLXClient(directoryForModelName: directoryResolver, configuration: configuration)
     }
 
     /// 展示名 → 安装目录。任何线程可用（磁盘扫描即真源）。
@@ -76,15 +82,25 @@ struct LocalMLXClient: AIClientProtocol {
     func chatStream(request: AIChatRequest) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                let startedAt = Date().timeIntervalSince1970
+                var response: AIChatResponse?
                 do {
                     let directory = try directoryForModelName(request.model)
-                    try await runtime.withLLM(directory: directory) { container in
-                        try await LocalMLXRuntime.generate(container: container, request: request) {
-                            continuation.yield($0)
+                    let completed = try await LocalAIGenerationPolicy.withTimeout(seconds: request.parameters.timeoutSeconds) {
+                        try await runtime.withLLM(directory: directory) { container in
+                            try await LocalMLXRuntime.generate(container: container, request: request) {
+                                continuation.yield($0)
+                            }
                         }
                     }
+                    response = completed
+                    try Task.checkCancellation()
+                    try LocalAIGenerationPolicy.validateCompletion(completed)
+                    await recordGeneration(request: request, response: completed, startedAt: startedAt, error: nil)
+                    continuation.yield(.completed(completed))
                     continuation.finish()
                 } catch {
+                    await recordGeneration(request: request, response: response, startedAt: startedAt, error: error)
                     continuation.finish(throwing: error)
                 }
             }
@@ -97,11 +113,12 @@ struct LocalMLXClient: AIClientProtocol {
     // MARK: - AIClientProtocol
 
     func chat(systemPrompt: String, userPrompt: String, model: String?) async throws -> String {
+        let modelName = model ?? configuration?.chatModel ?? ""
         let response = try await chat(request: AIChatRequest(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
-            model: model ?? "",
-            parameters: .defaults(for: .chat)))
+            model: modelName,
+            parameters: LocalAIGenerationPolicy.defaultParameters(model: modelName, capability: .chat)))
         return response.content
     }
 
@@ -114,7 +131,7 @@ struct LocalMLXClient: AIClientProtocol {
     }
 
     func embeddings(inputs: [String], model: String?) async throws -> [[Float]] {
-        let modelName = model ?? ""
+        let modelName = model ?? configuration?.embeddingModel ?? ""
         let directory = try directoryForModelName(modelName)
         let expectedDimension = LocalAIModelCatalog.entries
             .first { $0.displayName == modelName }?
@@ -166,6 +183,23 @@ struct LocalMLXClient: AIClientProtocol {
                 throw LocalAIError.modelNotInstalled(entry.displayName)
             }
         }
+    }
+
+    /// 只记录统计元数据；没有 usage 时保持 nil，不把字符数伪装成 token。
+    /// 推理 token 的单独计数未由 SDK 提供，统计记录中保持未知。
+    private func recordGeneration(
+        request: AIChatRequest, response: AIChatResponse?, startedAt: Double, error: Error?
+    ) async {
+        let reason = error.map(LocalAIGenerationPolicy.finishReason(for:)) ?? response?.finishReason ?? "unknown"
+        AppLog.ai.info("Local AI generation model=\(request.model, privacy: .public) finish=\(reason, privacy: .public) duration=\(Date().timeIntervalSince1970 - startedAt)")
+        guard let configuration else { return }
+        let status: AIUsageStatus = error == nil ? .succeeded : (error is CancellationError ? .cancelled : .failed)
+        await usageRecorder.record(AIUsageEventFactory.make(
+            startedAt: startedAt, configuration: configuration, usageContext: request.usageContext,
+            model: request.model, operation: .chat,
+            inputTokens: response?.usage?.inputTokens, outputTokens: response?.usage?.outputTokens,
+            totalTokens: response?.usage?.totalTokens, cachedInputTokens: response?.usage?.cachedTokens,
+            reasoningOutputTokens: nil, itemCount: 1, status: status, error: error))
     }
 
     // MARK: - Embedding 推理

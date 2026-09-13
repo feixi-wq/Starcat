@@ -539,7 +539,7 @@ final class AppDependencies {
         settings.aiProviderProfiles
             .filter(\.isVerifiedConfiguration)
             .flatMap(\.models)
-            .filter { $0.isEnabled && $0.capability != .embedding }
+            .filter { $0.isEnabled && $0.capability != .embedding && $0.capability != .rerank }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -766,7 +766,9 @@ final class AppDependencies {
             case .cohereCompatible:
                 reranker = CohereCompatibleRAGReranker(configuration: rerankConfiguration, apiKey: apiKey)
             case .localMLX:
-                reranker = LocalMLXRAGReranker(configuration: rerankConfiguration)
+                reranker = LocalMLXRAGReranker(
+                    configuration: rerankConfiguration,
+                    model: settings.selectedLocalAIModel(for: .reranker))
             }
         } else {
             reranker = nil
@@ -794,11 +796,13 @@ final class AppDependencies {
     private func resolveRAGChatSelection(selectedModelID: String?) throws -> RAGModelSelection {
         if let selectedModelID {
             for profile in settings.aiProviderProfiles where profile.isEnabled {
-                if let model = profile.models.first(where: { $0.id == selectedModelID && $0.isEnabled && $0.capability != .embedding }) {
+                if let model = profile.models.first(where: {
+                    $0.id == selectedModelID && $0.isEnabled && $0.capability != .embedding && $0.capability != .rerank
+                }) {
                     return RAGModelSelection(
                         profile: profile,
                         modelName: model.name,
-                        parameters: model.parameters ?? settings.effectiveParameters(for: settings.aiChatTask)
+                        parameters: model.effectiveParameters
                     )
                 }
             }
@@ -807,6 +811,7 @@ final class AppDependencies {
     }
 
     private func resolveRAGTaskSelection(task: AIModelTaskConfiguration) throws -> RAGModelSelection {
+        let task = settings.resolvedAITask(task)
         guard let profile = settings.aiProviderProfiles.first(where: { $0.id == task.providerID && $0.isEnabled }) else {
             throw SemanticSearchError.missingAPIKey
         }
@@ -815,7 +820,7 @@ final class AppDependencies {
         return RAGModelSelection(
             profile: profile,
             modelName: modelName,
-            parameters: settings.effectiveParameters(for: task)
+            parameters: task.parameters
         )
     }
 
