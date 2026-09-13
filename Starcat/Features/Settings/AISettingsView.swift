@@ -21,6 +21,7 @@
 import AppKit
 import OSLog
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 主设置中的 AI 分类页。
 ///
@@ -116,6 +117,9 @@ struct AISettingsTab: View {
     @State private var pendingRebuildAllConfirm: Bool = false
     /// 免费用户点击 AI 设置页升级入口时展示统一 Pro 付费墙。
     @State private var paywallContext: ProPaywallContext?
+    /// CC Switch 导入预览。确认前不写 Keychain。
+    @State private var ccSwitchImportSession: CCSwitchImportSession?
+    @State private var ccSwitchImportError: String?
 
     init(page: AISettingsPage = .models) {
         self.page = page
@@ -187,6 +191,28 @@ struct AISettingsTab: View {
             Button("general.cancel", role: .cancel) {}
         } message: {
             Text("settings.aiIndex.rebuildAll.confirmMessage")
+        }
+        .alert(
+            "settings.ai.provider.importCCSwitch",
+            isPresented: Binding(
+                get: { ccSwitchImportError != nil },
+                set: { if !$0 { ccSwitchImportError = nil } }
+            )
+        ) {
+            Button("general.cancel", role: .cancel) {}
+        } message: {
+            Text(ccSwitchImportError ?? "")
+        }
+        .sheet(item: $ccSwitchImportSession) { session in
+            CCSwitchImportPreviewSheet(
+                preview: session.preview,
+                onImport: { candidates, progress in
+                    await importCCSwitchCandidates(candidates, progress: progress)
+                },
+                onSelectProfile: { profileID in
+                    setSelectedProfileID(profileID)
+                }
+            )
         }
         .formStyle(.grouped)
         // Placeholders popover 锚在 Prompt 区按钮上：Form 一滚就关，避免锚点滚走后浮层悬空。
@@ -426,6 +452,11 @@ struct AISettingsTab: View {
 
                 Spacer(minLength: 12)
 
+                ImportIconButton(help: Text("settings.ai.provider.importCCSwitch.help")) {
+                    beginCCSwitchImport()
+                }
+                .disabled(draftProfile != nil || isTestingProfileID != nil)
+
                 AddIconButton(help: Text("settings.ai.provider.addHelp")) {
                     // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12：包 withAnimation 让下方
                     // Provider 行 + 输入区伴随 transition 滑入，而不是瞬切。
@@ -502,6 +533,13 @@ struct AISettingsTab: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     providerInputRows(profile)
+
+                    if profile.provider == .anthropic {
+                        Text("settings.ai.provider.anthropic.embeddingUnsupported")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     HStack {
                         Text(profile.lastTestStatus.displayText)
@@ -2294,6 +2332,132 @@ struct AISettingsTab: View {
     // 二次确认链路取代（HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12）。原函数
     // 隐式依赖 `selectedProfileID`，confirm dialog 期间用户可能切换 selection
     // 导致语义偏差，新函数收紧到显式 ID 删除。
+
+    @MainActor
+    private func beginCCSwitchImport() {
+        ccSwitchImportError = nil
+        if DistributionChannel.current.isDirect,
+           let url = POSIXHome.ccSwitchDefaultDatabase,
+           FileManager.default.isReadableFile(atPath: url.path) {
+            openCCSwitchFile(url)
+            return
+        }
+        presentCCSwitchOpenPanel()
+    }
+
+    @MainActor
+    private func presentCCSwitchOpenPanel() {
+        let panel = NSOpenPanel()
+        let defaultPath = POSIXHome.ccSwitchDefaultDatabase?.path ?? "~/.cc-switch/cc-switch.db"
+        panel.message = String(format: String.l10n("settings.ai.provider.importCCSwitch.panelMessage"), defaultPath)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "db"),
+            UTType(filenameExtension: "sqlite"),
+            UTType(filenameExtension: "sqlite3"),
+            UTType(filenameExtension: "sql")
+        ].compactMap { $0 }
+        panel.allowsOtherFileTypes = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        openCCSwitchFile(url)
+    }
+
+    @MainActor
+    private func openCCSwitchFile(_ url: URL) {
+        do {
+            let rows = try CCSwitchConfigStore.open(url: url)
+            let preview = CCSwitchProviderMapper.preview(
+                rows: rows,
+                sourcePath: url.path,
+                anthropicAvailable: CCSwitchProviderMapper.isAnthropicAdapterAvailable
+            )
+            ccSwitchImportSession = CCSwitchImportSession(preview: preview)
+        } catch {
+            ccSwitchImportError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func importCCSwitchCandidates(
+        _ candidates: [CCSwitchImportCandidate],
+        progress: @MainActor (Int, Int, String) -> Void
+    ) async -> CCSwitchImportOutcome {
+        var succeeded: [CCSwitchImportResultRow] = []
+        var failed: [CCSwitchImportResultRow] = []
+        var existingNames = settings.aiProviderProfiles.map(\.displayName)
+        var cancelled = false
+
+        for (offset, candidate) in candidates.enumerated() {
+            if Task.isCancelled {
+                cancelled = true
+                break
+            }
+            progress(offset + 1, candidates.count, candidate.displayName)
+            let displayName = CCSwitchProviderMapper.uniquedDisplayName(
+                candidate.displayName,
+                existing: existingNames
+            )
+            existingNames.append(displayName)
+            let profile = AIProviderProfile(
+                id: UUID().uuidString,
+                provider: candidate.provider,
+                displayName: displayName,
+                baseURL: candidate.baseURL,
+                isEnabled: false,
+                lastTestStatus: .notTested
+            )
+            var profiles = settings.aiProviderProfiles
+            profiles.append(profile)
+            settings.aiProviderProfiles = profiles
+            do {
+                try persistAPIKey(
+                    candidate.apiKey,
+                    forProvider: profile.id,
+                    allowsEmpty: profile.provider.allowsEmptyAPIKey
+                )
+                apiKeys[profile.id] = candidate.apiKey
+            } catch {
+                failed.append(CCSwitchImportResultRow(
+                    id: profile.id,
+                    displayName: displayName,
+                    profileID: profile.id,
+                    succeeded: false,
+                    statusText: error.localizedDescription
+                ))
+                AppLog.ai.error("CC Switch import persist failed appType=\(candidate.appType, privacy: .public) provider=\(candidate.provider.rawValue, privacy: .public)")
+                continue
+            }
+
+            await testAndFetchModels(profile)
+            let updated = settings.aiProviderProfiles.first { $0.id == profile.id } ?? profile
+            let ok: Bool
+            if case .success = updated.lastTestStatus {
+                ok = true
+            } else {
+                ok = false
+            }
+            let row = CCSwitchImportResultRow(
+                id: profile.id,
+                displayName: displayName,
+                profileID: profile.id,
+                succeeded: ok,
+                statusText: updated.lastTestStatus.displayText
+            )
+            if ok {
+                succeeded.append(row)
+            } else {
+                failed.append(row)
+            }
+            AppLog.ai.info("CC Switch import appType=\(candidate.appType, privacy: .public) provider=\(candidate.provider.rawValue, privacy: .public) success=\(ok, privacy: .public)")
+        }
+
+        if Task.isCancelled {
+            cancelled = true
+        }
+        return CCSwitchImportOutcome(succeeded: succeeded, failed: failed, cancelled: cancelled)
+    }
 
     @MainActor
     private func testAndFetchModels(_ profile: AIProviderProfile) async {

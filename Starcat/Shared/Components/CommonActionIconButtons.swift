@@ -215,6 +215,43 @@ struct AddIconButton: View {
     }
 }
 
+/// icon-only「从外部配置导入」入口。
+///
+/// 与 `AddIconButton` 同用设置页 15pt glyph + 28pt 命中区；导入不是草稿新增，
+/// 语义用 `square.and.arrow.down`，避免和 `plus` 抢「唯一新增入口」的注释约定。
+struct ImportIconButton: View {
+    let help: Text
+    let action: () -> Void
+    var font: Font = SettingsIconMetrics.standardGlyph
+    var frameSize: CGFloat = SettingsIconMetrics.actionFrameSize
+
+    init(
+        help: Text,
+        font: Font = SettingsIconMetrics.standardGlyph,
+        frameSize: CGFloat = SettingsIconMetrics.actionFrameSize,
+        action: @escaping () -> Void
+    ) {
+        self.help = help
+        self.action = action
+        self.font = font
+        self.frameSize = frameSize
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "square.and.arrow.down")
+                .font(font)
+                .foregroundStyle(.secondary)
+                .frame(width: frameSize, height: frameSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
 /// 胶囊 chip 内的移除小按钮（语言 chip、过滤 chip 等）。
 ///
 /// 例外说明（规范 §9）：chip 是 20pt 上下的紧凑胶囊，28×28pt 标准命中区会撑破
