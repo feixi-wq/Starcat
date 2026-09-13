@@ -673,38 +673,51 @@ struct SettingsView: View {
                 // 系统覆盖不到,所以 titlebar 仍是瞬切;② 视图内容区(.background / .foregroundStyle
                 // 走动态色的)会跟随 transaction 平滑过渡;③ `@Observable` 属性在 withAnimation
                 // 块内修改会被收进 transaction,这与 `@Published` 的行为一致,验证过。
-                Picker("settings.general.appearanceMode", selection: Binding(
-                    get: { settings.appearanceMode },
-                    set: { newValue in
-                        // 2026-06-15:reduceMotion 兜底——主题切换的颜色淡变在
-                        // 关动画时改为瞬切。`withAnimation(nil)` 让 binding 写入
-                        // 不挂任何 transaction,@Observable 属性变化按默认无包裹路径。
-                        if reduceMotion {
-                            settings.appearanceMode = newValue
-                        } else {
-                            withAnimation(.easeInOut(duration: 0.6)) {
+                // 2026-09-14 垂直居中修正：segmented Picker 直接带 label 时，Form 行按
+                // 控件基线对齐，segmented 在行内偏上。改为 LabeledContent 承载 label，
+                // Picker 用 labelsHidden，segmented 即在行内垂直居中（与系统设置一致）。
+                LabeledContent {
+                    Picker("settings.general.appearanceMode", selection: Binding(
+                        get: { settings.appearanceMode },
+                        set: { newValue in
+                            // 2026-06-15:reduceMotion 兜底——主题切换的颜色淡变在
+                            // 关动画时改为瞬切。`withAnimation(nil)` 让 binding 写入
+                            // 不挂任何 transaction,@Observable 属性变化按默认无包裹路径。
+                            if reduceMotion {
                                 settings.appearanceMode = newValue
+                            } else {
+                                withAnimation(.easeInOut(duration: 0.6)) {
+                                    settings.appearanceMode = newValue
+                                }
                             }
                         }
+                    )) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Label(mode.displayName, systemImage: mode.systemImage)
+                                .tag(mode)
+                        }
                     }
-                )) {
-                    ForEach(AppearanceMode.allCases) { mode in
-                        Label(mode.displayName, systemImage: mode.systemImage)
-                            .tag(mode)
-                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                } label: {
+                    Text("settings.general.appearanceMode")
                 }
-                .pickerStyle(.segmented)
 
                 Text("settings.general.appearanceMode.description")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker("settings.general.interfaceScale", selection: $settings.interfaceScale) {
-                    ForEach(InterfaceScale.allCases) { scale in
-                        Text(scale.displayName).tag(scale)
+                LabeledContent {
+                    Picker("settings.general.interfaceScale", selection: $settings.interfaceScale) {
+                        ForEach(InterfaceScale.allCases) { scale in
+                            Text(scale.displayName).tag(scale)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                } label: {
+                    Text("settings.general.interfaceScale")
                 }
-                .pickerStyle(.segmented)
 
                 Text("settings.general.interfaceScale.description")
                     .font(.caption)
