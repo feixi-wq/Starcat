@@ -58,43 +58,46 @@ struct AppStatusToolbarButton: View {
         }
         .help("toolbar.status.help")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            AppStatusPanel(
-                lastSyncedAt: lastSyncedAt,
-                syncState: syncManager.state,
-                syncProgress: syncManager.progress,
-                readmePrefetchService: dependencies.readmePrefetchService,
-                readmePrefetchEnabled: settings.readmePrefetchEnabled,
-                readmePrefetchPoller: dependencies.readmePrefetchPoller,
-                initialWarmupCoordinator: dependencies.initialWarmupCoordinator,
-                openSSFScorePoller: dependencies.openSSFScorePoller,
-                repoHealthPoller: dependencies.repoHealthPoller,
-                undoStarCleanup: dependencies.undoStarCleanupScheduler,
-                batchService: dependencies.batchAIQueueService,
-                ragIndexBuilder: dependencies.knowledgeRAGIndexBuilder,
-                mcpState: dependencies.mcpService.state,
-                mcpEnabled: settings.mcpServiceEnabled,
-                mcpEndpointURL: dependencies.mcpService.endpointURL,
-                browserPluginState: pluginConfiguration.serverStatus,
-                browserPluginEnabled: pluginConfiguration.isEnabled,
-                browserPluginEndpointURL: "http://127.0.0.1:\(pluginConfiguration.port)",
-                githubStatusMonitor: dependencies.githubStatusMonitor,
-                serviceSummary: dependencies.serviceAvailabilityMonitor.summary,
-                diagnosticSummary: diagnosticSummary,
-                aiUsageRepository: dependencies.aiUsageRepository,
-                relativePastDate: relativePastDate,
-                relativeFutureDate: relativeFutureDate,
-                onOpenDiagnostics: { openSettings(tab: "diagnostics") },
-                onClearDiagnostics: {
-                    Task { await clearDiagnostics() }
-                },
-                onOpenServices: { openSettings(tab: "services") },
-                onOpenMCP: { openSettings(tab: "mcp") },
-                onOpenBrowserPlugin: { openSettings(tab: "integrations.browserPlugin") },
-                onOpenAIUsage: { AIUsageWindowController.show(dependencies: dependencies) },
-                onShowBatchAIPanel: onShowBatchAIPanel
-            )
-            .frame(width: 340)
-            .padding(14)
+            ScrollView {
+                AppStatusPanel(
+                    lastSyncedAt: lastSyncedAt,
+                    syncState: syncManager.state,
+                    syncProgress: syncManager.progress,
+                    readmePrefetchService: dependencies.readmePrefetchService,
+                    readmePrefetchEnabled: settings.readmePrefetchEnabled,
+                    readmePrefetchPoller: dependencies.readmePrefetchPoller,
+                    initialWarmupCoordinator: dependencies.initialWarmupCoordinator,
+                    openSSFScorePoller: dependencies.openSSFScorePoller,
+                    repoHealthPoller: dependencies.repoHealthPoller,
+                    undoStarCleanup: dependencies.undoStarCleanupScheduler,
+                    batchService: dependencies.batchAIQueueService,
+                    ragIndexBuilder: dependencies.knowledgeRAGIndexBuilder,
+                    mcpState: dependencies.mcpService.state,
+                    mcpEnabled: settings.mcpServiceEnabled,
+                    mcpEndpointURL: dependencies.mcpService.endpointURL,
+                    browserPluginState: pluginConfiguration.serverStatus,
+                    browserPluginEnabled: pluginConfiguration.isEnabled,
+                    browserPluginEndpointURL: "http://127.0.0.1:\(pluginConfiguration.port)",
+                    githubStatusMonitor: dependencies.githubStatusMonitor,
+                    serviceSummary: dependencies.serviceAvailabilityMonitor.summary,
+                    diagnosticSummary: diagnosticSummary,
+                    aiUsageRepository: dependencies.aiUsageRepository,
+                    relativePastDate: relativePastDate,
+                    relativeFutureDate: relativeFutureDate,
+                    onOpenDiagnostics: { openSettings(tab: "diagnostics") },
+                    onClearDiagnostics: {
+                        Task { await clearDiagnostics() }
+                    },
+                    onOpenServices: { openSettings(tab: "services") },
+                    onOpenMCP: { openSettings(tab: "mcp") },
+                    onOpenBrowserPlugin: { openSettings(tab: "integrations.browserPlugin") },
+                    onOpenAIUsage: { AIUsageWindowController.show(dependencies: dependencies) },
+                    onShowBatchAIPanel: onShowBatchAIPanel
+                )
+                .frame(width: 340)
+                .padding(14)
+            }
+            .frame(maxHeight: 640)
             .appLocaleEnvironment()
             .task {
                 await refreshDiagnostics()
@@ -298,6 +301,11 @@ private struct AppStatusPanel: View {
                         .focusEffectDisabled()
                 }
             )
+            if LocalAIHardwareSupport.isLocalAIAvailable {
+                Divider()
+                LocalAIStatusSection()
+                Divider()
+            }
             statusRow(
                 icon: serviceIcon,
                 tint: serviceTint,

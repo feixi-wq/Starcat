@@ -179,12 +179,7 @@ final class LocalAIModelManager {
         guard let directory = installedDirectoryURL(entryID: entry.id) else {
             throw LocalAIError.modelNotInstalled(entry.displayName)
         }
-        let runtime = LocalMLXRuntime.shared
-        switch entry.type {
-        case .llm: _ = try await runtime.llmContainer(directory: directory)
-        case .embedding: _ = try await runtime.embedderContainer(directory: directory)
-        case .reranker: _ = try await runtime.rerankerContainer(directory: directory)
-        }
+        try await LocalMLXRuntime.shared.preload(entry: entry, directory: directory)
     }
 
     /// 「重试加载」：loadFailed 状态下只重跑加载，不重新下载。

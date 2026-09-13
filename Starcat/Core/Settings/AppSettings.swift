@@ -984,12 +984,18 @@ final class AppSettings {
 
     /// 摘要 / 标签推荐使用的聊天模型。
     var aiChatModel: String {
-        didSet { persist(key: Keys.aiChatModel, value: aiChatModel) }
+        didSet {
+            persist(key: Keys.aiChatModel, value: aiChatModel)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 语义搜索向量化使用的 embedding 模型。
     var aiEmbeddingModel: String {
-        didSet { persist(key: Keys.aiEmbeddingModel, value: aiEmbeddingModel) }
+        didSet {
+            persist(key: Keys.aiEmbeddingModel, value: aiEmbeddingModel)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 本地 AI 模型下载源（Hugging Face / ModelScope）。
@@ -1010,17 +1016,26 @@ final class AppSettings {
     /// - 第一版先避免数据库迁移风险；
     /// - API Key 不在这里，按 profile ID 存在 `KeychainManager` 的本地加密文件。
     var aiProviderProfiles: [AIProviderProfile] {
-        didSet { persistJSON(key: Keys.aiProviderProfiles, value: aiProviderProfiles) }
+        didSet {
+            persistJSON(key: Keys.aiProviderProfiles, value: aiProviderProfiles)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 摘要任务模型配置。摘要与标签拆开，避免 JSON 标签失败拖垮摘要。
     var aiSummaryTask: AIModelTaskConfiguration {
-        didSet { persistJSON(key: Keys.aiSummaryTask, value: aiSummaryTask) }
+        didSet {
+            persistJSON(key: Keys.aiSummaryTask, value: aiSummaryTask)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 推荐标签任务模型配置。
     var aiTagsTask: AIModelTaskConfiguration {
-        didSet { persistJSON(key: Keys.aiTagsTask, value: aiTagsTask) }
+        didSet {
+            persistJSON(key: Keys.aiTagsTask, value: aiTagsTask)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 每仓库 AI 标签推荐最少数量（与最多数量组成区间，默认 1）。
@@ -1052,7 +1067,10 @@ final class AppSettings {
 
     /// Embedding 任务模型配置。
     var aiEmbeddingTask: AIModelTaskConfiguration {
-        didSet { persistJSON(key: Keys.aiEmbeddingTask, value: aiEmbeddingTask) }
+        didSet {
+            persistJSON(key: Keys.aiEmbeddingTask, value: aiEmbeddingTask)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// README 翻译任务模型配置（HOM-68 follow-up 2026-06-05）。
@@ -1062,7 +1080,10 @@ final class AppSettings {
     /// 拆开在设置页配置。首次升级时 `init` 兜底逻辑会用与摘要相同的 provider+model 作
     /// 默认值，但参数走 `AIModelParameters.translationDefault`，用户可在设置页改。
     var aiTranslationTask: AIModelTaskConfiguration {
-        didSet { persistJSON(key: Keys.aiTranslationTask, value: aiTranslationTask) }
+        didSet {
+            persistJSON(key: Keys.aiTranslationTask, value: aiTranslationTask)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// README 全文翻译 Prompt。
@@ -1084,7 +1105,10 @@ final class AppSettings {
     /// 参数（chat 与摘要场景接近：都是单仓上下文 + 流式生成 + 中等温度），用户可在
     /// 设置页改。
     var aiChatTask: AIModelTaskConfiguration {
-        didSet { persistJSON(key: Keys.aiChatTask, value: aiChatTask) }
+        didSet {
+            persistJSON(key: Keys.aiChatTask, value: aiChatTask)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// 知识库 RAG 的 keyword/vector 后端。默认 SQLite；Meilisearch/Qdrant 只在用户
@@ -1105,7 +1129,10 @@ final class AppSettings {
 
     /// Rerank 只影响问答/召回测试的候选排序，配置独立于 embedding 与检索后端。
     var ragRerankConfiguration: RAGRerankConfiguration {
-        didSet { persistJSON(key: Keys.ragRerankConfiguration, value: ragRerankConfiguration.normalized) }
+        didSet {
+            persistJSON(key: Keys.ragRerankConfiguration, value: ragRerankConfiguration.normalized)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// RAG 的文本推理后端。只切换 Planner / Generator / 压缩 / 标题，不影响
@@ -1119,7 +1146,10 @@ final class AppSettings {
     /// 空字符串表示从未选过，打开工作台时回退到 `aiChatTask` 对齐的模型。
     /// 只存工作台偏好，不改写全局 chat task，避免 RAG 换模型牵动 AI 助手默认配置。
     var ragWorkspaceSelectedModelID: String {
-        didSet { persist(key: Keys.ragWorkspaceSelectedModelID, value: ragWorkspaceSelectedModelID) }
+        didSet {
+            persist(key: Keys.ragWorkspaceSelectedModelID, value: ragWorkspaceSelectedModelID)
+            localAIConfigurationDidChange()
+        }
     }
 
     /// RAG 工作台「调试模式」开关。只持久化开关本身；debug 事件仍只活在当前窗口。

@@ -3300,6 +3300,138 @@
         }
       }
     },
+    "toolbar.localai.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local AI" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地 AI" } }
+      }
+    },
+    "toolbar.localai.unloadAll" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unload All" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部卸载" } }
+      }
+    },
+    "toolbar.localai.active" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Active" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活跃内存" } }
+      }
+    },
+    "toolbar.localai.cache" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Reclaimable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可回收缓存" } }
+      }
+    },
+    "toolbar.localai.budget" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Budget" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "内存预算" } }
+      }
+    },
+    "toolbar.localai.empty" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No local models installed. Download models in AI settings." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚未安装本地模型，请在 AI 设置中下载。" } }
+      }
+    },
+    "toolbar.localai.queued" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queued: %d" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排队：%d" } }
+      }
+    },
+    "toolbar.localai.clearCache" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Release Cache" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "释放缓存" } }
+      }
+    },
+    "toolbar.localai.memoryHelp" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model memory is the measured loading increase; shared MLX cache is shown separately. Idle models unload after 60 seconds and reload on demand. Unloading keeps downloaded files." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "单模型内存为加载增量，共享 MLX 缓存单独统计。空闲 60 秒自动卸载，下次使用时加载。卸载不会删除已下载文件。" } }
+      }
+    },
+    "toolbar.localai.loadedMemory" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "· ~%@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "· 约 %@" } }
+      }
+    },
+    "toolbar.localai.load" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Load" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加载" } }
+      }
+    },
+    "toolbar.localai.unload" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unload" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "卸载" } }
+      }
+    },
+    "toolbar.localai.state.notLoaded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not loaded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未加载" } }
+      }
+    },
+    "toolbar.localai.state.unloaded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unloaded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已卸载" } }
+      }
+    },
+    "toolbar.localai.state.loading" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Loading…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加载中…" } }
+      }
+    },
+    "toolbar.localai.state.ready" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Loaded · Idle" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已加载 · 空闲" } }
+      }
+    },
+    "toolbar.localai.state.running" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "推理中" } }
+      }
+    },
+    "toolbar.localai.state.unloading" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stopping & unloading…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在停止并卸载…" } }
+      }
+    },
+    "toolbar.localai.state.failed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Load failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加载失败" } }
+      }
+    },
+    "toolbar.localai.memoryPressure" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local work was stopped and models unloaded to relieve memory pressure." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已停止本地任务并卸载模型，以释放内存。" } }
+      }
+    },
+    "toolbar.localai.memoryBudgetExceeded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The local model exceeds this Mac’s memory budget. Choose a smaller model or an API service." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型超出这台 Mac 的内存预算，请选择更小的模型或 API 服务。" } }
+      }
+    },
+    "toolbar.localai.contextTooLong" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local AI input exceeds 8,192 tokens. Shorten the context or use an API service." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地 AI 输入超过 8,192 tokens，请缩短上下文或改用 API 服务。" } }
+      }
+    },
     "settings.localai.model.badge.recommended" : {
       "extractionState" : "manual",
       "localizations" : {

@@ -62,13 +62,14 @@ struct LocalMLXRAGReranker: RAGReranking {
                 .joined(separator: "\n")
         }
 
-        let container = try await runtime.rerankerContainer(directory: directory)
         // score 类型由 config.json 决定（Qwen3 判别式 → normalizedRelevance 0...1）。
-        let response = try await container.scores(
-            query: query,
-            documents: documents,
-            instruction: Self.instruction,
-            options: RerankExecutionOptions(maxBatchSize: 4, maxBatchTokens: 8_192))
+        let response = try await runtime.withReranker(directory: directory) { container in
+            try await container.scores(
+                query: query,
+                documents: documents,
+                instruction: Self.instruction,
+                options: RerankExecutionOptions(maxBatchSize: 1, maxBatchTokens: 2_048))
+        }
 
         var scored: [(hit: RAGChildHit, score: Double)] = []
         scored.reserveCapacity(hits.count)

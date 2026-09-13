@@ -78,11 +78,10 @@ struct LocalMLXClient: AIClientProtocol {
             let task = Task {
                 do {
                     let directory = try directoryForModelName(request.model)
-                    let container = try await runtime.llmContainer(directory: directory)
-                    let stream = LocalMLXRuntime.makeChatStream(
-                        container: container, request: request)
-                    for try await event in stream {
-                        continuation.yield(event)
+                    try await runtime.withLLM(directory: directory) { container in
+                        try await LocalMLXRuntime.generate(container: container, request: request) {
+                            continuation.yield($0)
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -121,8 +120,16 @@ struct LocalMLXClient: AIClientProtocol {
             .first { $0.displayName == modelName }?
             .embeddingDimension
 
-        let container = try await runtime.embedderContainer(directory: directory)
-        let vectors = try await Self.embed(container: container, inputs: inputs)
+        let vectors = try await runtime.withEmbedder(directory: directory) { container in
+            // 长文档批次不能按上层数组长度无限扩张，pad 后的注意力张量会同时放大。
+            var vectors: [[Float]] = []
+            for start in stride(from: 0, to: inputs.count, by: 4) {
+                try Task.checkCancellation()
+                let batch = Array(inputs[start..<min(start + 4, inputs.count)])
+                vectors += try await Self.embed(container: container, inputs: batch)
+            }
+            return vectors
+        }
 
         if let expectedDimension, vectors.contains(where: { $0.count != expectedDimension }) {
             // pooling 回归的向量绝不能写进向量库。
@@ -173,9 +180,9 @@ struct LocalMLXClient: AIClientProtocol {
             let tokenizer = context.tokenizer
             let tokenized = inputs.map { text -> [Int] in
                 let encoded = tokenizer.encode(text: text, addSpecialTokens: true)
-                // 单条超长截断：embedding 输入上限远小于 LLM 上下文，8K token 覆盖
+                // 单条超长截断：embedding 输入上限远小于 LLM 上下文，2K token 覆盖
                 // 任何 README chunk（chunker 目标 700 token）。
-                return Array(encoded.prefix(8_192))
+                return Array(encoded.prefix(2_048))
             }
             let maxLength = tokenized.map(\.count).max() ?? 1
 

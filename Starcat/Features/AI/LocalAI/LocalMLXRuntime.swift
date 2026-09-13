@@ -5,11 +5,9 @@
 //  MLX 推理运行时：模型容器懒加载 + 卸载 + 三类推理（LLM / Embedding / Rerank）。
 //
 //  并发模型（关键约束）：
-//  - actor 只负责「加载 / 卸载容器」的串行化：加载是重 GPU+内存操作，必须排队，
-//    避免两个任务同时把同一个（或不同的）模型加载两次。
-//  - 推理本身不占用 actor：`ModelContainer` / `EmbedderModelContainer` /
-//    `RerankerContainer` 都是 Sendable 且内部自带串行访问（SerialAccessContainer），
-//    调用方拿到容器后直接推理。否则一次长生成会把 actor 阻塞住，卸载永远排不上队。
+//  - FIFO 准入覆盖加载、推理与收尾，防止 actor 重入造成重复加载；不同 ChatSession
+//    可以并行，所以上游容器的锁不能代替应用级准入。
+//  - actor 可在 await 时处理取消/快照；卸载先取消目标工作，再等待准入权后清理。
 //  - 同一时间最多各驻留一个 LLM / Embedding / Reranker 容器；目录变了就重载
 //    （同一时刻系统里只有一个激活的本地模型版本）。
 //  - 内存压力（`DispatchSourceMemoryPressure` .warning / .critical）触发 `unloadAll`。
@@ -18,6 +16,7 @@
 //
 
 import Foundation
+import MLX
 import MLXLMCommon
 import MLXLLM
 import MLXEmbedders
@@ -38,6 +37,19 @@ actor LocalMLXRuntime {
     private var embedderDirectoryID: String?
     private var rerankerContainer: RerankerContainer?
     private var rerankerDirectoryID: String?
+    private let gate = LocalAIOperationGate()
+    private var residents: [LocalAIModelType: LocalAIResidentModel] = [:]
+    private var generations: [LocalAIModelType: Int] = [:]
+    private var unloading: Set<LocalAIModelType> = []
+    private var queuedCount = 0
+    private var activeType: LocalAIModelType?
+    private var cancelActive: (@Sendable () -> Void)?
+    private var initialized = false
+    private var monitor: Task<Void, Never>?
+    private var notice: String?
+    private var releaseAfterOperation: Set<LocalAIModelType> = []
+    private let budget = LocalAIMemoryPolicy.budget(
+        physicalMemory: ProcessInfo.processInfo.physicalMemory)
 
     private nonisolated(unsafe) var memoryPressureSource: (any DispatchSourceMemoryPressure)?
 
@@ -45,47 +57,191 @@ actor LocalMLXRuntime {
         installMemoryPressureHandler()
     }
 
+    /// 容器不再逃逸给调用者：持有准入权直到完整推理流消费完，卸载才有确定的边界。
+    func withLLM<T: Sendable>(
+        directory: URL, operation: @escaping @Sendable (ModelContainer) async throws -> T
+    ) async throws -> T {
+        try await perform(type: .llm) {
+            let container = try await self.llmContainer(directory: directory)
+            try await self.markRunning(.llm)
+            return try await operation(container)
+        }
+    }
+
+    func withEmbedder<T: Sendable>(
+        directory: URL, operation: @escaping @Sendable (EmbedderModelContainer) async throws -> T
+    ) async throws -> T {
+        try await perform(type: .embedding) {
+            let container = try await self.embedderContainer(directory: directory)
+            try await self.markRunning(.embedding)
+            return try await operation(container)
+        }
+    }
+
+    func withReranker<T: Sendable>(
+        directory: URL, operation: @escaping @Sendable (RerankerContainer) async throws -> T
+    ) async throws -> T {
+        try await perform(type: .reranker) {
+            let container = try await self.rerankerContainer(directory: directory)
+            try await self.markRunning(.reranker)
+            return try await operation(container)
+        }
+    }
+
+    /// 下载后检查与面板手动加载共用同一队列，不能绕过加载防重。
+    func preload(entry: LocalAIModelCatalogEntry, directory: URL) async throws {
+        try await perform(type: entry.type) {
+            switch entry.type {
+            case .llm: _ = try await self.llmContainer(directory: directory)
+            case .embedding: _ = try await self.embedderContainer(directory: directory)
+            case .reranker: _ = try await self.rerankerContainer(directory: directory)
+            }
+        }
+    }
+
+    private func markRunning(_ type: LocalAIModelType) throws {
+        // 工厂加载不一定及时响应取消，卸载发生后不能再启动一次昂贵的 prefill。
+        try Task.checkCancellation()
+        residents[type]?.phase = .running
+    }
+
+    private func perform<T: Sendable>(
+        type: LocalAIModelType,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try ensureRuntimeAvailable()
+        guard !unloading.contains(type) else { throw CancellationError() }
+        let generation = generations[type, default: 0]
+        queuedCount += 1
+        do { try await gate.acquire() } catch {
+            queuedCount -= 1
+            throw error
+        }
+        queuedCount -= 1
+        // 排队期间的卸载使旧请求失效，即便卸载已经完成也不能让旧请求重新加载。
+        guard !Task.isCancelled, generation == generations[type, default: 0], !unloading.contains(type)
+        else {
+            await gate.release()
+            throw CancellationError()
+        }
+        configureMemoryIfNeeded()
+        notice = nil
+        activeType = type
+        let task = Task { try await operation() }
+        cancelActive = { task.cancel() }
+        let result = await withTaskCancellationHandler {
+            await task.result
+        } onCancel: {
+            task.cancel()
+        }
+        cancelActive = nil
+        activeType = nil
+        if case .failure(let error) = result, residents[type]?.phase == .loading {
+            residents[type]?.phase = .failed
+            residents[type]?.error = error.localizedDescription
+        }
+        if residents[type]?.phase == .running { residents[type]?.phase = .ready }
+        residents[type]?.lastUsed = Date()
+        if releaseAfterOperation.remove(type) != nil { clearContainer(type) }
+        // 上游流结束会等待 GPU 完成；在该边界归还可回收缓冲，不能只释放 Swift 引用。
+        Memory.clearCache()
+        await gate.release()
+        try Task.checkCancellation()
+        if task.isCancelled { throw CancellationError() }
+        return try result.get()
+    }
+
+    private func configureMemoryIfNeeded() {
+        if !initialized {
+            initialized = true
+            Memory.cacheLimit = LocalAIMemoryPolicy.cacheBytes
+            Memory.memoryLimit = budget
+        }
+        guard monitor == nil else { return }
+        monitor = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                await self?.checkMemoryAndIdleModels()
+            }
+        }
+    }
+
+    /// 快照不初始化 Metal；仅打开状态面板不会加载模型或分配 GPU 内存。
+    func snapshot() -> LocalAIRuntimeSnapshot {
+        var result = LocalAIRuntimeSnapshot(
+            models: residents, budgetBytes: budget, queuedCount: queuedCount, notice: notice)
+        if initialized {
+            result.activeBytes = Memory.activeMemory
+            result.cacheBytes = Memory.cacheMemory
+            result.peakBytes = Memory.peakMemory
+        }
+        return result
+    }
+
+    private func beginLoading(_ type: LocalAIModelType, directory: URL) throws -> Int {
+        clearContainer(type)
+        Memory.clearCache()
+        residents[type] = .init(directory: directory, phase: .loading)
+        if let entry = LocalAIModelCatalog.entries.first(where: {
+            directory.lastPathComponent.hasPrefix($0.id + "@")
+        }) {
+            guard entry.memoryRecommendation <= UInt64(budget) else {
+                throw LocalAIError.memoryBudgetExceeded
+            }
+            // 只在准入权内驱逐闲置模型，避免三类权重常驻超过整机预算。
+            if Memory.activeMemory + Int(entry.memoryRecommendation) > budget {
+                for other in LocalAIModelType.allCases where other != type { clearContainer(other) }
+                Memory.clearCache()
+            }
+        }
+        return Memory.activeMemory
+    }
+
+    private func didLoad(_ type: LocalAIModelType, previousBytes: Int) {
+        residents[type]?.loadedBytes = max(0, Memory.activeMemory - previousBytes)
+        residents[type]?.phase = .ready
+    }
+
     // MARK: - 容器管理
 
     /// LLM 容器（懒加载 + 目录变化重载）。
-    func llmContainer(directory: URL) async throws -> ModelContainer {
+    private func llmContainer(directory: URL) async throws -> ModelContainer {
         if let container = llmContainer, llmDirectoryID == directory.path {
             return container
         }
-        llmContainer = nil
-        llmDirectoryID = nil
+        let before = try beginLoading(.llm, directory: directory)
         try ensureRuntimeAvailable()
         let container = try await LLMModelFactory.shared.loadContainer(
             from: directory,
             using: Self.tokenizerLoader)
         llmContainer = container
         llmDirectoryID = directory.path
+        didLoad(.llm, previousBytes: before)
         return container
     }
 
     /// Embedding 容器。
-    func embedderContainer(directory: URL) async throws -> EmbedderModelContainer {
+    private func embedderContainer(directory: URL) async throws -> EmbedderModelContainer {
         if let container = embedderContainer, embedderDirectoryID == directory.path {
             return container
         }
-        embedderContainer = nil
-        embedderDirectoryID = nil
+        let before = try beginLoading(.embedding, directory: directory)
         try ensureRuntimeAvailable()
         let container = try await EmbedderModelFactory.shared.loadContainer(
             from: directory,
             using: Self.tokenizerLoader)
         embedderContainer = container
         embedderDirectoryID = directory.path
+        didLoad(.embedding, previousBytes: before)
         return container
     }
 
     /// Reranker 容器。`RerankerModelFactory` 按 config.json 自动选择 encoder / qwen3 / jina 实现。
-    func rerankerContainer(directory: URL) async throws -> RerankerContainer {
+    private func rerankerContainer(directory: URL) async throws -> RerankerContainer {
         if let container = rerankerContainer, rerankerDirectoryID == directory.path {
             return container
         }
-        rerankerContainer = nil
-        rerankerDirectoryID = nil
+        let before = try beginLoading(.reranker, directory: directory)
         try ensureRuntimeAvailable()
         let container = try await RerankerModelFactory.shared.loadContainer(
             from: directory,
@@ -93,17 +249,98 @@ actor LocalMLXRuntime {
             allowUnverifiedModel: false)
         rerankerContainer = container
         rerankerDirectoryID = directory.path
+        didLoad(.reranker, previousBytes: before)
         return container
     }
 
     /// 卸载全部容器（内存压力 / 用户关闭 Local AI 时调用）。
-    func unloadAll() {
-        llmContainer = nil
-        llmDirectoryID = nil
-        embedderContainer = nil
-        embedderDirectoryID = nil
-        rerankerContainer = nil
-        rerankerDirectoryID = nil
+    func unloadAll() async {
+        await unload(types: Set(LocalAIModelType.allCases))
+    }
+
+    /// 对正在工作的目标先取消，再等工作实际退出。其它类型不会被取消。
+    func unload(types: Set<LocalAIModelType>) async {
+        let targets = types.subtracting(unloading)
+        guard !targets.isEmpty else { return }
+        unloading.formUnion(targets)
+        for type in targets {
+            generations[type, default: 0] += 1
+            residents[type]?.phase = .unloading
+        }
+        if let activeType, targets.contains(activeType) { cancelActive?() }
+        do { try await gate.acquire() } catch {
+            unloading.subtract(targets)
+            return
+        }
+        for type in targets { clearContainer(type) }
+        if initialized { Memory.clearCache() }
+        unloading.subtract(targets)
+        await gate.release()
+    }
+
+    private func clearContainer(_ type: LocalAIModelType) {
+        switch type {
+        case .llm:
+            llmContainer = nil
+            llmDirectoryID = nil
+        case .embedding:
+            embedderContainer = nil
+            embedderDirectoryID = nil
+        case .reranker:
+            rerankerContainer = nil
+            rerankerDirectoryID = nil
+        }
+        residents[type]?.phase = .unloaded
+        residents[type]?.loadedBytes = 0
+    }
+
+    func clearMemoryCache() {
+        if initialized { Memory.clearCache() }
+    }
+
+    /// 配置切到远端时仅回收无人使用的模型；在途本地请求完成后再释放，不中断其它功能。
+    func releaseUnusedModels(keeping names: Set<String>) async {
+        for (type, model) in residents {
+            let entry = LocalAIModelCatalog.entries.first {
+                model.directory.lastPathComponent.hasPrefix($0.id + "@")
+            }
+            guard let entry, !names.contains(entry.displayName) else {
+                releaseAfterOperation.remove(type)
+                continue
+            }
+            if activeType == type {
+                releaseAfterOperation.insert(type)
+            } else {
+                await unload(types: [type])
+            }
+        }
+    }
+
+    private func checkMemoryAndIdleModels() async {
+        guard initialized else { return }
+        if Memory.activeMemory + Memory.cacheMemory > budget {
+            await handleMemoryPressure()
+            return
+        }
+        let idle = Set(
+            residents.compactMap { type, model in
+                model.phase == .ready
+                    && Date().timeIntervalSince(model.lastUsed) >= LocalAIMemoryPolicy.idleSeconds
+                    ? type : nil
+            })
+        // 后台回收只在整条 GPU 队列空闲时执行，不能让旧模型的回收挡住新的业务请求。
+        if !idle.isEmpty, activeType == nil, queuedCount == 0 { await unload(types: idle) }
+        if activeType == nil, queuedCount == 0,
+            residents.values.allSatisfy({ $0.phase == .unloaded || $0.phase == .failed })
+        {
+            monitor?.cancel()
+            monitor = nil
+        }
+    }
+
+    private func handleMemoryPressure() async {
+        await unloadAll()
+        notice = String.l10n("toolbar.localai.memoryPressure")
     }
 
     private func ensureRuntimeAvailable() throws {
@@ -115,14 +352,14 @@ actor LocalMLXRuntime {
         }
     }
 
-    /// 系统内存压力 → 全部卸载。容器释放依赖 ARC，置 nil 即可让 Metal 资源随释放回收。
+    /// 系统内存压力必须取消工作并清理缓存；仅置 nil 时运行中的 session 仍持有模型。
     /// actor init 是 nonisolated 的，本函数也保持 nonisolated（只操作源对象自身）。
     private nonisolated func installMemoryPressureHandler() {
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical],
             queue: DispatchQueue.global(qos: .utility))
         source.setEventHandler { [weak self] in
-            Task { await self?.unloadAll() }
+            Task { await self?.handleMemoryPressure() }
         }
         source.resume()
         memoryPressureSource = source
@@ -145,88 +382,110 @@ extension LocalMLXRuntime {
     ///
     /// `nonisolated`：session / stream 在调用方上下文创建与迭代，避免把长生成挂在
     /// actor 上（见文件头「并发模型」）。
-    nonisolated static func makeChatStream(
+    nonisolated static func generate(
         container: ModelContainer,
-        request: AIChatRequest
-    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    if !request.tools.isEmpty {
-                        throw LocalAIError.toolsUnsupported
-                    }
-                    let reasoningConfiguration = await container.configuration.reasoningConfig
-                    let reasoningSetup = Self.reasoningSetup(
-                        configuration: reasoningConfiguration,
-                        disableThinking: request.disableThinking)
-                    var systemPrompt = request.systemPrompt
-                    if request.responseFormat == .jsonObject {
-                        // v1 无 guided generation：JSON 输出靠 prompt 约束（Qwen3 指令跟随足够稳定），
-                        // 真正的结构化解码留给 MLXGuidedGeneration 后续版本。
-                        systemPrompt +=
-                            "\n\nIMPORTANT: Respond with a single valid JSON value only. No markdown fences, no commentary."
-                    }
-                    let parameters = GenerateParameters(
-                        maxTokens: min(request.parameters.maxCompletionTokens, 8_192),
-                        temperature: Float(request.parameters.temperature),
-                        topP: Float(request.parameters.topP),
-                        topK: request.parameters.topK)
-                    // 注意：Starcat 模块里已有内部的 `ChatSession`（RepoAIChatViewModel 的
-                    // 聊天历史模型），它在本文件作用域里遮蔽 MLXLMCommon.ChatSession，
-                    // 必须用模块限定名。
-                    let session = MLXLMCommon.ChatSession(
-                        container,
-                        instructions: systemPrompt.isEmpty ? nil : systemPrompt,
-                        generateParameters: parameters,
-                        additionalContext: reasoningSetup.additionalContext)
+        request: AIChatRequest,
+        onEvent: @escaping @Sendable (AIChatStreamEvent) -> Void
+    ) async throws {
+        if !request.tools.isEmpty {
+            throw LocalAIError.toolsUnsupported
+        }
+        let reasoningConfiguration = await container.configuration.reasoningConfig
+        let reasoningSetup = Self.reasoningSetup(
+            configuration: reasoningConfiguration,
+            disableThinking: request.disableThinking)
+        var systemPrompt = request.systemPrompt
+        if request.responseFormat == .jsonObject {
+            // v1 无 guided generation：JSON 输出靠 prompt 约束（Qwen3 指令跟随足够稳定），
+            // 真正的结构化解码留给 MLXGuidedGeneration 后续版本。
+            systemPrompt +=
+                "\n\nIMPORTANT: Respond with a single valid JSON value only. No markdown fences, no commentary."
+        }
+        let parameters = GenerateParameters(
+            maxTokens: min(request.parameters.maxCompletionTokens, 8_192),
+            maxKVSize: LocalAIMemoryPolicy.inputTokens + LocalAIMemoryPolicy.outputTokens,
+            temperature: Float(request.parameters.temperature),
+            topP: Float(request.parameters.topP),
+            topK: request.parameters.topK,
+            prefill: .init(stepSize: 128))
+        // 注意：Starcat 模块里已有内部的 `ChatSession`（RepoAIChatViewModel 的
+        // 聊天历史模型），它在本文件作用域里遮蔽 MLXLMCommon.ChatSession，
+        // 必须用模块限定名。
+        let session = MLXLMCommon.ChatSession(
+            container,
+            instructions: systemPrompt.isEmpty ? nil : systemPrompt,
+            generateParameters: parameters,
+            additionalContext: reasoningSetup.additionalContext)
 
-                    let messages = try Self.chatMessages(for: request)
-                    var output = ""
-                    var reasoningOutput = ""
-                    var reasoningRouter = AIStreamReasoningNormalizer(
-                        openingTag: reasoningConfiguration?.startDelimiter ?? "<think>",
-                        closingTag: reasoningConfiguration?.endDelimiter ?? "</think>",
-                        startsInsideReasoning: reasoningSetup.startsInsideReasoning)
-                    for try await chunk in session.streamResponse(to: messages) {
-                        for event in reasoningRouter.ingest(content: chunk, nativeReasoning: nil) {
-                            switch event {
-                            case .reasoningDelta(let text):
-                                reasoningOutput += text
-                            case .delta(let text):
-                                output += text
-                            default:
-                                break
-                            }
-                            continuation.yield(event)
-                        }
+        let messages = try Self.chatMessages(for: request)
+        // 模型标称上下文不等于本机可承受预算。按真实 chat template 分词校验，
+        // 超限明确失败，不静默裁剪用户对话；这里只分词，不执行模型 forward。
+        let prompt = systemPrompt
+        let promptTokenCount = try await container.perform { context in
+            // UserInput / Chat.Message 不是 Sendable，校验输入在容器边界内独立创建，
+            // 只把 token 数传出来，不与随后生成的 ChatSession 共享可变对象。
+            let setup = Self.reasoningSetup(
+                configuration: context.configuration.reasoningConfig,
+                disableThinking: request.disableThinking)
+            let history = try Self.chatMessages(for: request)
+            let promptMessages = prompt.isEmpty ? history : [.system(prompt)] + history
+            let prepared = try await context.processor.prepare(
+                input: UserInput(chat: promptMessages, additionalContext: setup.additionalContext))
+            return prepared.text.tokens.size
+        }
+        guard promptTokenCount <= LocalAIMemoryPolicy.inputTokens else {
+            throw LocalAIError.contextTooLong
+        }
+        var output = ""
+        var reasoningOutput = ""
+        var reasoningRouter = AIStreamReasoningNormalizer(
+            openingTag: reasoningConfiguration?.startDelimiter ?? "<think>",
+            closingTag: reasoningConfiguration?.endDelimiter ?? "</think>",
+            startsInsideReasoning: reasoningSetup.startsInsideReasoning)
+        do {
+            for try await chunk in session.streamResponse(to: messages) {
+                try Task.checkCancellation()
+                for event in reasoningRouter.ingest(content: chunk, nativeReasoning: nil) {
+                    switch event {
+                    case .reasoningDelta(let text):
+                        reasoningOutput += text
+                    case .delta(let text):
+                        output += text
+                    default:
+                        break
                     }
-                    for event in reasoningRouter.finish() {
-                        switch event {
-                        case .reasoningDelta(let text):
-                            reasoningOutput += text
-                        case .delta(let text):
-                            output += text
-                        default:
-                            break
-                        }
-                        continuation.yield(event)
-                    }
-                    continuation.yield(.completed(AIChatResponse(
-                        content: output,
-                        reasoningContent: reasoningOutput.isEmpty ? nil : reasoningOutput,
-                        toolCalls: [],
-                        usage: nil,
-                        model: request.model,
-                        finishReason: "stop")))
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+                    onEvent(event)
                 }
             }
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        } catch {
+            await session.synchronize()
+            await session.clear()
+            throw error
         }
+        // AsyncStream 取消早于底层 GPU 任务退出；等待 session 的锁归还后才释放准入。
+        await session.synchronize()
+        await session.clear()
+        try Task.checkCancellation()
+        for event in reasoningRouter.finish() {
+            switch event {
+            case .reasoningDelta(let text):
+                reasoningOutput += text
+            case .delta(let text):
+                output += text
+            default:
+                break
+            }
+            onEvent(event)
+        }
+        onEvent(
+            .completed(
+                AIChatResponse(
+                    content: output,
+                    reasoningContent: reasoningOutput.isEmpty ? nil : reasoningOutput,
+                    toolCalls: [],
+                    usage: nil,
+                    model: request.model,
+                    finishReason: "stop")))
     }
 
     /// 把请求级 `disableThinking` 映射到模型自己的 chat-template 开关。
@@ -294,6 +553,8 @@ enum LocalAIError: LocalizedError, Equatable {
     case unavailableInTests
     case modelNotInstalled(String)
     case toolsUnsupported
+    case memoryBudgetExceeded
+    case contextTooLong
     case embeddingDimensionMismatch(expected: Int, actual: Int)
 
     var errorDescription: String? {
@@ -307,6 +568,10 @@ enum LocalAIError: LocalizedError, Equatable {
                 format: String.l10n("settings.localai.error.modelNotInstalledFormat"), name)
         case .toolsUnsupported:
             return String.l10n("settings.localai.error.toolsUnsupported")
+        case .memoryBudgetExceeded:
+            return String.l10n("toolbar.localai.memoryBudgetExceeded")
+        case .contextTooLong:
+            return String.l10n("toolbar.localai.contextTooLong")
         case .embeddingDimensionMismatch(let expected, let actual):
             return String(
                 format: String.l10n("settings.localai.error.embeddingDimensionMismatchFormat"),
