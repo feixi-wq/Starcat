@@ -11,6 +11,25 @@ import Testing
 import CryptoKit
 @testable import Starcat
 
+/// `ProgressHandler` 是跨 actor 的同步回调，测试用锁保护采样数组，避免把断言依赖于
+/// 未结构化 Task 的调度时机。该类型仅用于测试，不参与生产下载链路。
+private final class LocalAIProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [LocalAIDownloadProgress] = []
+
+    func append(_ progress: LocalAIDownloadProgress) {
+        lock.lock()
+        storage.append(progress)
+        lock.unlock()
+    }
+
+    var values: [LocalAIDownloadProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 @Suite("LocalAIModelDownloader")
 struct LocalAIModelDownloaderTests {
 
@@ -50,6 +69,64 @@ struct LocalAIModelDownloaderTests {
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.safetensors").path))
         // 下载完成后 .part 不应残留。
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.safetensors.huggingface.part").path))
+    }
+
+    @Test("进度回调报告真实落盘字节")
+    func reportsActualDownloadedBytes() async throws {
+        URLProtocolStub.reset()
+        defer { URLProtocolStub.reset() }
+        let payload = Data(repeating: 0xA5, count: (1 << 20) + 1_234)
+        URLProtocolStub.requestHandler = { request in
+            let headers = ["Content-Length": "\(payload.count)"]
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200,
+                httpVersion: "HTTP/1.1", headerFields: headers)!
+            return (response, payload)
+        }
+
+        let recorder = LocalAIProgressRecorder()
+        let downloader = LocalAIModelDownloader(session: makeSession())
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localai-dl-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        _ = try await downloader.downloadFile(
+            remoteURL: URL(string: "https://models.test.invalid/model.safetensors")!,
+            fileName: "model.safetensors",
+            sourceKind: .modelScope,
+            into: directory,
+            expectedTotalBytes: Int64(payload.count),
+            onProgress: { recorder.append($0) })
+
+        let values = recorder.values
+        #expect(values.first?.completedBytes == 0)
+        #expect(values.contains { $0.completedBytes == 1 << 20 })
+        #expect(values.last == LocalAIDownloadProgress(
+            completedBytes: Int64(payload.count),
+            totalBytes: Int64(payload.count)))
+        #expect(zip(values, values.dropFirst()).allSatisfy {
+            $0.completedBytes <= $1.completedBytes
+        })
+    }
+
+    @Test("魔塔文件清单解析真实文件大小")
+    func modelScopeFileListParsesActualSizes() throws {
+        let data = Data(#"""
+        {"Code":200,"Data":{"Files":[
+          {"Path":"config.json","Size":886},
+          {"Path":"model.safetensors","Size":1416035216},
+          {"Path":"README.md","Size":112379}
+        ]}}
+        """#.utf8)
+
+        let response = try JSONDecoder().decode(
+            LocalAIModelScopeFileListResponse.self, from: data)
+        let sizes = response.fileSizes(wanted: ["config.json", "model.safetensors"])
+
+        #expect(sizes == [
+            "config.json": 886,
+            "model.safetensors": 1_416_035_216,
+        ])
     }
 
     @Test("已有 .part 时走 206 续传并拼接哈希")

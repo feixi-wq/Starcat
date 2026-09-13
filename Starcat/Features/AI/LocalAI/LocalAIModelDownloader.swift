@@ -58,11 +58,21 @@ struct LocalAIDownloadResult: Sendable, Equatable {
     var sizeBytes: Int64
 }
 
+/// 单文件下载进度快照。
+///
+/// 必须携带真实落盘字节，而不是只回传比例：模型由多个体积悬殊的文件组成，调用方若
+/// 再用 catalog 预估体积反推字节，会把 KB 级配置文件错误计成数百 MB。
+struct LocalAIDownloadProgress: Sendable, Equatable {
+    let completedBytes: Int64
+    /// 服务端未返回 Content-Length / Content-Range 时为 nil，已完成字节仍可用于速度采样。
+    let totalBytes: Int64?
+}
+
 /// 模型文件下载器。串行 actor：同一时刻只允许一个下载任务在跑（顺序下载三件套）。
 actor LocalAIModelDownloader {
 
-    /// 进度回调（0...1，相对单文件）。闭包 @Sendable，UI 侧自行 hop MainActor。
-    typealias ProgressHandler = @Sendable (Double) -> Void
+    /// 单文件真实字节进度。闭包 @Sendable，UI 侧自行 hop MainActor。
+    typealias ProgressHandler = @Sendable (LocalAIDownloadProgress) -> Void
 
     private let session: URLSession
     private var runningTask: Task<LocalAIDownloadResult, Error>?
@@ -106,6 +116,8 @@ actor LocalAIModelDownloader {
             let size = (try? FileManager.default.attributesOfItem(
                 atPath: finalURL.path)[.size] as? Int64) ?? 0
             let sha = try LocalAIModelStorage.sha256(ofFileAt: finalURL)
+            // 重试时已完成文件也要报告真实字节，否则下一文件开始前整体进度会缺一段。
+            onProgress?(LocalAIDownloadProgress(completedBytes: size, totalBytes: size))
             return LocalAIDownloadResult(name: fileName, sha256: sha, sizeBytes: size)
         }
 
@@ -217,14 +229,16 @@ actor LocalAIModelDownloader {
         // 总长度：206 且带 Content-Range 时，"/" 后的 total 就是完整文件大小（无需加
         // offset）；否则回退 Content-Length（200 时即完整长度；206 无 Content-Range 的
         // 罕见服务端再补 offset）。
-        var totalBytes: Int64
+        let totalBytes: Int64?
         if http.statusCode == 206,
             let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
             let totalString = contentRange.split(separator: "/").last,
             let total = Int64(totalString), total > 0 {
             totalBytes = total
-        } else {
+        } else if http.expectedContentLength > 0 {
             totalBytes = Int64(http.expectedContentLength) + offset
+        } else {
+            totalBytes = nil
         }
 
         var hasher = SHA256()
@@ -238,6 +252,9 @@ actor LocalAIModelDownloader {
         }
 
         var written: Int64 = offset
+        onProgress?(LocalAIDownloadProgress(
+            completedBytes: written,
+            totalBytes: totalBytes))
         var buffer = Data()
         buffer.reserveCapacity(1 << 20)
         for try await byte in bytes {
@@ -248,9 +265,9 @@ actor LocalAIModelDownloader {
                 try handle.write(contentsOf: buffer)
                 written += Int64(buffer.count)
                 buffer.removeAll(keepingCapacity: true)
-                if totalBytes > 0 {
-                    onProgress?(min(1, Double(written) / Double(totalBytes)))
-                }
+                onProgress?(LocalAIDownloadProgress(
+                    completedBytes: written,
+                    totalBytes: totalBytes))
             }
         }
         if !buffer.isEmpty {
@@ -258,11 +275,11 @@ actor LocalAIModelDownloader {
             try handle.write(contentsOf: buffer)
             written += Int64(buffer.count)
         }
-        if totalBytes > 0 {
-            onProgress?(1)
-        }
+        onProgress?(LocalAIDownloadProgress(
+            completedBytes: written,
+            totalBytes: totalBytes))
 
-        if totalBytes > 0 && written != totalBytes {
+        if let totalBytes, written != totalBytes {
             throw LocalAIDownloadError.sizeMismatch(expected: totalBytes, actual: written)
         }
 

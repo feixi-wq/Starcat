@@ -53,6 +53,12 @@ struct LocalAIModelsSection: View {
     private static let rowIconFont = Font.system(size: 12, weight: .regular)
     private static let rowIconFrameSize: CGFloat = 28
 
+    /// 进度说明拆成定宽列：数值更新只改变列内文字，不再推动后面的百分比与速度横跳。
+    /// 当前 catalog 最大模型不足 5 GB，这组宽度可覆盖 `999.9 MB` / `4.2 GB` 等格式。
+    private static let progressByteColumnWidth: CGFloat = 72
+    private static let progressPercentColumnWidth: CGFloat = 38
+    private static let progressSpeedColumnWidth: CGFloat = 88
+
     var body: some View {
         Section {
             sourcePickerRow
@@ -175,19 +181,34 @@ struct LocalAIModelsSection: View {
                 .padding(.leading, 30)
 
             if case .downloading(let progress, let completedBytes, let totalBytes, let speed) = state {
-                thinProgressBar(progress)
-                    .padding(.leading, 30)
-                Text(progressCaption(
+                let caption = progressCaption(
                     progress: progress,
                     completedBytes: completedBytes,
                     totalBytes: totalBytes,
-                    speedBytesPerSecond: speed))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    speedBytesPerSecond: speed)
+                thinProgressBar(progress)
                     .padding(.leading, 30)
+                HStack(spacing: 4) {
+                    Text(verbatim: caption.completed)
+                        .frame(width: Self.progressByteColumnWidth, alignment: .trailing)
+                    Text(verbatim: "/")
+                    Text(verbatim: caption.total)
+                        .frame(width: Self.progressByteColumnWidth, alignment: .leading)
+                    Text(verbatim: "·")
+                    Text(verbatim: caption.percent)
+                        .frame(width: Self.progressPercentColumnWidth, alignment: .trailing)
+                    Text(verbatim: "·")
+                    Text(verbatim: caption.speed)
+                        .frame(width: Self.progressSpeedColumnWidth, alignment: .leading)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(verbatim: caption.accessibilityText))
+                .padding(.leading, 30)
             }
 
             stateMessageCaption(state)
@@ -499,25 +520,37 @@ struct LocalAIModelsSection: View {
         .accessibilityValue(Text("\(Int(progress * 100))%"))
     }
 
-    /// 「128.4 MB / 664 MB · 19% · 45.2 MB/s」；首个采样窗口速度未出时省略速度段。
+    /// 生成定宽进度列内容；首个速度采样完成前用破折号占位，避免整行突然变长。
     private func progressCaption(
         progress: Double,
         completedBytes: Int64,
         totalBytes: Int64,
         speedBytesPerSecond: Double?
-    ) -> String {
+    ) -> (completed: String, total: String, percent: String, speed: String, accessibilityText: String) {
         // 不用 String(format:) 的位置参数格式串：%1$@ 与 %% 混用会把参数错位读成
         // 指针垃圾（曾显示 849191526%，dong4j 2026-09-12）。数字+单位本身语言中立，
         // 直接插值拼装。
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
+        let progressFormatter = ByteCountFormatter()
+        progressFormatter.countStyle = .file
+        progressFormatter.zeroPadsFractionDigits = true
+        // 已下载量与总量始终使用同一单位，避免跨过 1 GB 时从 MB 切成 GB 导致列内抖动。
+        progressFormatter.allowedUnits = totalBytes >= 1_000_000_000 ? .useGB : .useMB
+        let completed = progressFormatter.string(fromByteCount: completedBytes)
+        let total = progressFormatter.string(fromByteCount: totalBytes)
         let percent = Int((max(0, min(1, progress)) * 100).rounded())
-        var text = "\(formatter.string(fromByteCount: completedBytes)) / "
-            + "\(formatter.string(fromByteCount: totalBytes)) · \(percent)%"
+        let percentText = "\(percent)%"
+        let speedText: String
+        let accessibilityText: String
         if let speed = speedBytesPerSecond, speed > 0 {
-            text += " · \(formatter.string(fromByteCount: Int64(speed)))/s"
+            let formattedSpeed = ByteCountFormatter.string(
+                fromByteCount: Int64(speed), countStyle: .file)
+            speedText = "\(formattedSpeed)/s"
+            accessibilityText = "\(completed) / \(total) · \(percentText) · \(speedText)"
+        } else {
+            speedText = "—"
+            accessibilityText = "\(completed) / \(total) · \(percentText)"
         }
-        return text
+        return (completed, total, percentText, speedText, accessibilityText)
     }
 
     private func sizeCaption(for entry: LocalAIModelCatalogEntry) -> String {

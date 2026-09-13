@@ -25,9 +25,8 @@ import Observation
 
 /// 设置页观察的单模型下载状态。
 ///
-/// `downloading` 携带的是**整个模型**（多文件加权）的进度与字节计数，而不是当前
-/// 文件的进度：小配置文件秒满、随后大文件归零的跳变由聚合消除。速度为 EMA 平滑值，
-/// 首个采样窗口内为 nil。
+/// `downloading` 携带的是**整个模型**的真实落盘字节进度，而不是当前文件的进度：
+/// 小配置文件与 GB 级权重按各自真实体积累计。速度为 EMA 平滑值，首个采样窗口内为 nil。
 enum LocalAIInstallState: Equatable, Sendable {
     case idle
     case preparing
@@ -43,6 +42,45 @@ enum LocalAIInstallState: Equatable, Sendable {
     var isInstalled: Bool {
         if case .installed = self { return true }
         return false
+    }
+}
+
+/// ModelScope `/repo/files` 的最小响应模型，只解析整体进度所需的路径与真实字节数。
+/// 保持为独立值类型，既避免把远端 JSON 结构泄漏进状态机，也便于用固定响应做契约测试。
+struct LocalAIModelScopeFileListResponse: Decodable, Sendable {
+    let code: Int
+    let payload: Payload
+
+    struct Payload: Decodable, Sendable {
+        let files: [FileEntry]
+
+        enum CodingKeys: String, CodingKey {
+            case files = "Files"
+        }
+    }
+
+    struct FileEntry: Decodable, Sendable {
+        let path: String
+        let size: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case path = "Path"
+            case size = "Size"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case code = "Code"
+        case payload = "Data"
+    }
+
+    /// 只返回 catalog 关心且体积有效的文件，目录或异常的 0 字节记录不参与总量。
+    func fileSizes(wanted: Set<String>) -> [String: Int64] {
+        guard code == 200 else { return [:] }
+        return payload.files.reduce(into: [:]) { result, item in
+            guard wanted.contains(item.path), item.size > 0 else { return }
+            result[item.path] = item.size
+        }
     }
 }
 
@@ -274,18 +312,18 @@ final class LocalAIModelManager {
             let optionalFiles = Set(
                 entry.files.filter { !$0.isRequired }.map(\.name))
 
-            // 文件大小计划：HF tree API 取真实字节做加权；失败时按文件数均分预估体积，
-            // 保证进度语义仍然单调（只是权重不准）。
-            let fileSizes = source.kind == .huggingFace
-                ? await resolveFileSizes(for: entry, source: source, revision: revision)
-                : [:]
+            // 下载前从当前源取完整文件清单。只要所有必需文件都有大小，总量就是远端
+            // 真值；元数据请求失败才回退 catalog 预估，但已下载字节始终来自落盘回调，
+            // 禁止再把预估体积按文件数均分（KB 配置文件会被虚增成数百 MB）。
+            let fileSizes = await resolveFileSizes(
+                for: entry, source: source, revision: revision)
             let knownTotal = entry.files.compactMap { fileSizes[$0.name] }.reduce(0, +)
-            let fallbackFileSize: Int64 = knownTotal > 0
-                ? 0
-                : max(entry.estimatedDownloadSize / Int64(entry.files.count), 1)
-            let totalBytes = knownTotal > 0
+            let hasCompleteSizePlan = entry.files
+                .filter(\.isRequired)
+                .allSatisfy { fileSizes[$0.name] != nil }
+            let totalBytes = hasCompleteSizePlan && knownTotal > 0
                 ? knownTotal
-                : fallbackFileSize * Int64(entry.files.count)
+                : entry.estimatedDownloadSize
             var doneBytesBefore: Int64 = 0
 
             for file in entry.files {
@@ -294,7 +332,6 @@ final class LocalAIModelManager {
                     runningInstalls[entry.id] = nil
                     return
                 }
-                let fileSize = fileSizes[file.name] ?? fallbackFileSize
                 // 快照进 @Sendable 闭包：循环变量 doneBytesBefore 在闭包存活期内会被改写，
                 // 直接捕获 var 在严格并发下不合法。
                 let doneBeforeSnapshot = doneBytesBefore
@@ -302,18 +339,21 @@ final class LocalAIModelManager {
                     let record = try await downloadOne(
                         entry: entry, source: source, revision: revision, file: file.name,
                         directory: directory,
-                        onFileProgress: { [weak self] fileFraction in
-                            // 整体进度 = 已完成文件字节 + 当前文件加权字节；
-                            // 状态机与速度采样都在 MainActor 上，统一 hop 过去。
+                        onFileProgress: { [weak self] fileProgress in
+                            // 整体进度 = 已完成文件真实字节 + 当前文件真实落盘字节；状态机
+                            // 与速度采样都在 MainActor 上，统一 hop 过去。
                             Task { @MainActor [weak self] in
                                 guard let self, self.installGenerations[entry.id] == generation else { return }
-                                let completed = doneBeforeSnapshot + Int64(Double(fileSize) * fileFraction)
+                                let completed = doneBeforeSnapshot + fileProgress.completedBytes
                                 let speed = self.updateSpeedSampler(
                                     entryID: entry.id, completedBytes: completed)
+                                let rawProgress = totalBytes > 0
+                                    ? Double(completed) / Double(totalBytes)
+                                    : 0
                                 self.installStates[entry.id] = .downloading(
-                                    progress: totalBytes > 0
-                                        ? min(1, Double(completed) / Double(totalBytes))
-                                        : 0,
+                                    // 元数据失败时 catalog 只是估值，下载阶段最多显示 99%，
+                                    // 避免真实文件略大于估值时尚未完成就提前走满。
+                                    progress: min(hasCompleteSizePlan ? 1 : 0.99, rawProgress),
                                     completedBytes: completed,
                                     totalBytes: totalBytes,
                                     speedBytesPerSecond: speed)
@@ -324,7 +364,7 @@ final class LocalAIModelManager {
                         runningInstalls[entry.id] = nil
                         return
                     }
-                    doneBytesBefore += fileSize
+                    doneBytesBefore += record.sizeBytes
                 } catch let error as LocalAIDownloadError {
                     if error == .cancelled {
                         installStates[entry.id] = .idle
@@ -391,7 +431,7 @@ final class LocalAIModelManager {
         revision: String,
         file: String,
         directory: URL,
-        onFileProgress: @escaping @Sendable (Double) -> Void
+        onFileProgress: @escaping @Sendable (LocalAIDownloadProgress) -> Void
     ) async throws -> LocalAIFileRecord {
         let remoteURL: URL
         switch source.kind {
@@ -465,14 +505,26 @@ final class LocalAIModelManager {
         return nil
     }
 
-    /// HF tree API：返回仓库文件的精确字节大小（LFS 文件取 `lfs.size`）。
-    /// 失败返回空字典，调用方回退到均分预估，不阻断下载。
+    /// 从当前下载源读取文件清单：HF 的 LFS 文件取 `lfs.size`，ModelScope 取
+    /// `/repo/files` 的 `Size`。失败返回空字典并回退 catalog 总体积，不阻断下载。
     private func resolveFileSizes(
         for entry: LocalAIModelCatalogEntry, source: LocalAIModelSource, revision: String
     ) async -> [String: Int64] {
-        guard source.kind == .huggingFace,
-            let url = URL(string: "https://huggingface.co/api/models/\(source.repo)/tree/\(revision)?recursive=true")
-        else { return [:] }
+        let url: URL?
+        switch source.kind {
+        case .huggingFace:
+            url = URL(string:
+                "https://huggingface.co/api/models/\(source.repo)/tree/\(revision)?recursive=true")
+        case .modelScope:
+            var components = URLComponents(
+                string: "https://modelscope.cn/api/v1/models/\(source.repo)/repo/files")
+            components?.queryItems = [
+                URLQueryItem(name: "Revision", value: revision),
+                URLQueryItem(name: "Recursive", value: "true"),
+            ]
+            url = components?.url
+        }
+        guard let url else { return [:] }
         var request = URLRequest(url: url)
         request.setValue(AppConstants.httpUserAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
@@ -481,19 +533,28 @@ final class LocalAIModelManager {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 return [:]
             }
-            struct TreeEntry: Decodable {
-                let path: String
-                let size: Int64?
-                let lfs: LFSInfo?
-                struct LFSInfo: Decodable { let size: Int64? }
-            }
-            let entries = try JSONDecoder().decode([TreeEntry].self, from: data)
             let wanted = Set(entry.files.map(\.name))
-            var sizes: [String: Int64] = [:]
-            for item in entries where wanted.contains(item.path) {
-                sizes[item.path] = item.lfs?.size ?? item.size
+            switch source.kind {
+            case .huggingFace:
+                struct TreeEntry: Decodable {
+                    let path: String
+                    let size: Int64?
+                    let lfs: LFSInfo?
+                    struct LFSInfo: Decodable { let size: Int64? }
+                }
+                let entries = try JSONDecoder().decode([TreeEntry].self, from: data)
+                var sizes: [String: Int64] = [:]
+                for item in entries where wanted.contains(item.path) {
+                    if let size = item.lfs?.size ?? item.size, size > 0 {
+                        sizes[item.path] = size
+                    }
+                }
+                return sizes
+            case .modelScope:
+                let response = try JSONDecoder().decode(
+                    LocalAIModelScopeFileListResponse.self, from: data)
+                return response.fileSizes(wanted: wanted)
             }
-            return sizes
         } catch {
             AppLog.ai.debug(
                 "LocalAI file size lookup failed (fallback to estimate): \(error.localizedDescription, privacy: .public)")
