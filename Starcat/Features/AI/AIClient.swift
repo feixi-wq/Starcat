@@ -368,14 +368,18 @@ protocol AIClientProtocol: AITextGenerating {
 
 /// Starcat 统一 AI 客户端工厂。
 ///
-/// `.localAI` 走进程内 MLX（`LocalMLXClient`，无 Key / 无网络），其余 provider 走
-/// OpenAI-compatible HTTP（`OpenAIClient`）。各业务的 makeClient 工厂只应调用本函数，
-/// 不要再按 provider 自行分支；本地模型未安装时由 `LocalMLXClient` 在解析阶段抛
+/// `.localAI` 走进程内 MLX（`LocalMLXClient`，无 Key / 无网络），`.anthropic` 走
+/// Messages API（`AnthropicClient`），其余 provider 走 OpenAI-compatible HTTP
+///（`OpenAIClient`）。各业务的 makeClient 工厂只应调用本函数，不要再按 provider
+/// 自行分支；本地模型未安装时由 `LocalMLXClient` 在解析阶段抛
 /// `LocalAIError.modelNotInstalled`。
 enum AIClientFactory {
     static func make(configuration: AIClientConfiguration) throws -> any AIClientProtocol {
         if configuration.provider == .localAI {
             return LocalMLXClient.makeClient(configuration: configuration)
+        }
+        if configuration.provider == .anthropic {
+            return try AnthropicClient(configuration: configuration)
         }
         return try OpenAIClient(configuration: configuration)
     }

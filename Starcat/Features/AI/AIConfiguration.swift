@@ -1609,6 +1609,7 @@ extension AIServiceProvider {
         case .zai:              return "Z.AI"
         case .orcaRouter:       return "OrcaRouter"
         case .localAI:          return "Starcat Local AI"
+        case .anthropic:        return "Anthropic"
         }
     }
 
