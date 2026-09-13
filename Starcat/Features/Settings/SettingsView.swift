@@ -724,6 +724,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                // HOM-SNAKE-MODES 2026-06-05：贡献草坪贪吃蛇玩法。
+                // 用 Menu 风格 Picker 而非 segmented——6 个选项 segmented 会过宽，
+                // 而且每项都带 SF Symbol，菜单展开形态视觉信息密度更高。
+                // 2026-09-14 从独立「贡献草坪贪吃蛇」分组并入「外观」：草坪样式
+                // 本质是外观偏好，单条目不值得独占一个分组。
+                Picker(selection: $settings.snakeStyle) {
+                    ForEach(SnakeStyle.allCases) { style in
+                        Label(LocalizedStringKey(style.displayNameKey),
+                              systemImage: style.systemImage)
+                            .tag(style)
+                    }
+                } label: {
+                    Text("settings.snakeStyle.title")
+                }
+                .pickerStyle(.menu)
+
+                Text("settings.snakeStyle.description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 // R-01 §3.1.1（2026-06-10 P1）：列表密度 Picker 已彻底移除——
                 // RepoListDensity 枚举本身也已删除（之前为保签名稳定保留单 case
                 // 是「自留技术债」，现在所有 row / skeleton 视图直接用 card 密度）。
@@ -774,6 +795,10 @@ struct SettingsView: View {
                 )
             }
 
+            // 2026-09-14 重组：显示语言（上一分组）与内容语言过滤是同一「语言」主题，
+            // 相邻放置；不再夹在详情行为和 macOS 集成之间。
+            InterestedLanguagesSettingsSection(languages: $settings.interestedLanguages)
+
             Section {
                 Toggle(isOn: $settings.openFirstDetailOnCategoryChange) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -794,14 +819,24 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+
+                // 2026-09-14 重组：Issue 事件时间线是详情页的内容展示开关，
+                // 并入「详情行为」，不再单设只有一个开关的「活动」分组。
+                Toggle(isOn: $settings.githubIssueEventTimelineEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.activity.issueEvents.title")
+                        Text("settings.activity.issueEvents.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             } header: {
                 SettingsSectionHeader(
                     "settings.general.detailBehavior",
                     systemImage: "sidebar.left"
                 )
             }
-
-            InterestedLanguagesSettingsSection(languages: $settings.interestedLanguages)
 
             Section {
                 Toggle(isOn: $settings.hideDockIcon) {
@@ -865,52 +900,6 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle(isOn: $settings.githubIssueEventTimelineEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.activity.issueEvents.title")
-                        Text("settings.activity.issueEvents.help")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            } header: {
-                SettingsSectionHeader(
-                    "settings.activity.section",
-                    systemImage: "list.bullet.rectangle"
-                )
-            }
-
-            // HOM-SNAKE-MODES 2026-06-05：贡献草坪贪吃蛇玩法。
-            // 用 Menu 风格 Picker 而非 segmented——6 个选项 segmented 会过宽，
-            // 而且每项都带 SF Symbol，菜单展开形态视觉信息密度更高。
-            // 设计取舍：把贪吃蛇配置放在 General 而非新建 "Sidebar" Tab，是因为
-            // 当前 Sidebar 可配置项只有这一个，单独开 Tab 显得空；后续若新增
-            // sidebar 偏好（如折叠默认态、密度）再拆分。
-            Section {
-                Picker(selection: $settings.snakeStyle) {
-                    ForEach(SnakeStyle.allCases) { style in
-                        Label(LocalizedStringKey(style.displayNameKey),
-                              systemImage: style.systemImage)
-                            .tag(style)
-                    }
-                } label: {
-                    Text("settings.snakeStyle.title")
-                }
-                .pickerStyle(.menu)
-
-                Text("settings.snakeStyle.description")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.snakeStyle.section",
-                    systemImage: "arcade.stick.console.fill"
-                )
-            }
-
-            Section {
                 HStack {
                     Spacer()
 
@@ -941,8 +930,10 @@ struct SettingsView: View {
                 }
             } header: {
                 SettingsSectionHeader(
-                    "settings.general.other",
-                    systemImage: "ellipsis.circle"
+                    // 2026-09-14 从「其他」改名：分组内只有两个重置入口，
+                    // 按实际内容命名更可检索。
+                    "settings.general.reset",
+                    systemImage: "arrow.counterclockwise"
                 )
             }
         }

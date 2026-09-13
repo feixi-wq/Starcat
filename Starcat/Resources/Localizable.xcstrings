@@ -338694,6 +338694,23 @@
         }
       }
     },
+    "settings.general.reset" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重置"
+          }
+        }
+      }
+    },
     "settings.general.resetOnboarding" : {
       "extractionState" : "manual",
       "localizations" : {
