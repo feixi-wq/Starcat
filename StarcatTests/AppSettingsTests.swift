@@ -310,15 +310,13 @@ struct AppSettingsTests {
 
     // MARK: - 快捷键偏好
 
-    @Test("快捷键: AI 发送独立，六项应用命令默认启用并使用预设键位")
+    @Test("快捷键: AI 发送独立，五项应用命令默认启用并使用预设键位")
     func shortcutDefaults() {
         let settings = AppSettings(defaults: makeIsolatedDefaults())
         #expect(settings.aiChatRequiresCommandReturn == false)
         #expect(settings.keyboardShortcutsEnabled)
         #expect(settings.globalSearchShortcut == .globalSearchDefault)
         #expect(settings.globalSearchShortcutEnabled)
-        #expect(settings.regularSearchShortcut == .regularSearchDefault)
-        #expect(settings.regularSearchShortcutEnabled)
         #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
         #expect(settings.readmeFindShortcutEnabled)
         #expect(settings.refreshCurrentContentShortcut == StarcatShortcutCatalog.refreshCurrentContentDefault)
@@ -327,19 +325,16 @@ struct AppSettingsTests {
         #expect(settings.knowledgeRAGShortcutEnabled)
         #expect(settings.selectedRepoAIShortcut == StarcatShortcutCatalog.openSelectedRepoAIDefault)
         #expect(settings.selectedRepoAIShortcutEnabled)
-        #expect(settings.regularSearchShortcut.displayText == "⇧⌘F")
         #expect(settings.readmeFindShortcut.displayText == "⌘F")
-        #expect(settings.regularSearchShortcut.displaySegments == ["⇧", "⌘", "F"])
     }
 
-    @Test("快捷键: 六项键位与两层开关持久化，AI 发送方式不随总开关改变")
+    @Test("快捷键: 五项键位与两层开关持久化，AI 发送方式不随总开关改变")
     func shortcutSettingsPersist() {
         let defaults = makeIsolatedDefaults()
         let settings = AppSettings(defaults: defaults)
         settings.aiChatRequiresCommandReturn = true
         settings.keyboardShortcutsEnabled = false
         settings.globalSearchShortcutEnabled = false
-        settings.regularSearchShortcutEnabled = false
         settings.readmeFindShortcutEnabled = false
         settings.refreshCurrentContentShortcutEnabled = false
         settings.knowledgeRAGShortcutEnabled = false
@@ -348,13 +343,6 @@ struct AppSettingsTests {
             key: "p",
             command: true,
             option: true,
-            control: false,
-            shift: false
-        )
-        settings.regularSearchShortcut = .init(
-            key: "g",
-            command: true,
-            option: false,
             control: false,
             shift: false
         )
@@ -392,8 +380,6 @@ struct AppSettingsTests {
         #expect(restored.keyboardShortcutsEnabled == false)
         #expect(restored.globalSearchShortcut.displayText == "⌥⌘P")
         #expect(restored.globalSearchShortcutEnabled == false)
-        #expect(restored.regularSearchShortcut.displayText == "⌘G")
-        #expect(restored.regularSearchShortcutEnabled == false)
         #expect(restored.readmeFindShortcut.displayText == "⌥⌘F")
         #expect(restored.readmeFindShortcutEnabled == false)
         #expect(restored.refreshCurrentContentShortcut.displayText == "⌥⌘R")
@@ -446,13 +432,11 @@ struct AppSettingsTests {
         #expect(StarcatShortcutCatalog.openSelectedRepoAIDefault.validationError == nil)
         #expect(formerAboutShortcut.validationError == nil)
         #expect(KeyboardShortcutConfiguration.globalSearchDefault.validationError == nil)
-        #expect(KeyboardShortcutConfiguration.regularSearchDefault.validationError == nil)
         #expect(StarcatShortcutCatalog.readmeFindDefault.validationError == nil)
-        #expect(KeyboardShortcutConfiguration.regularSearchDefault.displaySegments == ["⇧", "⌘", "F"])
         #expect(StarcatShortcutCatalog.readmeFindDefault.displaySegments == ["⌘", "F"])
     }
 
-    @Test("快捷键: 六个可配置动作不能使用相同组合")
+    @Test("快捷键: 五个可配置动作不能使用相同组合")
     func configurableShortcutConflict() {
         let candidate = KeyboardShortcutConfiguration.globalSearchDefault
 
@@ -460,15 +444,12 @@ struct AppSettingsTests {
             candidate.validationError(conflictingWith: [.globalSearchDefault])
                 == .duplicateConfiguredAction
         )
-        #expect(candidate.validationError(conflictingWith: [.regularSearchDefault]) == nil)
         #expect(
-            KeyboardShortcutConfiguration.regularSearchDefault.validationError(
-                conflictingWith: [StarcatShortcutCatalog.readmeFindDefault]
-            ) == nil
+            candidate.validationError(conflictingWith: [StarcatShortcutCatalog.readmeFindDefault]) == nil
         )
     }
 
-    @Test("快捷键: 任意持久化重复配置都会让六项一起回退默认组合")
+    @Test("快捷键: 任意持久化重复配置都会让五项一起回退默认组合")
     func duplicatedStoredShortcutsFallBackTogether() throws {
         let defaults = makeIsolatedDefaults()
         let duplicated = KeyboardShortcutConfiguration(
@@ -485,47 +466,10 @@ struct AppSettingsTests {
         let settings = AppSettings(defaults: defaults)
 
         #expect(settings.globalSearchShortcut == .globalSearchDefault)
-        #expect(settings.regularSearchShortcut == .regularSearchDefault)
         #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
         #expect(settings.refreshCurrentContentShortcut == StarcatShortcutCatalog.refreshCurrentContentDefault)
         #expect(settings.knowledgeRAGShortcut == StarcatShortcutCatalog.openKnowledgeRAGDefault)
         #expect(settings.selectedRepoAIShortcut == StarcatShortcutCatalog.openSelectedRepoAIDefault)
-    }
-
-    @Test("快捷键: 磁盘上的旧常规搜索 ⌘F 迁到 ⌘⇧F，README 使用 ⌘F")
-    func legacyRegularSearchCommandFMigratesToShiftCommandF() throws {
-        let defaults = makeIsolatedDefaults()
-        let encoded = String(
-            decoding: try JSONEncoder().encode(KeyboardShortcutConfiguration.legacyRegularSearchDefault),
-            as: UTF8.self
-        )
-        defaults.set(encoded, forKey: AppSettings.Keys.regularSearchShortcut)
-
-        let settings = AppSettings(defaults: defaults)
-
-        #expect(settings.regularSearchShortcut == .regularSearchDefault)
-        #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
-        #expect(settings.regularSearchShortcut.displayText == "⇧⌘F")
-        #expect(settings.readmeFindShortcut.displayText == "⌘F")
-    }
-
-    @Test("快捷键: 用户自定义的常规搜索键位不会被 README 拆分覆盖")
-    func customRegularSearchShortcutIsPreserved() throws {
-        let defaults = makeIsolatedDefaults()
-        let custom = KeyboardShortcutConfiguration(
-            key: "g",
-            command: true,
-            option: false,
-            control: false,
-            shift: false
-        )
-        let encoded = String(decoding: try JSONEncoder().encode(custom), as: UTF8.self)
-        defaults.set(encoded, forKey: AppSettings.Keys.regularSearchShortcut)
-
-        let settings = AppSettings(defaults: defaults)
-
-        #expect(settings.regularSearchShortcut == custom)
-        #expect(settings.readmeFindShortcut == StarcatShortcutCatalog.readmeFindDefault)
     }
 
     @Test("快捷键路由: 重复激活同一栏保持当前栏")
@@ -681,10 +625,6 @@ struct AppSettingsTests {
                 isEnabled: true
             ) {}
             .starcatReadmeFindCommand(identity: "appkit-host-regression") {}
-            .starcatListSearchCommand(
-                identity: "appkit-host-regression",
-                isEnabled: false
-            ) {}
             // 必须位于消费命令路由的 modifier 外层，模拟 appHostEnvironment 的注入顺序。
             .starcatCommandRouterEnvironment(router)
 
@@ -703,22 +643,18 @@ struct AppSettingsTests {
         #expect(window.contentViewController === hostingController)
     }
 
-    @Test("快捷键路由: README 查找与列表搜索互不按栏分流")
-    func commandRouterFindAndListSearchAreIndependent() {
+    @Test("快捷键路由: 无 focused 值时 README 查找回退到主窗口登记")
+    func commandRouterFindFallsBackToRegisteredReadme() {
         let router = StarcatCommandRouter()
         var calls: [String] = []
-        router.registerListSearchAction(
-            StarcatCommandAction(title: "list", isEnabled: true) { calls.append("list") },
-            ownerID: UUID()
-        )
         router.registerReadmeFindAction(
             StarcatCommandAction(title: "readme", isEnabled: true) { calls.append("readme") },
             ownerID: UUID()
         )
         router.activate(.detail)
-        router.performListSearch()
         router.performReadmeFind()
-        #expect(calls == ["list", "readme"])
+        #expect(calls == ["readme"])
+        #expect(router.isReadmeFindAvailable())
     }
 
     @Test("快捷键路由: 独立 README 窗 focused 查找优先于主窗口登记")
@@ -737,20 +673,14 @@ struct AppSettingsTests {
         #expect(router.isReadmeFindAvailable(preferred: focusedReadme))
     }
 
-    @Test("快捷键路由: 没有 README 时查找按键忽略，不影响列表搜索")
+    @Test("快捷键路由: 没有 README 时查找按键静默忽略")
     func commandRouterReadmeFindNoopsWhenUnavailable() {
         let router = StarcatCommandRouter()
         var calls: [String] = []
-        router.registerListSearchAction(
-            StarcatCommandAction(title: "list", isEnabled: true) { calls.append("list") },
-            ownerID: UUID()
-        )
         router.activate(.detail)
         router.performReadmeFind()
-        router.performListSearch()
-        #expect(calls == ["list"])
+        #expect(calls.isEmpty)
         #expect(router.isReadmeFindAvailable() == false)
-        #expect(router.isListSearchAvailable())
     }
 
     // MARK: - AI BYOK 设置

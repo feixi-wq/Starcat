@@ -1365,16 +1365,8 @@ final class AppSettings {
         didSet { persistBool(key: Keys.globalSearchShortcutEnabled, value: globalSearchShortcutEnabled) }
     }
 
-    /// Search Center 本地范围快捷键，默认 Shift+Command+F。
-    var regularSearchShortcut: KeyboardShortcutConfiguration {
-        didSet { persistJSON(key: Keys.regularSearchShortcut, value: regularSearchShortcut) }
-    }
-
-    var regularSearchShortcutEnabled: Bool {
-        didSet { persistBool(key: Keys.regularSearchShortcutEnabled, value: regularSearchShortcutEnabled) }
-    }
-
     /// README 页内查找快捷键，默认 Command+F。与列表常规搜索拆开，不再按焦点分流。
+    /// 原常规搜索（⇧⌘F）快捷键已于 2026-09-13 删除：搜索统一进全局搜索 ⌘K。
     var readmeFindShortcut: KeyboardShortcutConfiguration {
         didSet { persistJSON(key: Keys.readmeFindShortcut, value: readmeFindShortcut) }
     }
@@ -2114,7 +2106,6 @@ final class AppSettings {
         self.aiChatRequiresCommandReturn = defaults.object(forKey: Keys.aiChatRequiresCommandReturn) as? Bool ?? false
         self.keyboardShortcutsEnabled = defaults.object(forKey: Keys.keyboardShortcutsEnabled) as? Bool ?? true
         self.globalSearchShortcutEnabled = defaults.object(forKey: Keys.globalSearchShortcutEnabled) as? Bool ?? true
-        self.regularSearchShortcutEnabled = defaults.object(forKey: Keys.regularSearchShortcutEnabled) as? Bool ?? true
         self.readmeFindShortcutEnabled = defaults.object(forKey: Keys.readmeFindShortcutEnabled) as? Bool ?? true
         self.refreshCurrentContentShortcutEnabled = defaults.object(
             forKey: Keys.refreshCurrentContentShortcutEnabled
@@ -2125,11 +2116,6 @@ final class AppSettings {
         let storedSearchShortcut = Self.decodeJSON(
             KeyboardShortcutConfiguration.self,
             key: Keys.globalSearchShortcut,
-            defaults: defaults
-        )
-        let storedRegularSearchShortcut = Self.decodeJSON(
-            KeyboardShortcutConfiguration.self,
-            key: Keys.regularSearchShortcut,
             defaults: defaults
         )
         let storedReadmeFindShortcut = Self.decodeJSON(
@@ -2156,17 +2142,6 @@ final class AppSettings {
         let resolvedSearchShortcut = storedSearchShortcut.flatMap {
             $0.validationError == nil ? $0 : nil
         } ?? .globalSearchDefault
-        let resolvedRegularSearchShortcut: KeyboardShortcutConfiguration = {
-            guard let stored = storedRegularSearchShortcut, stored.validationError == nil else {
-                return .regularSearchDefault
-            }
-            // 旧默认是 ⌘F。拆出 README 搜索后列表搜索改成 ⌘⇧F；仍存着旧默认的用户视为未自定义，
-            // 否则会和新的 README ⌘F 撞车，把六项一起重置。
-            if stored == KeyboardShortcutConfiguration.legacyRegularSearchDefault {
-                return .regularSearchDefault
-            }
-            return stored
-        }()
         let resolvedReadmeFindShortcut = storedReadmeFindShortcut.flatMap {
             $0.validationError == nil ? $0 : nil
         } ?? StarcatShortcutCatalog.readmeFindDefault
@@ -2182,26 +2157,23 @@ final class AppSettings {
 
         let resolvedShortcuts = [
             resolvedSearchShortcut,
-            resolvedRegularSearchShortcut,
             resolvedReadmeFindShortcut,
             resolvedRefreshShortcut,
             resolvedKnowledgeRAGShortcut,
             resolvedSelectedRepoAIShortcut
         ]
 
-        // 六项应用命令始终保持唯一，即使某项暂时关闭也不能占用另一项键位。
+        // 五项应用命令始终保持唯一，即使某项暂时关闭也不能占用另一项键位。
         // 这样重新开启时不会突然产生两个命令竞争；遇到手工篡改或旧版本重复值时，
-        // 六项一起恢复默认，比静默偏袒其中一个动作更可预测。
+        // 五项一起恢复默认，比静默偏袒其中一个动作更可预测。
         if Set(resolvedShortcuts).count != resolvedShortcuts.count {
             self.globalSearchShortcut = .globalSearchDefault
-            self.regularSearchShortcut = .regularSearchDefault
             self.readmeFindShortcut = StarcatShortcutCatalog.readmeFindDefault
             self.refreshCurrentContentShortcut = StarcatShortcutCatalog.refreshCurrentContentDefault
             self.knowledgeRAGShortcut = StarcatShortcutCatalog.openKnowledgeRAGDefault
             self.selectedRepoAIShortcut = StarcatShortcutCatalog.openSelectedRepoAIDefault
         } else {
             self.globalSearchShortcut = resolvedSearchShortcut
-            self.regularSearchShortcut = resolvedRegularSearchShortcut
             self.readmeFindShortcut = resolvedReadmeFindShortcut
             self.refreshCurrentContentShortcut = resolvedRefreshShortcut
             self.knowledgeRAGShortcut = resolvedKnowledgeRAGShortcut
@@ -2401,8 +2373,6 @@ final class AppSettings {
         keyboardShortcutsEnabled = true
         globalSearchShortcut = .globalSearchDefault
         globalSearchShortcutEnabled = true
-        regularSearchShortcut = .regularSearchDefault
-        regularSearchShortcutEnabled = true
         readmeFindShortcut = StarcatShortcutCatalog.readmeFindDefault
         readmeFindShortcutEnabled = true
         refreshCurrentContentShortcut = StarcatShortcutCatalog.refreshCurrentContentDefault
@@ -2875,8 +2845,8 @@ final class AppSettings {
         static let keyboardShortcutsEnabled = "settings.general.shortcuts.enabled.v1"
         static let globalSearchShortcut = "settings.general.shortcuts.globalSearch.v1"
         static let globalSearchShortcutEnabled = "settings.general.shortcuts.globalSearch.enabled.v1"
-        static let regularSearchShortcut = "settings.general.shortcuts.regularSearch.v1"
-        static let regularSearchShortcutEnabled = "settings.general.shortcuts.regularSearch.enabled.v1"
+        // 已废弃（2026-09-13）：settings.general.shortcuts.regularSearch(.enabled).v1
+        // 随常规搜索快捷键一起退役；已发布用户的磁盘残留值无人读取，不做迁移清理。
         static let readmeFindShortcut = "settings.general.shortcuts.readmeFind.v1"
         static let readmeFindShortcutEnabled = "settings.general.shortcuts.readmeFind.enabled.v1"
         static let refreshCurrentContentShortcut = "settings.general.shortcuts.refreshCurrentContent.v1"
@@ -2984,8 +2954,6 @@ final class AppSettings {
             keyboardShortcutsEnabled,
             globalSearchShortcut,
             globalSearchShortcutEnabled,
-            regularSearchShortcut,
-            regularSearchShortcutEnabled,
             readmeFindShortcut,
             readmeFindShortcutEnabled,
             refreshCurrentContentShortcut,

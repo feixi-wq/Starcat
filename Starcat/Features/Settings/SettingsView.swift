@@ -79,11 +79,10 @@ struct SettingsView: View {
     /// 快捷键录制失败时只在 General 页就地提示，不修改已保存配置。
     @State private var shortcutValidationError: KeyboardShortcutConfiguration.ValidationError?
 
-    /// 六个可配置应用命令的设置页标识。
+    /// 五个可配置应用命令的设置页标识。
     /// 这里只负责冲突矩阵和“恢复默认”级联，不参与菜单动作路由。
     private enum ConfigurableShortcutAction: CaseIterable, Hashable {
         case globalSearch
-        case regularSearch
         case readmeFind
         case refreshCurrentContent
         case knowledgeRAG
@@ -93,8 +92,6 @@ struct SettingsView: View {
             switch self {
             case .globalSearch:
                 return .globalSearchDefault
-            case .regularSearch:
-                return .regularSearchDefault
             case .readmeFind:
                 return StarcatShortcutCatalog.readmeFindDefault
             case .refreshCurrentContent:
@@ -109,6 +106,10 @@ struct SettingsView: View {
 
     private enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case general
+        /// 2026-09-13 从通用页拆出：通知策略（总开关 + 分类订阅）独立成页。
+        case notifications
+        /// 2026-09-13 从通用页拆出：键盘交互（AI 发送键 + 应用命令键位）独立成页。
+        case shortcuts
         case pro
         /// 2026-09-06 新增：权限类配置（OAuth scope、数据贡献）独立成页。
         case privacy
@@ -141,6 +142,8 @@ struct SettingsView: View {
         var titleKeyString: String {
             switch self {
             case .general:      return "settings.general.title"
+            case .notifications: return "settings.notifications.title"
+            case .shortcuts:    return "settings.general.shortcuts"
             case .pro:          return "settings.navigation.item.proLicense"
             case .privacy:      return "settings.navigation.item.privacyPermissions"
             case .aiModels:     return "settings.navigation.item.aiModels"
@@ -167,6 +170,8 @@ struct SettingsView: View {
         var systemImage: String {
             switch self {
             case .general:      return "gearshape"
+            case .notifications: return "bell"
+            case .shortcuts:    return "keyboard"
             case .pro:          return "crown.fill"
             case .privacy:      return "lock.shield"
             case .aiModels:     return "cpu"
@@ -326,6 +331,8 @@ struct SettingsView: View {
         List(selection: settingsTabSelection) {
             Section("settings.navigation.group.account") {
                 settingsSidebarRow(.general)
+                settingsSidebarRow(.notifications)
+                settingsSidebarRow(.shortcuts)
                 settingsSidebarRow(.pro)
                 settingsSidebarRow(.privacy)
             }
@@ -404,6 +411,10 @@ struct SettingsView: View {
         switch tab {
         case .general:
             generalTab
+        case .notifications:
+            notificationsTab
+        case .shortcuts:
+            shortcutsTab
         case .pro:
             ProSettingsTab()
         case .privacy:
@@ -446,10 +457,10 @@ struct SettingsView: View {
                                keywords: ["主题", "浅色", "深色", "theme", "appearance", "font", "字号"]),
             SettingsSearchItem("general.language", titleKey: "settings.general.language", tab: .general,
                                keywords: ["语言", "locale", "language"]),
-            SettingsSearchItem("general.shortcuts", titleKey: "settings.general.shortcuts", tab: .general,
-                               keywords: ["快捷键", "keyboard", "shortcut"]),
-            SettingsSearchItem("general.notifications", titleKey: "settings.notifications.title", tab: .general,
+            SettingsSearchItem("notifications", titleKey: "settings.notifications.title", tab: .notifications,
                                keywords: ["通知", "notification", "提醒"]),
+            SettingsSearchItem("shortcuts", titleKey: "settings.general.shortcuts", tab: .shortcuts,
+                               keywords: ["快捷键", "keyboard", "shortcut", "键位"]),
             SettingsSearchItem("general.accessibility", titleKey: "settings.general.accessibility", tab: .general,
                                keywords: ["动画", "无障碍", "accessibility", "motion"]),
             SettingsSearchItem("pro", titleKey: "settings.navigation.item.proLicense", tab: .pro,
@@ -542,6 +553,10 @@ struct SettingsView: View {
         switch target {
         case "general":
             return SettingsLocation(tab: .general)
+        case "notifications":
+            return SettingsLocation(tab: .notifications)
+        case "shortcuts":
+            return SettingsLocation(tab: .shortcuts)
         case "pro":
             return SettingsLocation(tab: .pro)
         case "privacy", "privacy.oauthScopes", "privacy.dataContribution", "privacy.telemetry",
@@ -778,163 +793,6 @@ struct SettingsView: View {
 
             InterestedLanguagesSettingsSection(languages: $settings.interestedLanguages)
 
-            // 2026-06-20：系统通知策略入口。
-            // 通知只用于「用户离开 App 后需要回来处理」的低频事件；普通状态变化继续留在
-            // toolbar 状态面板，避免把通知中心变成运行日志。
-            Section {
-                Toggle(isOn: $settings.notificationsEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.notifications.enabled.title")
-                        Text("settings.notifications.enabled.help")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                Toggle("settings.notifications.release.title", isOn: $settings.releaseNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.githubInbox.title", isOn: $settings.githubInboxNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.batchAI.title", isOn: $settings.batchAINotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.syncIssues.title", isOn: $settings.syncIssueNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-                Toggle("settings.notifications.mcpIssues.title", isOn: $settings.mcpIssueNotificationsEnabled)
-                    .disabled(!settings.notificationsEnabled)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.notifications.title",
-                    systemImage: "bell",
-                    style: .prominent
-                )
-            }
-
-            // 快捷键偏好集中在 General，都是本机交互习惯，不属于 AI 模型配置。
-            Section {
-                Toggle(isOn: $settings.aiChatRequiresCommandReturn) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.general.shortcuts.aiCommandReturn.title")
-                        Text(
-                            settings.aiChatRequiresCommandReturn
-                                ? "settings.general.shortcuts.aiCommandReturn.description.on"
-                                : "settings.general.shortcuts.aiCommandReturn.description.off"
-                        )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                // 应用命令快捷键总开关只控制键盘触发；AI 输入发送方式是独立偏好，
-                // 因此保留在总开关上方且不会被 `.disabled(...)` 连带关闭。
-                Toggle(isOn: $settings.keyboardShortcutsEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.general.shortcuts.enabled.title")
-                        Text("settings.general.shortcuts.enabled.description")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                ConfigurableShortcutSettingRow(
-                    titleKey: "settings.general.shortcuts.search.title",
-                    shortcut: $settings.globalSearchShortcut,
-                    defaultShortcut: ConfigurableShortcutAction.globalSearch.defaultShortcut,
-                    isEnabled: $settings.globalSearchShortcutEnabled,
-                    onValidationError: { shortcutValidationError = $0 },
-                    conflictingShortcuts: conflictingShortcuts(excluding: .globalSearch),
-                    helpKey: "settings.general.shortcuts.search.help",
-                    onShortcutChanged: { shortcutValidationError = nil },
-                    onRestoreDefault: { restoreShortcutDefault(.globalSearch) }
-                )
-                .disabled(!settings.keyboardShortcutsEnabled)
-
-                ConfigurableShortcutSettingRow(
-                    titleKey: "settings.general.shortcuts.regularSearch.title",
-                    shortcut: $settings.regularSearchShortcut,
-                    defaultShortcut: ConfigurableShortcutAction.regularSearch.defaultShortcut,
-                    isEnabled: $settings.regularSearchShortcutEnabled,
-                    onValidationError: { shortcutValidationError = $0 },
-                    conflictingShortcuts: conflictingShortcuts(excluding: .regularSearch),
-                    helpKey: "settings.general.shortcuts.regularSearch.help",
-                    onShortcutChanged: { shortcutValidationError = nil },
-                    onRestoreDefault: { restoreShortcutDefault(.regularSearch) }
-                )
-                .disabled(!settings.keyboardShortcutsEnabled)
-
-                ConfigurableShortcutSettingRow(
-                    titleKey: "settings.general.shortcuts.readmeFind.title",
-                    shortcut: $settings.readmeFindShortcut,
-                    defaultShortcut: ConfigurableShortcutAction.readmeFind.defaultShortcut,
-                    isEnabled: $settings.readmeFindShortcutEnabled,
-                    onValidationError: { shortcutValidationError = $0 },
-                    conflictingShortcuts: conflictingShortcuts(excluding: .readmeFind),
-                    helpKey: "settings.general.shortcuts.readmeFind.help",
-                    onShortcutChanged: { shortcutValidationError = nil },
-                    onRestoreDefault: { restoreShortcutDefault(.readmeFind) }
-                )
-                .disabled(!settings.keyboardShortcutsEnabled)
-
-                ConfigurableShortcutSettingRow(
-                    titleKey: "settings.general.shortcuts.refreshCurrentContent.title",
-                    shortcut: $settings.refreshCurrentContentShortcut,
-                    defaultShortcut: ConfigurableShortcutAction.refreshCurrentContent.defaultShortcut,
-                    isEnabled: $settings.refreshCurrentContentShortcutEnabled,
-                    onValidationError: { shortcutValidationError = $0 },
-                    conflictingShortcuts: conflictingShortcuts(excluding: .refreshCurrentContent),
-                    helpKey: "settings.general.shortcuts.refreshCurrentContent.help",
-                    onShortcutChanged: { shortcutValidationError = nil },
-                    onRestoreDefault: { restoreShortcutDefault(.refreshCurrentContent) }
-                )
-                .disabled(!settings.keyboardShortcutsEnabled)
-
-                ConfigurableShortcutSettingRow(
-                    titleKey: "settings.general.shortcuts.knowledgeRAG.title",
-                    shortcut: $settings.knowledgeRAGShortcut,
-                    defaultShortcut: ConfigurableShortcutAction.knowledgeRAG.defaultShortcut,
-                    isEnabled: $settings.knowledgeRAGShortcutEnabled,
-                    onValidationError: { shortcutValidationError = $0 },
-                    conflictingShortcuts: conflictingShortcuts(excluding: .knowledgeRAG),
-                    helpKey: "settings.general.shortcuts.knowledgeRAG.help",
-                    onShortcutChanged: { shortcutValidationError = nil },
-                    onRestoreDefault: { restoreShortcutDefault(.knowledgeRAG) }
-                )
-                .disabled(!settings.keyboardShortcutsEnabled)
-
-                ConfigurableShortcutSettingRow(
-                    titleKey: "settings.general.shortcuts.selectedRepoAI.title",
-                    shortcut: $settings.selectedRepoAIShortcut,
-                    defaultShortcut: ConfigurableShortcutAction.selectedRepoAI.defaultShortcut,
-                    isEnabled: $settings.selectedRepoAIShortcutEnabled,
-                    onValidationError: { shortcutValidationError = $0 },
-                    conflictingShortcuts: conflictingShortcuts(excluding: .selectedRepoAI),
-                    helpKey: "settings.general.shortcuts.selectedRepoAI.help",
-                    onShortcutChanged: { shortcutValidationError = nil },
-                    onRestoreDefault: { restoreShortcutDefault(.selectedRepoAI) }
-                )
-                .disabled(!settings.keyboardShortcutsEnabled)
-
-                if let shortcutValidationError {
-                    Text(shortcutValidationMessageKey(shortcutValidationError))
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Text("settings.general.shortcuts.configuration.description")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                SettingsSectionHeader(
-                    "settings.general.shortcuts",
-                    systemImage: "keyboard",
-                    style: .prominent
-                )
-            }
-
             Section {
                 Toggle(isOn: $settings.hideDockIcon) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1079,6 +937,165 @@ struct SettingsView: View {
                 SettingsSectionHeader(
                     "settings.general.other",
                     systemImage: "ellipsis.circle",
+                    style: .prominent
+                )
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 通知策略独立页（2026-09-13 从通用页拆出）。
+    /// 通知只用于「用户离开 App 后需要回来处理」的低频事件；普通状态变化继续留在
+    /// toolbar 状态面板，避免把通知中心变成运行日志。
+    private var notificationsTab: some View {
+        @Bindable var settings = settings
+
+        return Form {
+            Section {
+                Toggle(isOn: $settings.notificationsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.notifications.enabled.title")
+                        Text("settings.notifications.enabled.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Toggle("settings.notifications.release.title", isOn: $settings.releaseNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.githubInbox.title", isOn: $settings.githubInboxNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.batchAI.title", isOn: $settings.batchAINotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.syncIssues.title", isOn: $settings.syncIssueNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+                Toggle("settings.notifications.mcpIssues.title", isOn: $settings.mcpIssueNotificationsEnabled)
+                    .disabled(!settings.notificationsEnabled)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.notifications.title",
+                    systemImage: "bell",
+                    style: .prominent
+                )
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 键盘交互独立页（2026-09-13 从通用页拆出）：AI 发送方式 + 五个可配置应用命令键位。
+    /// 常规搜索（⇧⌘F）快捷键已随搜索统一进全局搜索一起删除。
+    private var shortcutsTab: some View {
+        @Bindable var settings = settings
+
+        return Form {
+            Section {
+                Toggle(isOn: $settings.aiChatRequiresCommandReturn) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.shortcuts.aiCommandReturn.title")
+                        Text(
+                            settings.aiChatRequiresCommandReturn
+                                ? "settings.general.shortcuts.aiCommandReturn.description.on"
+                                : "settings.general.shortcuts.aiCommandReturn.description.off"
+                        )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                // 应用命令快捷键总开关只控制键盘触发；AI 输入发送方式是独立偏好，
+                // 因此保留在总开关上方且不会被 `.disabled(...)` 连带关闭。
+                Toggle(isOn: $settings.keyboardShortcutsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.general.shortcuts.enabled.title")
+                        Text("settings.general.shortcuts.enabled.description")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                ConfigurableShortcutSettingRow(
+                    titleKey: "settings.general.shortcuts.search.title",
+                    shortcut: $settings.globalSearchShortcut,
+                    defaultShortcut: ConfigurableShortcutAction.globalSearch.defaultShortcut,
+                    isEnabled: $settings.globalSearchShortcutEnabled,
+                    onValidationError: { shortcutValidationError = $0 },
+                    conflictingShortcuts: conflictingShortcuts(excluding: .globalSearch),
+                    helpKey: "settings.general.shortcuts.search.help",
+                    onShortcutChanged: { shortcutValidationError = nil },
+                    onRestoreDefault: { restoreShortcutDefault(.globalSearch) }
+                )
+                .disabled(!settings.keyboardShortcutsEnabled)
+
+                ConfigurableShortcutSettingRow(
+                    titleKey: "settings.general.shortcuts.readmeFind.title",
+                    shortcut: $settings.readmeFindShortcut,
+                    defaultShortcut: ConfigurableShortcutAction.readmeFind.defaultShortcut,
+                    isEnabled: $settings.readmeFindShortcutEnabled,
+                    onValidationError: { shortcutValidationError = $0 },
+                    conflictingShortcuts: conflictingShortcuts(excluding: .readmeFind),
+                    helpKey: "settings.general.shortcuts.readmeFind.help",
+                    onShortcutChanged: { shortcutValidationError = nil },
+                    onRestoreDefault: { restoreShortcutDefault(.readmeFind) }
+                )
+                .disabled(!settings.keyboardShortcutsEnabled)
+
+                ConfigurableShortcutSettingRow(
+                    titleKey: "settings.general.shortcuts.refreshCurrentContent.title",
+                    shortcut: $settings.refreshCurrentContentShortcut,
+                    defaultShortcut: ConfigurableShortcutAction.refreshCurrentContent.defaultShortcut,
+                    isEnabled: $settings.refreshCurrentContentShortcutEnabled,
+                    onValidationError: { shortcutValidationError = $0 },
+                    conflictingShortcuts: conflictingShortcuts(excluding: .refreshCurrentContent),
+                    helpKey: "settings.general.shortcuts.refreshCurrentContent.help",
+                    onShortcutChanged: { shortcutValidationError = nil },
+                    onRestoreDefault: { restoreShortcutDefault(.refreshCurrentContent) }
+                )
+                .disabled(!settings.keyboardShortcutsEnabled)
+
+                ConfigurableShortcutSettingRow(
+                    titleKey: "settings.general.shortcuts.knowledgeRAG.title",
+                    shortcut: $settings.knowledgeRAGShortcut,
+                    defaultShortcut: ConfigurableShortcutAction.knowledgeRAG.defaultShortcut,
+                    isEnabled: $settings.knowledgeRAGShortcutEnabled,
+                    onValidationError: { shortcutValidationError = $0 },
+                    conflictingShortcuts: conflictingShortcuts(excluding: .knowledgeRAG),
+                    helpKey: "settings.general.shortcuts.knowledgeRAG.help",
+                    onShortcutChanged: { shortcutValidationError = nil },
+                    onRestoreDefault: { restoreShortcutDefault(.knowledgeRAG) }
+                )
+                .disabled(!settings.keyboardShortcutsEnabled)
+
+                ConfigurableShortcutSettingRow(
+                    titleKey: "settings.general.shortcuts.selectedRepoAI.title",
+                    shortcut: $settings.selectedRepoAIShortcut,
+                    defaultShortcut: ConfigurableShortcutAction.selectedRepoAI.defaultShortcut,
+                    isEnabled: $settings.selectedRepoAIShortcutEnabled,
+                    onValidationError: { shortcutValidationError = $0 },
+                    conflictingShortcuts: conflictingShortcuts(excluding: .selectedRepoAI),
+                    helpKey: "settings.general.shortcuts.selectedRepoAI.help",
+                    onShortcutChanged: { shortcutValidationError = nil },
+                    onRestoreDefault: { restoreShortcutDefault(.selectedRepoAI) }
+                )
+                .disabled(!settings.keyboardShortcutsEnabled)
+
+                if let shortcutValidationError {
+                    Text(shortcutValidationMessageKey(shortcutValidationError))
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("settings.general.shortcuts.configuration.description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                SettingsSectionHeader(
+                    "settings.general.shortcuts",
+                    systemImage: "keyboard",
                     style: .prominent
                 )
             }
@@ -1268,7 +1285,7 @@ struct SettingsView: View {
         }
     }
 
-    /// 返回除当前动作外的五个已保存键位。
+    /// 返回除当前动作外的四个已保存键位。
     /// 关闭状态仍参与冲突检查，确保重新开启时不会与其它命令竞争同一组合。
     private func conflictingShortcuts(
         excluding action: ConfigurableShortcutAction
@@ -1281,7 +1298,7 @@ struct SettingsView: View {
     /// 恢复默认值时递归释放被其它动作占用的默认组合。
     ///
     /// 例如 A 使用 B 的默认键、B 又使用 A 的默认键时，先把整条占用链恢复到各自默认，
-    /// 再落当前动作；`visited` 用于打断这种交换环，最终仍保持六项唯一。
+    /// 再落当前动作；`visited` 用于打断这种交换环，最终仍保持五项唯一。
     private func restoreShortcutDefault(_ action: ConfigurableShortcutAction) {
         var visited: Set<ConfigurableShortcutAction> = []
 
@@ -1306,8 +1323,6 @@ struct SettingsView: View {
         switch action {
         case .globalSearch:
             return settings.globalSearchShortcut
-        case .regularSearch:
-            return settings.regularSearchShortcut
         case .readmeFind:
             return settings.readmeFindShortcut
         case .refreshCurrentContent:
@@ -1326,8 +1341,6 @@ struct SettingsView: View {
         switch action {
         case .globalSearch:
             settings.globalSearchShortcut = shortcut
-        case .regularSearch:
-            settings.regularSearchShortcut = shortcut
         case .readmeFind:
             settings.readmeFindShortcut = shortcut
         case .refreshCurrentContent:

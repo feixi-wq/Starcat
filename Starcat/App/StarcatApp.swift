@@ -573,20 +573,9 @@ private struct StarcatAppCommands: Commands {
     @FocusedValue(\.starcatRefreshAction) private var focusedRefreshAction
     @FocusedValue(\.starcatRepositoryAIAction) private var focusedRepositoryAIAction
     @FocusedValue(\.starcatReadmeFindAction) private var focusedReadmeFindAction
-    @FocusedValue(\.starcatListSearchAction) private var focusedListSearchAction
 
     var body: some Commands {
         CommandMenu("commands.actions.menu") {
-            Button("commands.actions.findInList") {
-                commandRouter.performListSearch(preferred: focusedListSearchAction)
-            }
-            .keyboardShortcut(
-                settings.keyboardShortcutsEnabled && settings.regularSearchShortcutEnabled
-                    ? settings.regularSearchShortcut.swiftUIShortcut
-                    : nil
-            )
-            .disabled(!commandRouter.isListSearchAvailable(preferred: focusedListSearchAction))
-
             Button("commands.actions.findInReadme") {
                 commandRouter.performReadmeFind(preferred: focusedReadmeFindAction)
             }
