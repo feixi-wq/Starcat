@@ -588,7 +588,7 @@ enum SmartSearchMode: String, CaseIterable, Identifiable {
 /// - **未知 locale 仍落到英文**（HOM-198）：`defaultForCurrentLocale()` 只返回
 ///   具体语言，不会再回到 `.auto`。英文是 README 原文最普遍的语言，比硬塞简体合理。
 /// - 目标语言与 App 当前正式开放的 18 种显示语言保持同一组 BCP-47 identifier；
-/// - `displayName` 使用“旗帜 + 母语名称”，不跟随当前界面语言翻译；
+/// - `displayName` 使用母语名称，不跟随当前界面语言翻译；语言不是国家，菜单不加国旗；
 /// - `promptName` 是发给 LLM 的目标语言名称，固定走英文（`Simplified Chinese`），
 ///   避免不同 provider 对中文 prompt 关键词的解析差异，提示词中明确语言能更稳定。
 ///
@@ -624,7 +624,7 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
     var displayName: String {
         switch self {
         case .auto:
-            // 🌐 和具体语言的国旗同一列，标明「跟界面语言走」而不是某个国家。
+            // Auto 用当前界面语言的短词，标明「跟界面语言走」，不是某个具体语种。
             let localized: String
             switch Self.defaultForCurrentLocale() {
             case .auto, .english:
@@ -660,25 +660,25 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
             case .arabic:
                 localized = "تلقائي"
             }
-            return "🌐 \(localized)"
-        case .simplifiedChinese:  return "🇨🇳 简体中文"
-        case .traditionalChinese: return "🇨🇳 繁體中文"
-        case .english:            return "🇺🇸 English"
-        case .japanese:           return "🇯🇵 日本語"
-        case .korean:             return "🇰🇷 한국어"
-        case .german:             return "🇩🇪 Deutsch"
-        case .french:             return "🇫🇷 Français"
-        case .spanish:            return "🇪🇸 Español"
-        case .brazilianPortuguese: return "🇧🇷 Português (Brasil)"
-        case .italian:            return "🇮🇹 Italiano"
-        case .russian:            return "🇷🇺 Русский"
-        case .dutch:              return "🇳🇱 Nederlands"
-        case .polish:             return "🇵🇱 Polski"
-        case .ukrainian:          return "🇺🇦 Українська"
-        case .turkish:            return "🇹🇷 Türkçe"
-        case .vietnamese:         return "🇻🇳 Tiếng Việt"
-        case .indonesian:         return "🇮🇩 Bahasa Indonesia"
-        case .arabic:             return "🇸🇦 العربية"
+            return localized
+        case .simplifiedChinese:  return "简体中文"
+        case .traditionalChinese: return "繁體中文"
+        case .english:            return "English"
+        case .japanese:           return "日本語"
+        case .korean:             return "한국어"
+        case .german:             return "Deutsch"
+        case .french:             return "Français"
+        case .spanish:            return "Español"
+        case .brazilianPortuguese: return "Português (Brasil)"
+        case .italian:            return "Italiano"
+        case .russian:            return "Русский"
+        case .dutch:              return "Nederlands"
+        case .polish:             return "Polski"
+        case .ukrainian:          return "Українська"
+        case .turkish:            return "Türkçe"
+        case .vietnamese:         return "Tiếng Việt"
+        case .indonesian:         return "Bahasa Indonesia"
+        case .arabic:             return "العربية"
         }
     }
 

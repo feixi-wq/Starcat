@@ -645,17 +645,18 @@ struct ReadmeTranslationLanguageTests {
         )
     }
 
-    @Test("展示名包含国旗且 promptName 非空")
+    @Test("展示名为母语名称且不含国旗，promptName 非空")
     func promptNamesAreReadable() {
-        #expect(ReadmeTranslationLanguage.auto.displayName.hasPrefix("🌐"))
-        for lang in ReadmeTranslationLanguage.allCases where lang != .auto {
-            #expect(!lang.promptName.isEmpty)
+        #expect(ReadmeTranslationLanguage.auto.displayName.contains("🌐") == false)
+        #expect(!ReadmeTranslationLanguage.auto.displayName.isEmpty)
+        #expect(ReadmeTranslationLanguage.simplifiedChinese.displayName == "简体中文")
+        #expect(ReadmeTranslationLanguage.english.displayName == "English")
+        for lang in ReadmeTranslationLanguage.allCases {
             #expect(!lang.displayName.isEmpty)
-            let leadingScalars = lang.displayName.unicodeScalars.prefix(2)
-            #expect(
-                leadingScalars.count == 2
-                    && leadingScalars.allSatisfy { (0x1F1E6...0x1F1FF).contains($0.value) }
-            )
+            #expect(lang.displayName.unicodeScalars.contains { (0x1F1E6...0x1F1FF).contains($0.value) } == false)
+            if lang != .auto {
+                #expect(!lang.promptName.isEmpty)
+            }
         }
     }
 }
