@@ -3482,8 +3482,8 @@
     },
     "toolbar.localai.empty" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "No local models installed. Download models in AI settings." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚未安装本地模型，请在 AI 设置中下载。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No local models installed. Download models in Models & Providers settings." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚未安装本地模型，请在模型与供应商设置中下载。" } }
       }
     },
     "toolbar.localai.queued" : {
@@ -43065,7 +43065,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Enable AnySearch in Settings → Integrations first"
+            "value" : "Enable AnySearch in Settings → External Search first"
           }
         },
         "es" : {
@@ -43149,7 +43149,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先在 设置 → 集成 启用 AnySearch"
+            "value" : "请先在 设置 → 外部搜索 启用 AnySearch"
           }
         },
         "zh-Hant" : {
@@ -49989,7 +49989,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The AI provider rejected the credential. Update the API key in AI Settings."
+            "value" : "The AI provider rejected the credential. Update the API key in Models & Providers settings."
           }
         },
         "es" : {
@@ -50073,7 +50073,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "AI 服务商拒绝了当前凭据，请在 AI 设置中更新 API Key。"
+            "value" : "AI 服务商拒绝了当前凭据，请在模型与供应商设置中更新 API Key。"
           }
         },
         "zh-Hant" : {
@@ -55517,7 +55517,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The embedding provider rejected the credential. Update the API key in AI Settings."
+            "value" : "The embedding provider rejected the credential. Update the API key in Models & Providers settings."
           }
         },
         "es" : {
@@ -55601,7 +55601,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "向量化服务商拒绝了当前凭据，请在 AI 设置中更新 API Key。"
+            "value" : "向量化服务商拒绝了当前凭据，请在模型与供应商设置中更新 API Key。"
           }
         },
         "zh-Hant" : {
@@ -55743,7 +55743,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The selected model %@ is not an embedding model. Choose an embedding-capable model in AI Settings."
+            "value" : "The selected model %@ is not an embedding model. Choose an embedding-capable model in Models & Providers settings."
           }
         },
         "es" : {
@@ -55827,7 +55827,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前选择的模型 %@ 不是向量化模型，请在 AI 设置中选择支持 Embedding 的模型。"
+            "value" : "当前选择的模型 %@ 不是向量化模型，请在模型与供应商设置中选择支持 Embedding 的模型。"
           }
         },
         "zh-Hant" : {
@@ -55969,7 +55969,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The embedding provider has no API key. Add one in AI Settings."
+            "value" : "The embedding provider has no API key. Add one in Models & Providers settings."
           }
         },
         "es" : {
@@ -56053,7 +56053,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "向量化服务商尚未配置 API Key，请先在 AI 设置中补充。"
+            "value" : "向量化服务商尚未配置 API Key，请先在模型与供应商设置中补充。"
           }
         },
         "zh-Hant" : {
@@ -56082,7 +56082,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No embedding model is configured. Choose one in AI Settings."
+            "value" : "No embedding model is configured. Choose one in Models & Providers settings."
           }
         },
         "es" : {
@@ -56166,7 +56166,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚未配置向量化模型，请先在 AI 设置中选择。"
+            "value" : "尚未配置向量化模型，请先在模型与供应商设置中选择。"
           }
         },
         "zh-Hant" : {
@@ -56195,7 +56195,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No embedding provider is configured. Choose a valid provider in AI Settings."
+            "value" : "No embedding provider is configured. Choose a valid provider in Models & Providers settings."
           }
         },
         "es" : {
@@ -56279,7 +56279,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚未配置向量化服务商，请先在 AI 设置中选择有效的服务商。"
+            "value" : "尚未配置向量化服务商，请先在模型与供应商设置中选择有效的服务商。"
           }
         },
         "zh-Hant" : {
@@ -56534,7 +56534,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The embedding provider is disabled or has not passed connection testing. Verify it in AI Settings first."
+            "value" : "The embedding provider is disabled or has not passed connection testing. Verify it in Models & Providers settings first."
           }
         },
         "es" : {
@@ -56618,7 +56618,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "向量化服务商未启用或尚未通过连接测试，请先在 AI 设置中完成验证。"
+            "value" : "向量化服务商未启用或尚未通过连接测试，请先在模型与供应商设置中完成验证。"
           }
         },
         "zh-Hant" : {
@@ -57936,7 +57936,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No AI API key is configured. Open Settings → AI, add a provider and API key, then try generating the summary again."
+            "value" : "No AI API key is configured. Open Settings → Models & Providers, add a provider and API key, then try generating the summary again."
           }
         },
         "es" : {
@@ -58020,7 +58020,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚未配置 AI 服务的 API Key。请先到「设置 → AI」添加服务商并填写 API Key，再生成摘要。"
+            "value" : "尚未配置 AI 服务的 API Key。请先到「设置 → 模型与供应商」添加服务商并填写 API Key，再生成摘要。"
           }
         },
         "zh-Hant" : {
@@ -58037,13 +58037,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No AI API key is configured for “%@”. Open Settings → AI, add a provider and API key for this task, then try again."
+            "value" : "No AI API key is configured for “%@”. Open Settings → Models & Providers, add a provider and API key for this task, then try again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "「%@」尚未配置 API Key。请先到「设置 → AI」为该任务选择服务商并填写 API Key，然后再试。"
+            "value" : "「%@」尚未配置 API Key。请先到「设置 → 模型与供应商」为该任务选择服务商并填写 API Key，然后再试。"
           }
         },
         "zh-Hant" : {
@@ -58060,13 +58060,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No usable AI provider is configured for “%@”. Open Settings → AI, add a provider and model for this task, then try again."
+            "value" : "No usable AI provider is configured for “%@”. Open Settings → Models & Providers, add a provider and model for this task, then try again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "「%@」尚未配置可用的 AI 服务。请先到「设置 → AI」为该任务添加服务商并选择模型，然后再试。"
+            "value" : "「%@」尚未配置可用的 AI 服务。请先到「设置 → 模型与供应商」为该任务添加服务商并选择模型，然后再试。"
           }
         },
         "zh-Hant" : {
@@ -58095,7 +58095,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No AI provider is configured for “%@”. Open Settings → AI, add a provider, then try generating again."
+            "value" : "No AI provider is configured for “%@”. Open Settings → Models & Providers, add a provider, then try generating again."
           }
         },
         "es" : {
@@ -58179,7 +58179,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "「%@」尚未配置可用的 AI 服务。请先到「设置 → AI」添加服务商，再生成摘要。"
+            "value" : "「%@」尚未配置可用的 AI 服务。请先到「设置 → 模型与供应商」添加服务商，再生成摘要。"
           }
         },
         "zh-Hant" : {
@@ -59338,7 +59338,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Configure an API key in Settings → AI before using semantic search."
+            "value" : "Configure an API key in Settings → Models & Providers before using semantic search."
           }
         },
         "es" : {
@@ -59422,7 +59422,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先在 Settings → AI 填写 API Key，再使用 AI 语义搜索。"
+            "value" : "请先在 设置 → 模型与供应商 填写 API Key，再使用 AI 语义搜索。"
           }
         },
         "zh-Hant" : {
@@ -102080,7 +102080,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Downloads the complete repository ZIP. Archives over %lld MB are blocked; adjust this under AI Services → Code Context."
+            "value" : "Downloads the complete repository ZIP. Archives over %lld MB are blocked; adjust this under Index & Context → Code Context."
           }
         },
         "es" : {
@@ -102164,7 +102164,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "需要下载完整仓库 ZIP；超过 %lld MB 将停止处理，可在「AI 服务 → 代码上下文」中调整。"
+            "value" : "需要下载完整仓库 ZIP；超过 %lld MB 将停止处理，可在「索引与上下文 → 代码上下文」中调整。"
           }
         },
         "zh-Hant" : {
@@ -109921,7 +109921,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Try again later, or switch to another provider/model in AI Settings."
+            "value" : "Try again later, or switch to another provider/model in Models & Providers settings."
           }
         },
         "es" : {
@@ -110005,7 +110005,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请稍后重试，或在 AI 设置中切换服务商/模型。"
+            "value" : "请稍后重试，或在模型与供应商设置中切换服务商/模型。"
           }
         },
         "zh-Hant" : {
@@ -167118,7 +167118,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Open AI Settings"
+            "value" : "Open Index & Context Settings"
           }
         },
         "es" : {
@@ -167202,7 +167202,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "前往 AI 设置"
+            "value" : "前往索引与上下文设置"
           }
         },
         "zh-Hant" : {
@@ -167231,7 +167231,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Enable code context in AI Settings before generating RepoContext XML. Starcat will not change this setting automatically."
+            "value" : "Enable code context in Index & Context settings before generating RepoContext XML. Starcat will not change this setting automatically."
           }
         },
         "es" : {
@@ -167315,7 +167315,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先在 AI 设置中开启代码上下文，再生成 RepoContext XML。Starcat 不会自动修改此设置。"
+            "value" : "请先在「索引与上下文」设置中开启代码上下文，再生成 RepoContext XML。Starcat 不会自动修改此设置。"
           }
         },
         "zh-Hant" : {
@@ -194343,7 +194343,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Open AI Settings"
+            "value" : "Open Models & Providers"
           }
         },
         "es" : {
@@ -194427,7 +194427,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开 AI 设置"
+            "value" : "打开模型与供应商设置"
           }
         },
         "zh-Hant" : {
@@ -194903,7 +194903,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The configured credential was not accepted. Update it in AI Settings, then try again."
+            "value" : "The configured credential was not accepted. Update it in Models & Providers settings, then try again."
           }
         },
         "es" : {
@@ -194987,7 +194987,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前凭据未被接受，请在 AI 设置中更新后再试。"
+            "value" : "当前凭据未被接受，请在模型与供应商设置中更新后再试。"
           }
         },
         "zh-Hant" : {
@@ -195015,7 +195015,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Add a valid API key, base URL, and model in AI Settings, then try again."
+            "value" : "Add a valid API key, base URL, and model in Models & Providers settings, then try again."
           }
         },
         "es" : {
@@ -195099,7 +195099,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请在 AI 设置中检查 API Key、Base URL 和模型后再试。"
+            "value" : "请在模型与供应商设置中检查 API Key、Base URL 和模型后再试。"
           }
         },
         "zh-Hant" : {
@@ -195239,7 +195239,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Complete the embedding provider and model configuration in AI Settings, then try again."
+            "value" : "Complete the embedding provider and model configuration in Models & Providers settings, then try again."
           }
         },
         "es" : {
@@ -195323,7 +195323,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先在 AI 设置中完成向量化服务商和模型配置，然后重试。"
+            "value" : "请先在模型与供应商设置中完成向量化服务商和模型配置，然后重试。"
           }
         },
         "zh-Hant" : {
@@ -248560,7 +248560,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Display language for the final answer (from Settings → Language)."
+            "value" : "Display language for the final answer (from Settings → General → Language)."
           }
         },
         "es" : {
@@ -248644,7 +248644,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最终回答的显示语言（来自设置 → 语言）。"
+            "value" : "最终回答的显示语言（来自设置 → 通用 → 语言）。"
           }
         },
         "zh-Hant" : {
@@ -248673,7 +248673,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Display language for the compressed digest (from Settings → Language)."
+            "value" : "Display language for the compressed digest (from Settings → General → Language)."
           }
         },
         "es" : {
@@ -248757,7 +248757,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "压缩摘要的显示语言（来自设置 → 语言）。"
+            "value" : "压缩摘要的显示语言（来自设置 → 通用 → 语言）。"
           }
         },
         "zh-Hant" : {
@@ -248899,7 +248899,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Display language for the conversation title (from Settings → Language)."
+            "value" : "Display language for the conversation title (from Settings → General → Language)."
           }
         },
         "es" : {
@@ -248983,7 +248983,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "会话标题的显示语言（来自设置 → 语言）。"
+            "value" : "会话标题的显示语言（来自设置 → 通用 → 语言）。"
           }
         },
         "zh-Hant" : {
@@ -265625,7 +265625,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No AI provider is bound to the README translation task. Open Settings → AI to fix it."
+            "value" : "No AI provider is bound to the README translation task. Open Settings → Models & Providers to fix it."
           }
         },
         "es" : {
@@ -265709,7 +265709,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚未给 README 翻译任务绑定 AI 服务，请到 设置 → AI 配置。"
+            "value" : "尚未给 README 翻译任务绑定 AI 服务，请到 设置 → 模型与供应商 配置。"
           }
         },
         "zh-Hant" : {
@@ -282578,7 +282578,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sharing uses an AI summary for the share page. No AI provider is configured yet — open Settings → AI, add an API key for the Summary task, then try again."
+            "value" : "Sharing uses an AI summary for the share page. No AI provider is configured yet — open Settings → Models & Providers, add an API key for the Summary task, then try again."
           }
         },
         "es" : {
@@ -282662,7 +282662,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "分享会附带 AI 摘要生成分享页。当前尚未配置 AI 服务，请前往「设置 → AI」为摘要任务配置 Provider 的 API Key 后重试。"
+            "value" : "分享会附带 AI 摘要生成分享页。当前尚未配置 AI 服务，请前往「设置 → 模型与供应商」为摘要任务配置 Provider 的 API Key 后重试。"
           }
         },
         "zh-Hant" : {
@@ -318042,7 +318042,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Output language (follows Settings → Language). Drives reply language and the fallback sentence when context is insufficient."
+            "value" : "Output language (follows Settings → General → Language). Drives reply language and the fallback sentence when context is insufficient."
           }
         },
         "es" : {
@@ -318126,7 +318126,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "输出语言（跟随设置 → 语言）；同时驱动正文语言和上下文不足时的兜底句自然翻译。"
+            "value" : "输出语言（跟随设置 → 通用 → 语言）；同时驱动正文语言和上下文不足时的兜底句自然翻译。"
           }
         },
         "zh-Hant" : {
@@ -318155,7 +318155,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Output language (follows Settings → Language; e.g. Simplified Chinese / English / Japanese). Drives body language and section titles."
+            "value" : "Output language (follows Settings → General → Language; e.g. Simplified Chinese / English / Japanese). Drives body language and section titles."
           }
         },
         "es" : {
@@ -318239,7 +318239,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "输出语言（跟随设置 → 语言，如 Simplified Chinese / English / Japanese）；同时驱动正文语言和章节标题语言。"
+            "value" : "输出语言（跟随设置 → 通用 → 语言，如 Simplified Chinese / English / Japanese）；同时驱动正文语言和章节标题语言。"
           }
         },
         "zh-Hant" : {
@@ -318268,7 +318268,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Output language (follows Settings → Language; e.g. Simplified Chinese / English / Japanese)."
+            "value" : "Output language (follows Settings → General → Language; e.g. Simplified Chinese / English / Japanese)."
           }
         },
         "es" : {
@@ -318352,7 +318352,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "输出语言（跟随设置 → 语言，如 Simplified Chinese / English / Japanese）。"
+            "value" : "输出语言（跟随设置 → 通用 → 语言，如 Simplified Chinese / English / Japanese）。"
           }
         },
         "zh-Hant" : {
@@ -341639,7 +341639,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Use the Local API Key managed at the top of Integrations."
+            "value" : "Use the Local API Key managed at the top of Browser Extensions."
           }
         },
         "es" : {
@@ -341723,7 +341723,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用集成页顶部统一管理的本地 API Key。"
+            "value" : "使用浏览器扩展页顶部统一管理的本地 API Key。"
           }
         },
         "zh-Hant" : {
@@ -342091,7 +342091,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Use this endpoint with the Local API Key from Settings > Integrations > Local API Key. The key only authorizes local loopback access."
+            "value" : "Use this endpoint with the Local API Key from Settings > Browser Extensions > Local API Key. The key only authorizes local loopback access."
           }
         },
         "es" : {
@@ -342175,7 +342175,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在浏览器插件中填写 endpoint，并使用「设置 → 集成 → 本地 API Key」中的 key。该 key 只授权本机 loopback 访问。"
+            "value" : "在浏览器插件中填写 endpoint，并使用「设置 → 浏览器扩展 → 本地 API Key」中的 key。该 key 只授权本机 loopback 访问。"
           }
         },
         "zh-Hant" : {
@@ -344944,13 +344944,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Keep the three carrier files in one directory. At least one verified provider is also required in AI Service settings."
+            "value" : "Keep the three carrier files in one directory. At least one verified provider is also required in Models & Providers settings."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "三个 carrier 文件必须位于同一目录；同时还需在 AI 服务设置中配置至少一个已验证服务商。"
+            "value" : "三个 carrier 文件必须位于同一目录；同时还需在模型与供应商设置中配置至少一个已验证服务商。"
           }
         }
       }
@@ -351438,7 +351438,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "# Install and Verify Starcat CLI\n\n## Goal\n\nThe current AI Agent installs the official Starcat CLI and completes version and read-only diagnostic checks.\n\nOfficial repository:\n\n```text\n%1$@\n```\n\n## Installation\n\n### 1. Detect the operating system\n\nSelect the official command for the current environment.\n\nmacOS / Linux:\n\n```bash\n%2$@\n```\n\nWindows PowerShell:\n\n```powershell\n%3$@\n```\n\n### 2. Check the CLI version\n\n```bash\nstarcat version\n```\n\nIf the current macOS/Linux shell has not refreshed PATH, use:\n\n```bash\n\"$HOME/.local/bin/starcat\" version\n```\n\nOn Windows PowerShell, locate the installation with:\n\n```powershell\n(Get-Command starcat).Source\n```\n\n### 3. Run read-only diagnostics\n\n```bash\nstarcat doctor\n```\n\nIf the current macOS/Linux shell has not refreshed PATH, use:\n\n```bash\n\"$HOME/.local/bin/starcat\" doctor\n```\n\n### 4. Handle an unpaired CLI\n\nIf diagnostics report that the CLI is not paired:\n\n1. Stop further connection verification.\n2. Report that the Starcat CLI is installed but not paired.\n3. Instruct the user to open **Starcat > Settings > MCP Service**.\n4. Instruct the user to use Starcat's **Copy Pairing Prompt** action to complete pairing.\n5. Do not request a standalone pairing URI or Local API Key from the user.\n\n## Boundaries\n\n- Use only Starcat's official installer.\n- Do not modify project files.\n- Do not execute Starcat write commands.\n- Do not request a Local API Key.\n- Do not construct a pairing URI or pairing command.\n- Unless installation fails, do not fetch extra GitHub Release API responses or print installer source.\n\n## Final Report\n\nThe current AI Agent reports:\n\n- Operating system and CPU architecture\n- Whether installation succeeded\n- CLI installation path\n- CLI version\n- `starcat doctor` result\n- Whether the user must continue with device pairing"
+            "value" : "# Install and Verify Starcat CLI\n\n## Goal\n\nThe current AI Agent installs the official Starcat CLI and completes version and read-only diagnostic checks.\n\nOfficial repository:\n\n```text\n%1$@\n```\n\n## Installation\n\n### 1. Detect the operating system\n\nSelect the official command for the current environment.\n\nmacOS / Linux:\n\n```bash\n%2$@\n```\n\nWindows PowerShell:\n\n```powershell\n%3$@\n```\n\n### 2. Check the CLI version\n\n```bash\nstarcat version\n```\n\nIf the current macOS/Linux shell has not refreshed PATH, use:\n\n```bash\n\"$HOME/.local/bin/starcat\" version\n```\n\nOn Windows PowerShell, locate the installation with:\n\n```powershell\n(Get-Command starcat).Source\n```\n\n### 3. Run read-only diagnostics\n\n```bash\nstarcat doctor\n```\n\nIf the current macOS/Linux shell has not refreshed PATH, use:\n\n```bash\n\"$HOME/.local/bin/starcat\" doctor\n```\n\n### 4. Handle an unpaired CLI\n\nIf diagnostics report that the CLI is not paired:\n\n1. Stop further connection verification.\n2. Report that the Starcat CLI is installed but not paired.\n3. Instruct the user to open **Starcat > Settings > MCP**.\n4. Instruct the user to use Starcat's **Copy Pairing Prompt** action to complete pairing.\n5. Do not request a standalone pairing URI or Local API Key from the user.\n\n## Boundaries\n\n- Use only Starcat's official installer.\n- Do not modify project files.\n- Do not execute Starcat write commands.\n- Do not request a Local API Key.\n- Do not construct a pairing URI or pairing command.\n- Unless installation fails, do not fetch extra GitHub Release API responses or print installer source.\n\n## Final Report\n\nThe current AI Agent reports:\n\n- Operating system and CPU architecture\n- Whether installation succeeded\n- CLI installation path\n- CLI version\n- `starcat doctor` result\n- Whether the user must continue with device pairing"
           }
         },
         "es" : {
@@ -351522,7 +351522,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "# 安装并验证 Starcat CLI\n\n## 任务目标\n\n当前 AI Agent 安装官方 Starcat CLI，并完成版本检查和只读诊断。\n\n官方仓库：\n\n```text\n%1$@\n```\n\n## 安装步骤\n\n### 1. 判断操作系统\n\n根据当前运行环境选择对应的官方安装命令。\n\nmacOS / Linux：\n\n```bash\n%2$@\n```\n\nWindows PowerShell：\n\n```powershell\n%3$@\n```\n\n### 2. 检查 CLI 版本\n\n```bash\nstarcat version\n```\n\n如果 macOS/Linux 当前 shell 尚未刷新 PATH，改用：\n\n```bash\n\"$HOME/.local/bin/starcat\" version\n```\n\nWindows PowerShell 可通过以下命令查找安装路径：\n\n```powershell\n(Get-Command starcat).Source\n```\n\n### 3. 执行只读诊断\n\n```bash\nstarcat doctor\n```\n\n如果 macOS/Linux 当前 shell 尚未刷新 PATH，改用：\n\n```bash\n\"$HOME/.local/bin/starcat\" doctor\n```\n\n### 4. 处理未配对状态\n\n如果诊断结果显示 CLI 尚未配对：\n\n1. 停止后续连接验证。\n2. 报告“Starcat CLI 已安装，但尚未配对”。\n3. 提示用户打开 Starcat 的「设置 → MCP Service」。\n4. 提示用户使用 Starcat 提供的“复制配对提示词”功能完成配对。\n5. 不向用户索取单独的 pairing URI 或 Local API Key。\n\n## 操作边界\n\n- 只使用 Starcat 官方安装脚本。\n- 不修改当前项目文件。\n- 不执行 Starcat 写入命令。\n- 不索取 Local API Key。\n- 不自行构造 pairing URI 或配对命令。\n- 除非安装失败，否则不额外抓取 GitHub Release API 响应或打印安装脚本源码。\n\n## 完成后报告\n\n当前 AI Agent 最终报告：\n\n- 操作系统和 CPU 架构\n- CLI 是否安装成功\n- CLI 安装路径\n- CLI 版本\n- `starcat doctor` 结果\n- 是否需要用户继续完成设备配对"
+            "value" : "# 安装并验证 Starcat CLI\n\n## 任务目标\n\n当前 AI Agent 安装官方 Starcat CLI，并完成版本检查和只读诊断。\n\n官方仓库：\n\n```text\n%1$@\n```\n\n## 安装步骤\n\n### 1. 判断操作系统\n\n根据当前运行环境选择对应的官方安装命令。\n\nmacOS / Linux：\n\n```bash\n%2$@\n```\n\nWindows PowerShell：\n\n```powershell\n%3$@\n```\n\n### 2. 检查 CLI 版本\n\n```bash\nstarcat version\n```\n\n如果 macOS/Linux 当前 shell 尚未刷新 PATH，改用：\n\n```bash\n\"$HOME/.local/bin/starcat\" version\n```\n\nWindows PowerShell 可通过以下命令查找安装路径：\n\n```powershell\n(Get-Command starcat).Source\n```\n\n### 3. 执行只读诊断\n\n```bash\nstarcat doctor\n```\n\n如果 macOS/Linux 当前 shell 尚未刷新 PATH，改用：\n\n```bash\n\"$HOME/.local/bin/starcat\" doctor\n```\n\n### 4. 处理未配对状态\n\n如果诊断结果显示 CLI 尚未配对：\n\n1. 停止后续连接验证。\n2. 报告“Starcat CLI 已安装，但尚未配对”。\n3. 提示用户打开 Starcat 的「设置 → MCP」。\n4. 提示用户使用 Starcat 提供的“复制配对提示词”功能完成配对。\n5. 不向用户索取单独的 pairing URI 或 Local API Key。\n\n## 操作边界\n\n- 只使用 Starcat 官方安装脚本。\n- 不修改当前项目文件。\n- 不执行 Starcat 写入命令。\n- 不索取 Local API Key。\n- 不自行构造 pairing URI 或配对命令。\n- 除非安装失败，否则不额外抓取 GitHub Release API 响应或打印安装脚本源码。\n\n## 完成后报告\n\n当前 AI Agent 最终报告：\n\n- 操作系统和 CPU 架构\n- CLI 是否安装成功\n- CLI 安装路径\n- CLI 版本\n- `starcat doctor` 结果\n- 是否需要用户继续完成设备配对"
           }
         },
         "zh-Hant" : {
@@ -354150,7 +354150,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "# Pair Starcat CLI\n\n## Goal\n\nThe current AI Agent uses the complete single-use pairing command generated by Starcat, then waits for the user to approve the device in Starcat.\n\n## Single-Use Pairing Command\n\n```bash\n%1$@\n```\n\n## Steps\n\n1. Confirm that the content above is one complete `starcat pair ...` command.\n2. Execute the complete command exactly as provided. Do not edit or split its URI or arguments.\n3. If the CLI starts waiting for approval, instruct the user to return to Starcat.\n4. The user reviews the device information and approves pairing in Starcat.\n5. After pairing succeeds, run:\n\n   ```bash\n   starcat doctor\n   ```\n\n6. If the current macOS/Linux shell cannot find `starcat`, use:\n\n   ```bash\n   \"$HOME/.local/bin/starcat\" doctor\n   ```\n\n## Error Handling\n\n### Expired command\n\nInstruct the user to generate and copy a new pairing prompt from **Starcat > Settings > MCP Service**.\n\n### Already-used command\n\nInstruct the user to generate a new single-use pairing command. Do not retry an already-used command.\n\n### Pairing rejected by the user\n\nStop and report that the device did not receive Starcat access.\n\n### Starcat is not running\n\nInstruct the user to launch Starcat and enable MCP Service, then run diagnostics again.\n\n## Security Boundaries\n\n- Do not parse, edit, or split the pairing URI.\n- Do not repeat the complete pairing command in the final response.\n- Do not store the pairing command in a repository, configuration file, note, or persistent log.\n- Do not reuse a completed or expired pairing command.\n- Do not request a Local API Key.\n- Do not manually downgrade an HTTPS endpoint to HTTP.\n- Do not run other Starcat commands before pairing completes.\n\n## Final Report\n\nThe current AI Agent reports:\n\n- Whether the CLI accepted the pairing command\n- Whether it entered the Starcat approval stage\n- Whether the user approved the device\n- Whether `starcat doctor` is healthy\n- CLI version, App version, and available tool count\n\nThe final report must not contain the complete pairing command, pairing URI, secret, or other credentials."
+            "value" : "# Pair Starcat CLI\n\n## Goal\n\nThe current AI Agent uses the complete single-use pairing command generated by Starcat, then waits for the user to approve the device in Starcat.\n\n## Single-Use Pairing Command\n\n```bash\n%1$@\n```\n\n## Steps\n\n1. Confirm that the content above is one complete `starcat pair ...` command.\n2. Execute the complete command exactly as provided. Do not edit or split its URI or arguments.\n3. If the CLI starts waiting for approval, instruct the user to return to Starcat.\n4. The user reviews the device information and approves pairing in Starcat.\n5. After pairing succeeds, run:\n\n   ```bash\n   starcat doctor\n   ```\n\n6. If the current macOS/Linux shell cannot find `starcat`, use:\n\n   ```bash\n   \"$HOME/.local/bin/starcat\" doctor\n   ```\n\n## Error Handling\n\n### Expired command\n\nInstruct the user to generate and copy a new pairing prompt from **Starcat > Settings > MCP**.\n\n### Already-used command\n\nInstruct the user to generate a new single-use pairing command. Do not retry an already-used command.\n\n### Pairing rejected by the user\n\nStop and report that the device did not receive Starcat access.\n\n### Starcat is not running\n\nInstruct the user to launch Starcat and enable MCP Service, then run diagnostics again.\n\n## Security Boundaries\n\n- Do not parse, edit, or split the pairing URI.\n- Do not repeat the complete pairing command in the final response.\n- Do not store the pairing command in a repository, configuration file, note, or persistent log.\n- Do not reuse a completed or expired pairing command.\n- Do not request a Local API Key.\n- Do not manually downgrade an HTTPS endpoint to HTTP.\n- Do not run other Starcat commands before pairing completes.\n\n## Final Report\n\nThe current AI Agent reports:\n\n- Whether the CLI accepted the pairing command\n- Whether it entered the Starcat approval stage\n- Whether the user approved the device\n- Whether `starcat doctor` is healthy\n- CLI version, App version, and available tool count\n\nThe final report must not contain the complete pairing command, pairing URI, secret, or other credentials."
           }
         },
         "es" : {
@@ -354234,7 +354234,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "# 配对 Starcat CLI\n\n## 任务目标\n\n当前 AI Agent 使用 Starcat 生成的完整一次性配对命令连接 CLI，并等待用户在 Starcat 中确认设备。\n\n## 一次性配对命令\n\n```bash\n%1$@\n```\n\n## 执行步骤\n\n1. 确认上方内容是一条完整的 `starcat pair ...` 命令。\n2. 原样执行完整命令，不修改、不拆分其中的 URI 或参数。\n3. 如果 CLI 进入等待确认状态，提示用户返回 Starcat。\n4. 用户在 Starcat 中核对设备信息并确认配对。\n5. 配对成功后运行：\n\n   ```bash\n   starcat doctor\n   ```\n\n6. 如果当前 macOS/Linux shell 找不到 `starcat`，改用：\n\n   ```bash\n   \"$HOME/.local/bin/starcat\" doctor\n   ```\n\n## 异常处理\n\n### 配对命令已过期\n\n提示用户在 Starcat 的「设置 → MCP Service」中重新生成并复制新的配对提示词。\n\n### 配对命令已使用\n\n提示用户重新生成一次性配对命令。不要重复执行已经使用过的命令。\n\n### 用户拒绝配对\n\n停止后续操作，并报告设备未获得 Starcat 访问权限。\n\n### Starcat 未运行\n\n提示用户启动 Starcat，并确认 MCP Service 已开启，然后重新执行诊断。\n\n## 安全限制\n\n- 不解析、修改或拆分配对 URI。\n- 不在最终回复中复述完整配对命令。\n- 不把配对命令写入仓库、配置文件、笔记或长期日志。\n- 不重复使用已经完成或失效的配对命令。\n- 不向用户索取 Local API Key。\n- 不把 HTTPS endpoint 手工降级为 HTTP。\n- 配对完成前不执行其他 Starcat 命令。\n\n## 完成后报告\n\n当前 AI Agent 最终报告：\n\n- 配对命令是否被 CLI 接受\n- 是否进入 Starcat 确认阶段\n- 用户是否完成确认\n- `starcat doctor` 是否健康\n- CLI 版本、App 版本和可用工具数量\n\n最终报告不得包含完整配对命令、pairing URI、secret 或其他凭据。"
+            "value" : "# 配对 Starcat CLI\n\n## 任务目标\n\n当前 AI Agent 使用 Starcat 生成的完整一次性配对命令连接 CLI，并等待用户在 Starcat 中确认设备。\n\n## 一次性配对命令\n\n```bash\n%1$@\n```\n\n## 执行步骤\n\n1. 确认上方内容是一条完整的 `starcat pair ...` 命令。\n2. 原样执行完整命令，不修改、不拆分其中的 URI 或参数。\n3. 如果 CLI 进入等待确认状态，提示用户返回 Starcat。\n4. 用户在 Starcat 中核对设备信息并确认配对。\n5. 配对成功后运行：\n\n   ```bash\n   starcat doctor\n   ```\n\n6. 如果当前 macOS/Linux shell 找不到 `starcat`，改用：\n\n   ```bash\n   \"$HOME/.local/bin/starcat\" doctor\n   ```\n\n## 异常处理\n\n### 配对命令已过期\n\n提示用户在 Starcat 的「设置 → MCP」中重新生成并复制新的配对提示词。\n\n### 配对命令已使用\n\n提示用户重新生成一次性配对命令。不要重复执行已经使用过的命令。\n\n### 用户拒绝配对\n\n停止后续操作，并报告设备未获得 Starcat 访问权限。\n\n### Starcat 未运行\n\n提示用户启动 Starcat，并确认 MCP Service 已开启，然后重新执行诊断。\n\n## 安全限制\n\n- 不解析、修改或拆分配对 URI。\n- 不在最终回复中复述完整配对命令。\n- 不把配对命令写入仓库、配置文件、笔记或长期日志。\n- 不重复使用已经完成或失效的配对命令。\n- 不向用户索取 Local API Key。\n- 不把 HTTPS endpoint 手工降级为 HTTP。\n- 配对完成前不执行其他 Starcat 命令。\n\n## 完成后报告\n\n当前 AI Agent 最终报告：\n\n- 配对命令是否被 CLI 接受\n- 是否进入 Starcat 确认阶段\n- 用户是否完成确认\n- `starcat doctor` 是否健康\n- CLI 版本、App 版本和可用工具数量\n\n最终报告不得包含完整配对命令、pairing URI、secret 或其他凭据。"
           }
         },
         "zh-Hant" : {
@@ -356297,7 +356297,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "MCP uses the shared Local API Key from Settings > Integrations > Local API Key. Rotating that key invalidates existing MCP client configs."
+            "value" : "MCP uses the shared Local API Key from Settings > Browser Extensions > Local API Key. Rotating that key invalidates existing MCP client configs."
           }
         },
         "es" : {
@@ -356381,7 +356381,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "MCP 使用「设置 → 集成 → 本地 API Key」中的共享 key。刷新该 key 后，已有 MCP 客户端配置会失效。"
+            "value" : "MCP 使用「设置 → 浏览器扩展 → 本地 API Key」中的共享 key。刷新该 key 后，已有 MCP 客户端配置会失效。"
           }
         },
         "zh-Hant" : {
@@ -401855,13 +401855,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Segmented and full-text modes share the model above; prompts are independent. Model parameters follow the model itself — adjust them in AI Settings → model list."
+            "value" : "Segmented and full-text modes share the model above; prompts are independent. Model parameters follow the model itself — adjust them in Settings → Models & Providers."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "分段与全文共用上方模型，提示词相互独立；模型参数跟随模型本身，在「AI 服务 → 模型列表」中调整。"
+            "value" : "分段与全文共用上方模型，提示词相互独立；模型参数跟随模型本身，在「设置 → 模型与供应商」中调整。"
           }
         }
       }
@@ -413570,7 +413570,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "AI Settings"
+            "value" : "Models & Providers Settings"
           }
         },
         "es" : {
@@ -413654,7 +413654,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "AI 设置"
+            "value" : "模型与供应商设置"
           }
         },
         "zh-Hant" : {
@@ -488886,8 +488886,8 @@
     "agent.workspace.runtime.deepSeekProviderHelp" : {
       "extractionState" : "manual",
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Verified providers from Starcat AI settings" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来自 Starcat AI 设置的已验证服务商" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Verified providers from Starcat's Models & Providers settings" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来自 Starcat 模型与供应商设置的已验证服务商" } }
       }
     },
     "agent.workspace.runtime.noVerifiedProvider" : {
