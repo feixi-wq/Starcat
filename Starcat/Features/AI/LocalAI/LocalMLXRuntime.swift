@@ -155,6 +155,10 @@ extension LocalMLXRuntime {
                     if !request.tools.isEmpty {
                         throw LocalAIError.toolsUnsupported
                     }
+                    let reasoningConfiguration = await container.configuration.reasoningConfig
+                    let reasoningSetup = Self.reasoningSetup(
+                        configuration: reasoningConfiguration,
+                        disableThinking: request.disableThinking)
                     var systemPrompt = request.systemPrompt
                     if request.responseFormat == .jsonObject {
                         // v1 无 guided generation：JSON 输出靠 prompt 约束（Qwen3 指令跟随足够稳定），
@@ -173,17 +177,43 @@ extension LocalMLXRuntime {
                     let session = MLXLMCommon.ChatSession(
                         container,
                         instructions: systemPrompt.isEmpty ? nil : systemPrompt,
-                        generateParameters: parameters)
+                        generateParameters: parameters,
+                        additionalContext: reasoningSetup.additionalContext)
 
                     let messages = try Self.chatMessages(for: request)
                     var output = ""
+                    var reasoningOutput = ""
+                    var reasoningRouter = AIStreamReasoningNormalizer(
+                        openingTag: reasoningConfiguration?.startDelimiter ?? "<think>",
+                        closingTag: reasoningConfiguration?.endDelimiter ?? "</think>",
+                        startsInsideReasoning: reasoningSetup.startsInsideReasoning)
                     for try await chunk in session.streamResponse(to: messages) {
-                        output += chunk
-                        continuation.yield(.delta(chunk))
+                        for event in reasoningRouter.ingest(content: chunk, nativeReasoning: nil) {
+                            switch event {
+                            case .reasoningDelta(let text):
+                                reasoningOutput += text
+                            case .delta(let text):
+                                output += text
+                            default:
+                                break
+                            }
+                            continuation.yield(event)
+                        }
+                    }
+                    for event in reasoningRouter.finish() {
+                        switch event {
+                        case .reasoningDelta(let text):
+                            reasoningOutput += text
+                        case .delta(let text):
+                            output += text
+                        default:
+                            break
+                        }
+                        continuation.yield(event)
                     }
                     continuation.yield(.completed(AIChatResponse(
                         content: output,
-                        reasoningContent: nil,
+                        reasoningContent: reasoningOutput.isEmpty ? nil : reasoningOutput,
                         toolCalls: [],
                         usage: nil,
                         model: request.model,
@@ -197,6 +227,44 @@ extension LocalMLXRuntime {
                 task.cancel()
             }
         }
+    }
+
+    /// 把请求级 `disableThinking` 映射到模型自己的 chat-template 开关。
+    ///
+    /// 可关闭模型（例如 Qwen 的 `enable_thinking`）直接关闭；强制思考模型不能因为短任务
+    /// 请求关闭思考就整次失败，此时继续生成并依赖下游 router 隔离 reasoning。这样翻译、
+    /// 评论等任务优先走快速路径，同时仍兼容 always-on reasoning 模型。
+    private nonisolated static func reasoningSetup(
+        configuration: ReasoningConfig?,
+        disableThinking: Bool
+    ) -> (additionalContext: [String: any Sendable]?, startsInsideReasoning: Bool) {
+        guard let configuration else { return (nil, false) }
+
+        if disableThinking {
+            do {
+                let context = try configuration.promptStrategy.additionalContext(
+                    forThinkingEnabled: false)
+                return (context, false)
+            } catch ReasoningError.cannotDisableReasoning {
+                // 强制思考不是请求失败条件；思考内容仍会被分流，业务层只收到最终答案。
+                return (nil, true)
+            } catch {
+                // ReasoningPromptStrategy 当前只有上述 typed error。保留安全兜底，避免未来
+                // 依赖新增错误时把模型原始思考误当正文；继续按 reasoning 模型处理。
+                return (nil, true)
+            }
+        }
+
+        let context = try? configuration.promptStrategy.additionalContext(
+            forThinkingEnabled: nil)
+        let startsInsideReasoning: Bool
+        switch configuration.promptStrategy {
+        case .templateFlag(_, let defaultOn):
+            startsInsideReasoning = defaultOn
+        case .alwaysOn, .none:
+            startsInsideReasoning = true
+        }
+        return (context, startsInsideReasoning)
     }
 
     /// AIChatRequest → Chat.Message 数组。本地 v1 只支持 user/assistant 历史；

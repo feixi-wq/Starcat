@@ -91,6 +91,21 @@ struct ReadmeTranslationServiceStaticTests {
         #expect(decoded[1].translatedText == "使用 `npm install`")
     }
 
+    @Test("makeAIRequest：翻译明确关闭思考并保持非流式 JSON")
+    func translationRequestDisablesThinking() throws {
+        let request = try ReadmeTranslationService.makeAIRequest(
+            batch: [ReadmeSourceSegment(id: "segment-1", text: "Hello")],
+            targetLanguage: .simplifiedChinese,
+            mode: .segmented,
+            prompt: AIDefaultPrompts.translation,
+            model: "local-test-model",
+            parameters: .translationDefault)
+
+        #expect(request.disableThinking)
+        #expect(!request.parameters.streamEnabled)
+        #expect(request.responseFormat == .jsonObject)
+    }
+
     @Test("decodeBatchResponse：缺失、重复或未知 id 时拒绝结果")
     func rejectsUnsafeSegmentAlignment() {
         let source = [

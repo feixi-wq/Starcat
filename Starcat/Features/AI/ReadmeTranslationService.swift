@@ -846,7 +846,7 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
         return candidate.isEmpty ? fallback : candidate
     }
 
-    private nonisolated static func makeAIRequest(
+    nonisolated static func makeAIRequest(
         batch: [ReadmeSourceSegment],
         targetLanguage: ReadmeTranslationLanguage,
         mode: ReadmeTranslationMode,
@@ -883,7 +883,10 @@ final class ReadmeTranslationService: ReadmeTranslationServiceProtocol {
             usageContext: AIUsageContext(
                 feature: .readmeTranslation,
                 phase: mode.usagePhase
-            )
+            ),
+            // 翻译追求低延迟且不需要思考链；可关闭模型直接关闭，强制思考模型由
+            // Local AI reasoning router 隔离思考内容后再进入严格 JSON 解码。
+            disableThinking: true
         )
     }
 
