@@ -75,6 +75,7 @@ struct ReadmeStarHistoryWebKitTests {
                 var calls = Array.from(document.querySelectorAll('.starcat-star-history-callout'));
                 var metrics = Array.from(document.querySelectorAll('.starcat-star-history-metric'));
                 var footer = document.querySelector('.starcat-star-history-footer');
+                var attribution = footer.querySelector('.starcat-star-history-attribution');
                 var bounds = chart.getBoundingClientRect();
                 return {
                     overflow: document.documentElement.scrollWidth > window.innerWidth,
@@ -83,6 +84,7 @@ struct ReadmeStarHistoryWebKitTests {
                     twoLines: metrics.every(function(node) { return node.querySelector('.starcat-star-history-metric-copy').children.length === 2; }),
                     footerText: footer.querySelector('.starcat-star-history-source').textContent.trim(),
                     footerLinks: footer.querySelectorAll('a').length,
+                    attributionHref: attribution ? attribution.getAttribute('href') : null,
                     brandColor: getComputedStyle(footer.querySelector('strong')).color,
                     dailyLabel: metrics[0].querySelector('.starcat-star-history-metric-copy > span').textContent,
                     color: getComputedStyle(document.querySelector('.starcat-star-history-line')).stroke,
@@ -103,7 +105,9 @@ struct ReadmeStarHistoryWebKitTests {
             #expect(info["oneRow"] as? Bool == true)
             #expect(info["twoLines"] as? Bool == true)
             #expect(info["dailyLabel"] as? String == String.l10n("readme.starHistory.dailyAverage"))
-            #expect(info["footerLinks"] as? Int == 0)
+            // 署名链接是页脚唯一链接（9eb9fcd8 起整段指向 history-api 开源仓库）。
+            #expect(info["footerLinks"] as? Int == 1)
+            #expect(info["attributionHref"] as? String == "https://github.com/starcat-app/starcat-history-api")
             #expect(info["brandColor"] as? String == (dark ? "rgb(255, 211, 77)" : "rgb(154, 107, 0)"))
             // 故意让服务生成时间晚于覆盖日，避免页脚误用 Data through 或最后观测日期。
             #expect(info["footerText"] as? String == String(format: String.l10n("readme.starHistory.updatedFormat"), "Sep 7, 2026"))
