@@ -3438,6 +3438,180 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地 AI 输入超过 8,192 tokens，请缩短上下文或改用 API 服务。" } }
       }
     },
+    "toolbar.status.brand.subtitle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Your GitHub knowledge base, always online" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "你的 GitHub 知识库，随时在线" } }
+      }
+    },
+    "toolbar.status.brand.running" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行中" } }
+      }
+    },
+    "toolbar.status.brand.issue" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Needs attention" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要关注" } }
+      }
+    },
+    "toolbar.status.brand.busy" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Working" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "工作中" } }
+      }
+    },
+    "toolbar.status.sync.upToDate" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Up to date" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已是最新" } }
+      }
+    },
+    "toolbar.status.sync.syncingShort" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Syncing…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "同步中…" } }
+      }
+    },
+    "toolbar.status.github.apiFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "API Requests %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API Requests %@" } }
+      }
+    },
+    "toolbar.status.tasks.countFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%d tasks" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d 项任务" } }
+      }
+    },
+    "toolbar.status.tasks.runningCaption" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行中…" } }
+      }
+    },
+    "toolbar.status.tasks.idleCaption" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Idle" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "空闲" } }
+      }
+    },
+    "toolbar.status.tasks.emptyShort" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No tasks" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无任务" } }
+      }
+    },
+    "toolbar.status.footer.tagline" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Explore · Organize · Understand · Rediscover" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "探索 · 整理 · 理解 · 再发现" } }
+      }
+    },
+    "toolbar.status.footer.versionFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Starcat v%@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Starcat v%@" } }
+      }
+    },
+    "toolbar.status.undoStar.empty" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No cleanup yet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚未清理" } }
+      }
+    },
+    "toolbar.status.more.about" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "About Starcat" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "关于 Starcat" } }
+      }
+    },
+    "toolbar.status.settings" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Settings" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "设置" } }
+      }
+    },
+    "toolbar.status.localai.running" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已启动" } }
+      }
+    },
+    "toolbar.status.localai.stopped" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Idle" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未启动" } }
+      }
+    },
+    "toolbar.status.localai.openSettings" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Manage in Settings" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在设置中管理" } }
+      }
+    },
+    "toolbar.status.aiUsage.percentFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%d%%" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d%%" } }
+      }
+    },
+    "toolbar.status.github.cardTitle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "GitHub" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "GitHub" } }
+      }
+    },
+    "toolbar.status.services.availableShortFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%d/%d services available" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d/%d 个服务可用" } }
+      }
+    },
+    "toolbar.status.github.cardState.operational" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Operational" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正常" } }
+      }
+    },
+    "toolbar.status.github.cardState.degraded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Degraded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "性能下降" } }
+      }
+    },
+    "toolbar.status.github.cardState.partialOutage" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Partial outage" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "部分中断" } }
+      }
+    },
+    "toolbar.status.github.cardState.majorOutage" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Major outage" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "严重中断" } }
+      }
+    },
+    "toolbar.status.github.cardState.maintenance" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Maintenance" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "维护中" } }
+      }
+    },
+    "toolbar.status.github.cardState.unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unknown" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未知" } }
+      }
+    },
+    "toolbar.status.services.cardCountFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%d/%d available" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d/%d 可用" } }
+      }
+    },
     "settings.localai.model.badge.recommended" : {
       "extractionState" : "manual",
       "localizations" : {
