@@ -33,7 +33,7 @@
 | 分支 | 位置 | 用途 | 当前状态 | 下一步 |
 |---|---|---|---|---|
 | `dev` | 本地 + `origin/dev` | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；1.6.1 发布基线与 `main` 已同步（`abcaf63f`），Direct、官网、appcast 与 Homebrew 已于 2026-09-09 发布。 | 继续承载 1.6.1 后续维护与新功能开发；App Store 版本发布由 dong4j 完成。 |
-| `feature/settings-ui-unify` | 本地；worktree `../Starcat-settings-ui-unify` | 设置窗口（`SettingsView` 全部 Tab + MCP / RAG 设置页 + 由设置页打开的 sheet / popover）UI 样式统一：icon-only 按钮口径收敛到 15pt glyph / 28×28 命中区（`SettingsIconMetrics` 单一来源）、裸 icon Button 换共享组件、`controlSize` 归一、硬编码字号回动态文字样式、删除 `SettingsSectionHeader.compact` 死分支；并修正设置分类调整后的过期路径提示（39 key）。规范依据 `docs/5-规范/UI-设置页规范.md`。 | `开发中`；2026-09-13 基于 `dev`（`d4c5dac9`）创建。 | 改完经 dong4j 目检验收后合并回 `dev`，随后按规范清理 worktree 与分支。 |
+| `feature/settings-ui-unify` | 本地；worktree `../Starcat-settings-ui-unify` | 设置窗口（`SettingsView` 全部 Tab + MCP / RAG 设置页 + 由设置页打开的 sheet / popover）UI 样式统一：icon-only 按钮口径收敛到 15pt glyph / 28×28 命中区（`SettingsIconMetrics` 单一来源）、裸 icon Button 换共享组件、`controlSize` 归一、硬编码字号回动态文字样式、删除 `SettingsSectionHeader.compact` 死分支；并修正设置分类调整后的过期路径提示（39 key）。规范依据 `docs/5-规范/UI-设置页规范.md`。 | `已合并`；2026-09-14 经 dong4j 确认以 merge commit（`a7a4c5c7`）合入 `dev`，合并前双 scheme 构建与 catalog 军规三项校验通过，合并后 BRANCH.md 冲突已手工解决。 | 如需清理 worktree `../Starcat-settings-ui-unify` 与本地分支，等待 dong4j 单独授权。 |
 | `codex/performance-optimization` | 本地；无独立 worktree | Starcat macOS App 的 UI、列表分页、数据加载与缓存性能专项优化。 | `已合并`；多轮优化与交互修复已于 2026-09-06 合入 `dev`，独有提交为 0，原 worktree 已安全删除。 | 暂时保留本地分支；如需删除分支，等待 dong4j 单独授权。 |
 | `main` | 本地 + `origin/main`；仓库根目录 worktree | 远端默认稳定主线和发布基线。 | `长期保留`；1.6.1 已于 2026-09-09 推送 `main` 与 `v1.6.1`，Direct 公证、官网、appcast 和 Homebrew 已完成，App Store archive `1.6.1 (3171)` 已生成待上传。 | 保持 1.6.1 发布基线；App Store 版本发布由 dong4j 完成，后续版本继续从已验收的 `dev` 快进。 |
 
