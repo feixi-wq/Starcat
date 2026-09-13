@@ -60,7 +60,7 @@ struct RAGBackendSettingsView: View {
                 Divider()
                     .gridCellColumns(2)
                 GridRow {
-                    Text(verbatim: "")
+                    Text("settings.services.apiKey")
                         .accessibilityHidden(true)
                     SecureField("settings.rag.backends.apiKey", text: $meilisearchAPIKey)
                         .textFieldStyle(.roundedBorder)
@@ -114,7 +114,7 @@ struct RAGBackendSettingsView: View {
                 Divider()
                     .gridCellColumns(2)
                 GridRow {
-                    Text(verbatim: "")
+                    Text("settings.services.apiKey")
                         .accessibilityHidden(true)
                     SecureField("settings.rag.backends.apiKey", text: $qdrantAPIKey)
                         .textFieldStyle(.roundedBorder)
