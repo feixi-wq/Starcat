@@ -468,6 +468,12 @@ enum AppEndpoints {
             static func repoSubscription(owner: String, repo: String) -> String {
                 "/repos/\(owner)/\(repo)/subscription"
             }
+            /// `POST /repos/{owner}/{repo}/merge-upstream` —— 把 fork 的指定分支快进到上游。
+            ///
+            /// 对应 GitHub 网页 Sync fork。409 = 有冲突，不能在 API 里丢弃用户提交。
+            static func repoMergeUpstream(owner: String, repo: String) -> String {
+                "/repos/\(owner)/\(repo)/merge-upstream"
+            }
 
             // —— Events（Activity 公告与关注 PR-2，2026-06-16）——
 
