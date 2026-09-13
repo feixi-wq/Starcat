@@ -517,10 +517,11 @@ struct RAGWorkspaceSettingsView: View {
                         SyncIconButton(
                             isRefreshing: isInspectingCLIRuntimes,
                             disabled: isInspectingCLIRuntimes,
-                            // 设置页 icon-only 标准口径（SyncIconButton 默认是全 App
-                            // 18pt 基准，设置域内显式覆盖为 15pt / 28×28）。
-                            font: SettingsIconMetrics.standardGlyph,
-                            frameSize: SettingsIconMetrics.actionFrameSize,
+                            // 卡片分组 header 行比标准 Form 行紧凑：按本页 interfaceScale
+                            // 收到 13pt glyph / 24×24，与分组标题图标(cpu 13pt)同层级，
+                            // 不再沿用 15pt / 28×28 的标准表单口径。
+                            font: interfaceScale.font(size: 13, weight: .medium),
+                            frameSize: interfaceScale.scaled(24),
                             tooltip: String.l10n("rag.workspace.inference.refresh.help")
                         ) {
                             Task { await inspectCLIRuntimes() }
@@ -1245,10 +1246,13 @@ struct RAGWorkspaceSettingsView: View {
         let isLimited = compatibility.state == .limited
         return HStack(spacing: interfaceScale.scaled(5)) {
             Image(systemName: isLimited ? "exclamationmark.triangle.fill" : "checkmark.circle")
-                .font(.system(size: 10, weight: .semibold))
+                // 同行 EqualWidthSegmentedControl 是 13pt medium：badge 图标 10pt 时
+                // 视觉明显偏小，对齐到 12pt（caption 级图标上限）。
+                .font(interfaceScale.font(size: 12, weight: .semibold))
                 .accessibilityHidden(true)
             Text(promptCompatibilityStatusKey(compatibility.state))
-                .font(.caption.weight(.medium))
+                // caption(10pt) 在 tab 行里偏小，提到 callout 与卡片标题同级。
+                .font(.callout.weight(.medium))
                 .lineLimit(1)
         }
         .foregroundStyle(isLimited ? Color.orange : Color.secondary)

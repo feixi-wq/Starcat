@@ -41,7 +41,9 @@ struct RAGInferenceBackendCard: View {
                     statusBadge
 
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(interfaceScale.font(size: 17, weight: .semibold))
+                        // 17pt semibold 在卡片行里比标题和状态 pill 都重，收到
+                        // 15pt medium 与设置页 icon-only glyph 同级。
+                        .font(interfaceScale.font(size: 15, weight: .medium))
                         .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                         .accessibilityHidden(true)
                 }
@@ -237,7 +239,8 @@ private struct RAGBackendStatusBadge: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(tint)
             .padding(.horizontal, interfaceScale.scaled(8))
-            .padding(.vertical, interfaceScale.scaled(4))
+            // 垂直内边距 4→3：卡片里和 15pt 勾选图标并排时胶囊更轻，不抢选中态。
+            .padding(.vertical, interfaceScale.scaled(3))
             .background(tint.opacity(0.12), in: Capsule())
     }
 }
