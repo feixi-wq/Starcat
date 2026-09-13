@@ -888,11 +888,13 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 if (!host) { return; }
                 if (host.starcatHistoryCleanup) { host.starcatHistoryCleanup(); }
                 // README 已内嵌 history-api 的星标历史卡片时跳过注入，避免同一页面
-                // 出现两张相同卡片。识别两类标记：官方 <picture> 模板的
-                // data-starcat-star-history 属性，以及任意域名（含自托管）embed
-                // 端点的图片；在 DOM 层查询，代码块里展示的示例文本不会被误判。
+                // 出现两张相同卡片。GitHub 渲染会剥掉 data-starcat-star-history
+                // 自定义属性，并把图片 URL 换成 camo 代理地址、原始 URL 保留在
+                // data-canonical-src；因此按四种特征识别：官方模板属性、
+                // canonical 原始 URL、以及未代理场景的 img/source 直链。
                 var embedded = document.querySelector(
                     '[data-starcat-star-history],' +
+                    '[data-canonical-src*="/embed/v1/repos/"][data-canonical-src*="star-history.svg"],' +
                     'img[src*="/embed/v1/repos/"][src*="star-history.svg"],' +
                     'source[srcset*="/embed/v1/repos/"][srcset*="star-history.svg"]'
                 );
