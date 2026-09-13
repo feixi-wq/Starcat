@@ -48,6 +48,7 @@ actor LocalMLXRuntime {
     private var monitor: Task<Void, Never>?
     private var notice: String?
     private var releaseAfterOperation: Set<LocalAIModelType> = []
+    private var loadStartedAt: [LocalAIModelType: TimeInterval] = [:]
     private let budget = LocalAIMemoryPolicy.budget(
         physicalMemory: ProcessInfo.processInfo.physicalMemory)
 
@@ -61,7 +62,7 @@ actor LocalMLXRuntime {
     func withLLM<T: Sendable>(
         directory: URL, operation: @escaping @Sendable (ModelContainer) async throws -> T
     ) async throws -> T {
-        try await perform(type: .llm) {
+        try await perform(type: .llm, directory: directory) {
             let container = try await self.llmContainer(directory: directory)
             try await self.markRunning(.llm)
             return try await operation(container)
@@ -71,7 +72,7 @@ actor LocalMLXRuntime {
     func withEmbedder<T: Sendable>(
         directory: URL, operation: @escaping @Sendable (EmbedderModelContainer) async throws -> T
     ) async throws -> T {
-        try await perform(type: .embedding) {
+        try await perform(type: .embedding, directory: directory) {
             let container = try await self.embedderContainer(directory: directory)
             try await self.markRunning(.embedding)
             return try await operation(container)
@@ -81,7 +82,7 @@ actor LocalMLXRuntime {
     func withReranker<T: Sendable>(
         directory: URL, operation: @escaping @Sendable (RerankerContainer) async throws -> T
     ) async throws -> T {
-        try await perform(type: .reranker) {
+        try await perform(type: .reranker, directory: directory) {
             let container = try await self.rerankerContainer(directory: directory)
             try await self.markRunning(.reranker)
             return try await operation(container)
@@ -90,7 +91,7 @@ actor LocalMLXRuntime {
 
     /// 下载后检查与面板手动加载共用同一队列，不能绕过加载防重。
     func preload(entry: LocalAIModelCatalogEntry, directory: URL) async throws {
-        try await perform(type: entry.type) {
+        try await perform(type: entry.type, directory: directory, feature: "model.load") {
             switch entry.type {
             case .llm: _ = try await self.llmContainer(directory: directory)
             case .embedding: _ = try await self.embedderContainer(directory: directory)
@@ -103,16 +104,34 @@ actor LocalMLXRuntime {
         // 工厂加载不一定及时响应取消，卸载发生后不能再启动一次昂贵的 prefill。
         try Task.checkCancellation()
         residents[type]?.phase = .running
+        LocalAILog.record("inference.started", "Model is ready; inference started.", fields: memoryLogFields())
     }
 
     private func perform<T: Sendable>(
-        type: LocalAIModelType,
+        type: LocalAIModelType, directory: URL, feature: String = "inference",
         operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let context = LocalAILogContext.current ?? .model(directory: directory, feature: feature)
+        return try await LocalAILogContext.$current.withValue(context) {
+            do { return try await performRecorded(type: type, operation: operation) }
+            catch {
+                LocalAILog.record("runtime.failed", "Local runtime operation ended without a result.",
+                                  level: error is CancellationError ? .info : .error, fields: LocalAILogEvent.errorFields(error))
+                throw error
+            }
+        }
+    }
+
+    /// 日志不新增 await：保持原有加载/准入/取消的原子边界，不改变模型生命周期。
+    private func performRecorded<T: Sendable>(
+        type: LocalAIModelType, operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         try ensureRuntimeAvailable()
         guard !unloading.contains(type) else { throw CancellationError() }
         let generation = generations[type, default: 0]
         queuedCount += 1
+        let queuedAt = ProcessInfo.processInfo.systemUptime
+        LocalAILog.record("queue.entered", "Waiting for local inference admission.", fields: ["queued": String(queuedCount)])
         do { try await gate.acquire() } catch {
             queuedCount -= 1
             throw error
@@ -125,8 +144,26 @@ actor LocalMLXRuntime {
             throw CancellationError()
         }
         configureMemoryIfNeeded()
+        LocalAILog.record("queue.admitted", "Local inference admission acquired.", fields: [
+            "waitSeconds": LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - queuedAt)
+        ])
         notice = nil
         activeType = type
+        // 只为已取得准入权的请求开一个轻量心跳；排队请求不各自创建监控任务。
+        // 心跳不持有模型容器，退出时取消，不能延长权重驻留时间。
+        let admittedAt = ProcessInfo.processInfo.systemUptime
+        let progress = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let snapshot = await self?.snapshot(), !Task.isCancelled else { return }
+                LocalAILog.record("runtime.progress", "Local model operation is active.", fields: [
+                    "phase": String(describing: snapshot.models[type]?.phase ?? .notLoaded),
+                    "elapsedSeconds": LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - admittedAt),
+                    "mlxActiveBytes": String(snapshot.activeBytes), "mlxCacheBytes": String(snapshot.cacheBytes)
+                ])
+            }
+        }
+        defer { progress.cancel() }
         let task = Task { try await operation() }
         cancelActive = { task.cancel() }
         let result = await withTaskCancellationHandler {
@@ -139,12 +176,17 @@ actor LocalMLXRuntime {
         if case .failure(let error) = result, residents[type]?.phase == .loading {
             residents[type]?.phase = .failed
             residents[type]?.error = error.localizedDescription
+            LocalAILog.record("model.load.failed", "Model loading ended without a usable container.",
+                              level: error is CancellationError ? .info : .error,
+                              fields: LocalAILogEvent.errorFields(error))
+            loadStartedAt.removeValue(forKey: type)
         }
         if residents[type]?.phase == .running { residents[type]?.phase = .ready }
         residents[type]?.lastUsed = Date()
-        if releaseAfterOperation.remove(type) != nil { clearContainer(type) }
+        if releaseAfterOperation.remove(type) != nil { clearContainer(type, reason: "configuration_changed") }
         // 上游流结束会等待 GPU 完成；在该边界归还可回收缓冲，不能只释放 Swift 引用。
         Memory.clearCache()
+        LocalAILog.record("runtime.released", "Inference worker exited; reclaimable cache cleared.", fields: memoryLogFields())
         await gate.release()
         try Task.checkCancellation()
         // 重复保护也会取消 producer 来停止 GPU 工作，但必须保留它的真实失败原因。
@@ -158,12 +200,16 @@ actor LocalMLXRuntime {
             initialized = true
             Memory.cacheLimit = LocalAIMemoryPolicy.cacheBytes
             Memory.memoryLimit = budget
+            LocalAILog.record("runtime.configured", "MLX memory limits configured.", fields: memoryLogFields())
         }
         guard monitor == nil else { return }
         monitor = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                await self?.checkMemoryAndIdleModels()
+            // monitor 比请求活得更久，不能把后续闲置卸载归到首次请求名下。
+            await LocalAILogContext.$current.withValue(nil) {
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    await self?.checkMemoryAndIdleModels()
+                }
             }
         }
     }
@@ -184,6 +230,10 @@ actor LocalMLXRuntime {
         clearContainer(type)
         Memory.clearCache()
         residents[type] = .init(directory: directory, phase: .loading)
+        loadStartedAt[type] = ProcessInfo.processInfo.systemUptime
+        LocalAILog.record("model.load.started", "Loading model weights and tokenizer.", fields: [
+            "modelDirectory": directory.lastPathComponent, "budgetBytes": String(budget)
+        ])
         if let entry = LocalAIModelCatalog.entries.first(where: {
             directory.lastPathComponent.hasPrefix($0.id + "@")
         }) {
@@ -192,7 +242,7 @@ actor LocalMLXRuntime {
             }
             // 只在准入权内驱逐闲置模型，避免三类权重常驻超过整机预算。
             if Memory.activeMemory + Int(entry.memoryRecommendation) > budget {
-                for other in LocalAIModelType.allCases where other != type { clearContainer(other) }
+                for other in LocalAIModelType.allCases where other != type { clearContainer(other, reason: "memory_budget") }
                 Memory.clearCache()
             }
         }
@@ -202,6 +252,12 @@ actor LocalMLXRuntime {
     private func didLoad(_ type: LocalAIModelType, previousBytes: Int) {
         residents[type]?.loadedBytes = max(0, Memory.activeMemory - previousBytes)
         residents[type]?.phase = .ready
+        var fields = memoryLogFields()
+        fields["loadedBytes"] = String(residents[type]?.loadedBytes ?? 0)
+        if let started = loadStartedAt.removeValue(forKey: type) {
+            fields["durationSeconds"] = LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - started)
+        }
+        LocalAILog.record("model.load.completed", "Model loaded successfully.", fields: fields)
     }
 
     // MARK: - 容器管理
@@ -209,6 +265,7 @@ actor LocalMLXRuntime {
     /// LLM 容器（懒加载 + 目录变化重载）。
     private func llmContainer(directory: URL) async throws -> ModelContainer {
         if let container = llmContainer, llmDirectoryID == directory.path {
+            LocalAILog.record("model.reused", "Reusing resident generation model.")
             return container
         }
         let before = try beginLoading(.llm, directory: directory)
@@ -225,6 +282,7 @@ actor LocalMLXRuntime {
     /// Embedding 容器。
     private func embedderContainer(directory: URL) async throws -> EmbedderModelContainer {
         if let container = embedderContainer, embedderDirectoryID == directory.path {
+            LocalAILog.record("model.reused", "Reusing resident embedding model.")
             return container
         }
         let before = try beginLoading(.embedding, directory: directory)
@@ -241,6 +299,7 @@ actor LocalMLXRuntime {
     /// Reranker 容器。`RerankerModelFactory` 按 config.json 自动选择 encoder / qwen3 / jina 实现。
     private func rerankerContainer(directory: URL) async throws -> RerankerContainer {
         if let container = rerankerContainer, rerankerDirectoryID == directory.path {
+            LocalAILog.record("model.reused", "Reusing resident reranker model.")
             return container
         }
         let before = try beginLoading(.reranker, directory: directory)
@@ -256,16 +315,23 @@ actor LocalMLXRuntime {
     }
 
     /// 卸载全部容器（内存压力 / 用户关闭 Local AI 时调用）。
-    func unloadAll() async {
-        await unload(types: Set(LocalAIModelType.allCases))
+    func unloadAll(reason: String = "manual") async {
+        await unload(types: Set(LocalAIModelType.allCases), reason: reason)
     }
 
     /// 对正在工作的目标先取消，再等工作实际退出。其它类型不会被取消。
-    func unload(types: Set<LocalAIModelType>) async {
+    func unload(types: Set<LocalAIModelType>, reason: String = "manual") async {
         let targets = types.subtracting(unloading)
         guard !targets.isEmpty else { return }
         unloading.formUnion(targets)
+        var contexts: [LocalAIModelType: LocalAILogContext] = [:]
         for type in targets {
+            if let model = residents[type], model.phase != .unloaded {
+                let context = LocalAILogContext.model(directory: model.directory, feature: "model.unload")
+                contexts[type] = context
+                LocalAILog.record("model.unload.requested", "Unload requested; waiting for active work to exit.",
+                                  context: context, fields: ["reason": reason])
+            }
             generations[type, default: 0] += 1
             residents[type]?.phase = .unloading
         }
@@ -274,13 +340,16 @@ actor LocalMLXRuntime {
             unloading.subtract(targets)
             return
         }
-        for type in targets { clearContainer(type) }
+        for type in targets { clearContainer(type, reason: reason, context: contexts[type]) }
         if initialized { Memory.clearCache() }
         unloading.subtract(targets)
         await gate.release()
     }
 
-    private func clearContainer(_ type: LocalAIModelType) {
+    private func clearContainer(
+        _ type: LocalAIModelType, reason: String = "model_replaced", context: LocalAILogContext? = nil
+    ) {
+        let previous = residents[type]
         switch type {
         case .llm:
             llmContainer = nil
@@ -294,10 +363,28 @@ actor LocalMLXRuntime {
         }
         residents[type]?.phase = .unloaded
         residents[type]?.loadedBytes = 0
+        loadStartedAt.removeValue(forKey: type)
+        if let previous, previous.phase != .unloaded {
+            var fields = memoryLogFields()
+            fields["reason"] = reason
+            LocalAILog.record("model.unloaded", "Model container released.",
+                              context: context ?? .model(directory: previous.directory, feature: "model.unload"), fields: fields)
+        }
     }
 
     func clearMemoryCache() {
         if initialized { Memory.clearCache() }
+        LocalAILog.record("memory.cache.cleared", "Reclaimable MLX cache cleared manually.", fields: memoryLogFields())
+    }
+
+    /// MLX 统计不是整个进程内存；尚未初始化时不能为了日志触发 Metal 初始化。
+    private func memoryLogFields() -> [String: String] {
+        var result = ["budgetBytes": String(budget)]
+        if initialized {
+            result["mlxActiveBytes"] = String(Memory.activeMemory)
+            result["mlxCacheBytes"] = String(Memory.cacheMemory)
+        }
+        return result
     }
 
     /// 配置切到远端时仅回收无人使用的模型；在途本地请求完成后再释放，不中断其它功能。
@@ -312,8 +399,10 @@ actor LocalMLXRuntime {
             }
             if activeType == type {
                 releaseAfterOperation.insert(type)
+                LocalAILog.record("model.unload.deferred", "Configuration changed; unload will follow active work.",
+                                  context: .model(directory: model.directory, feature: "model.unload"))
             } else {
-                await unload(types: [type])
+                await unload(types: [type], reason: "configuration_changed")
             }
         }
     }
@@ -331,7 +420,7 @@ actor LocalMLXRuntime {
                     ? type : nil
             })
         // 后台回收只在整条 GPU 队列空闲时执行，不能让旧模型的回收挡住新的业务请求。
-        if !idle.isEmpty, activeType == nil, queuedCount == 0 { await unload(types: idle) }
+        if !idle.isEmpty, activeType == nil, queuedCount == 0 { await unload(types: idle, reason: "idle_timeout") }
         if activeType == nil, queuedCount == 0,
             residents.values.allSatisfy({ $0.phase == .unloaded || $0.phase == .failed })
         {
@@ -341,7 +430,9 @@ actor LocalMLXRuntime {
     }
 
     private func handleMemoryPressure() async {
-        await unloadAll()
+        LocalAILog.record("memory.pressure", "Memory pressure detected; unloading local models.", level: .warning,
+                          context: nil, fields: memoryLogFields())
+        await unloadAll(reason: "memory_pressure")
         notice = String.l10n("toolbar.localai.memoryPressure")
     }
 
@@ -392,6 +483,7 @@ extension LocalMLXRuntime {
         if !request.tools.isEmpty {
             throw LocalAIError.toolsUnsupported
         }
+        LocalAILog.record("input.preparing", "Preparing chat template and validating the input token budget.")
         let reasoningConfiguration = await container.configuration.reasoningConfig
         let reasoningSetup = Self.reasoningSetup(
             configuration: reasoningConfiguration,
@@ -443,15 +535,21 @@ extension LocalMLXRuntime {
         guard promptTokenCount <= LocalAIMemoryPolicy.inputTokens else {
             throw LocalAIError.contextTooLong
         }
+        LocalAILog.record("input.prepared", "Input token budget validated.", fields: ["inputTokens": String(promptTokenCount)])
         var output = ""
         var reasoningOutput = ""
         var completion: GenerateCompletionInfo?
         var repetitionGuard = LocalAIRepetitionGuard()
+        let generationStartedAt = ProcessInfo.processInfo.systemUptime
+        var sawFirstOutput = false
+        var sawReasoning = false
+        var sawAnswer = false
         var reasoningRouter = AIStreamReasoningNormalizer(
             openingTag: reasoningConfiguration?.startDelimiter ?? "<think>",
             closingTag: reasoningConfiguration?.endDelimiter ?? "</think>",
             startsInsideReasoning: reasoningSetup.startsInsideReasoning)
         var iterator = session.streamDetails(to: messages).makeAsyncIterator()
+        LocalAILog.record("generation.waiting", "Waiting for the first generated output.")
         do {
             while let generation = try await iterator.next() {
                 try Task.checkCancellation()
@@ -460,12 +558,26 @@ extension LocalMLXRuntime {
                     continue
                 }
                 guard let chunk = generation.chunk else { throw LocalAIError.toolsUnsupported }
+                if !sawFirstOutput, !chunk.isEmpty {
+                    sawFirstOutput = true
+                    LocalAILog.record("generation.first-output", "First generated output received.", fields: [
+                        "latencySeconds": LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - generationStartedAt)
+                    ])
+                }
                 guard !repetitionGuard.ingest(chunk) else { throw LocalAIError.repetitiveOutput }
                 for event in reasoningRouter.ingest(content: chunk, nativeReasoning: nil) {
                     switch event {
                     case .reasoningDelta(let text):
+                        if !sawReasoning {
+                            sawReasoning = true
+                            LocalAILog.record("generation.reasoning", "Reasoning phase started; reasoning text is not logged.")
+                        }
                         reasoningOutput += text
                     case .delta(let text):
+                        if !sawAnswer {
+                            sawAnswer = true
+                            LocalAILog.record("generation.answer", "Final answer output started; answer text is not logged.")
+                        }
                         output += text
                     default:
                         break
@@ -479,6 +591,7 @@ extension LocalMLXRuntime {
             // 已通知底层停止，再等待 GPU 锁归还。保留原始错误，不能把重复误报为用户取消。
             withUnsafeCurrentTask { $0?.cancel() }
             _ = try? await iterator.next()
+            LocalAILog.record("generation.cleanup", "Waiting for the cancelled inference worker to exit.")
             await session.synchronize()
             await session.clear()
             throw error
@@ -511,6 +624,11 @@ extension LocalMLXRuntime {
             cachedTokens: 0,
             reasoningTokens: 0,
             totalTokens: completion.promptTokenCount + completion.generationTokenCount)
+        LocalAILog.record("generation.completed", "MLX generation completed and session resources were released.", fields: [
+            "finishReason": finishReason, "inputTokens": String(completion.promptTokenCount),
+            "outputTokens": String(completion.generationTokenCount),
+            "durationSeconds": LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - generationStartedAt)
+        ])
         onEvent(.usage(usage))
         return AIChatResponse(
             content: output,

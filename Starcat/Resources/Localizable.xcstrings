@@ -3312,6 +3312,156 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部卸载" } }
       }
     },
+    "localai.logs.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local AI Logs" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地 AI 日志" } }
+      }
+    },
+    "localai.logs.open" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "View Runtime Logs…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "查看运行日志…" } }
+      }
+    },
+    "localai.logs.contents" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local AI runtime log output" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地 AI 运行日志正文" } }
+      }
+    },
+    "localai.logs.empty" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No matching logs. New local AI activity will appear here." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无匹配日志。本地 AI 运行后会在这里实时显示。" } }
+      }
+    },
+    "localai.logs.model" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "localai.logs.allModels" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "All Logged Models" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部已记录模型" } }
+      }
+    },
+    "localai.logs.level" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Level" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "级别" } }
+      }
+    },
+    "localai.logs.allLevels" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "All" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部" } }
+      }
+    },
+    "localai.logs.search" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Search logs or request ID" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "搜索日志或请求编号" } }
+      }
+    },
+    "localai.logs.follow" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Follow Tail" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动跟随" } }
+      }
+    },
+    "localai.logs.pause" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pause" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂停显示" } }
+      }
+    },
+    "localai.logs.resume" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Resume" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "继续显示" } }
+      }
+    },
+    "localai.logs.paused" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Display paused" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示已暂停" } }
+      }
+    },
+    "localai.logs.live" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Live" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "实时" } }
+      }
+    },
+    "localai.logs.entries" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "entries" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "条日志" } }
+      }
+    },
+    "localai.logs.newEntries" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New Logs ↓" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "有新日志 ↓" } }
+      }
+    },
+    "localai.logs.copy" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Copy Visible Logs" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "复制当前显示的日志" } }
+      }
+    },
+    "localai.logs.export" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Export All Retained Logs" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "导出全部保留日志" } }
+      }
+    },
+    "localai.logs.clearView" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear View Only" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅清空当前显示" } }
+      }
+    },
+    "localai.logs.clearAll" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear All Logs…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清空所有日志…" } }
+      }
+    },
+    "localai.logs.clearAll.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear all local AI logs?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清空所有本地 AI 日志？" } }
+      }
+    },
+    "localai.logs.clearAll.message" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Permanently delete all local AI log files and window records. Models, active tasks, and exported copies are not affected. New activity will continue to be logged. System Console logs follow macOS retention and cannot be cleared here." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "永久删除全部本地 AI 日志文件与窗口记录，不影响模型、正在运行的任务和已导出的副本。之后的新活动会继续记录。系统 Console 日志由 macOS 管理，无法在这里清除。" } }
+      }
+    },
+    "localai.logs.clearFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not clear all logs. Some log files may remain." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未能清空全部日志，部分日志文件可能仍然保留。" } }
+      }
+    },
+    "localai.logs.exportFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not export logs. Check the selected location and try again." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "日志导出失败，请检查选择的位置后重试。" } }
+      }
+    },
+    "localai.logs.retention" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Up to 2,000 entries / 2 MB · No input or output text" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最多 2,000 条 / 2 MB · 不含输入输出正文" } }
+      }
+    },
     "toolbar.localai.active" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Active" } },

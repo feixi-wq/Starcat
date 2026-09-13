@@ -11,6 +11,7 @@ import SwiftUI
 /// 模型状态与释放入口保持在同一分区，让用户区分「卸载内存」与「删除下载文件」。
 struct LocalAIStatusSection: View {
     var onOpenSettings: () -> Void = {}
+    var onOpenLogs: (LocalAIModelCatalogEntry) -> Void = { _ in }
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.locale) private var locale
@@ -216,6 +217,8 @@ struct LocalAIStatusSection: View {
             .accessibilityLabel("\(String.l10n(actionKey)) \(model.displayName)")
 
             Menu {
+                Button("localai.logs.open") { onOpenLogs(model) }
+                Divider()
                 Button("toolbar.localai.clearCache") {
                     run("cache") { await LocalMLXRuntime.shared.clearMemoryCache() }
                 }

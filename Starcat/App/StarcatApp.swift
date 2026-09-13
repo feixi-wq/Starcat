@@ -197,6 +197,16 @@ struct StarcatApp: App {
         )
         .defaultLaunchBehavior(.suppressed)
 
+        Window("localai.logs.title", id: LocalAILogWindowSelection.sceneID) {
+            LocalAILogWindowView()
+                .environment(dependencies?.settings ?? AppSettings.shared)
+                .environment(\.starcatInterfaceScale, dependencies?.settings.interfaceScale ?? .standard)
+                .appLocaleEnvironment()
+        }
+        .defaultSize(width: 960, height: 620)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
         Window("agent.workspace.window.title", id: AgentWorkspaceWindowController.sceneID) {
             if let dependencies {
                 AgentWorkspaceSceneRoot(dependencies: dependencies)

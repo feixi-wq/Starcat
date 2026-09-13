@@ -49,12 +49,34 @@ struct LocalMLXRAGReranker: RAGReranking {
     func rerank(
         query: String, candidates: [RAGChildHit]
     ) async throws -> [(hit: RAGChildHit, score: Double)] {
+        let directory = LocalAIModelStorage.installedDirectoryURL(entryID: model.id)
+        let context = LocalAILogContext(modelName: model.displayName, feature: "rerank", directory: directory)
+        return try await LocalAILogContext.$current.withValue(context) {
+            let start = ProcessInfo.processInfo.systemUptime
+            LocalAILog.record("request.received", "Rerank request received.", fields: ["candidates": String(candidates.count)])
+            do {
+                let result = try await performRerank(query: query, candidates: candidates, directory: directory)
+                LocalAILog.record("request.completed", "Rerank request completed.", fields: [
+                    "results": String(result.count),
+                    "durationSeconds": LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - start)
+                ])
+                return result
+            } catch {
+                LocalAILog.record("request.failed", "Rerank request ended without a result.",
+                                  level: error is CancellationError ? .info : .error, fields: LocalAILogEvent.errorFields(error))
+                throw error
+            }
+        }
+    }
+
+    /// 只记录候选数量和耗时，query/候选正文不进入运行日志。
+    private func performRerank(
+        query: String, candidates: [RAGChildHit], directory: URL?
+    ) async throws -> [(hit: RAGChildHit, score: Double)] {
         let hits = Array(candidates.prefix(configuration.candidateLimit))
         guard !hits.isEmpty else { return [] }
 
-        guard let directory = LocalAIModelStorage.installedDirectoryURL(
-            entryID: model.id)
-        else {
+        guard let directory else {
             throw LocalAIError.modelNotInstalled(model.displayName)
         }
 

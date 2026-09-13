@@ -17,6 +17,7 @@ import SwiftUI
 
 /// toolbar 状态按钮：点击后展示应用状态 popover。
 struct AppStatusToolbarButton: View {
+    @Environment(\.openWindow) private var openWindow
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AppSettings.self) private var settings
     @Environment(SyncManager.self) private var syncManager
@@ -95,7 +96,12 @@ struct AppStatusToolbarButton: View {
                     onOpenGeneralSettings: { openSettings(tab: "general") },
                     onOpenAbout: { AboutWindowController.show() },
                     onOpenStorage: { openSettings(tab: "storage") },
-                    onOpenLocalAI: { openSettings(tab: "ai") }
+                    onOpenLocalAI: { openSettings(tab: "ai") },
+                    onOpenLocalAILogs: { model in
+                        LocalAILogWindowSelection.shared.select(model.id)
+                        isPresented = false
+                        openWindow(id: LocalAILogWindowSelection.sceneID)
+                    }
                 )
                 .frame(width: AppStatusPanelMetrics.width)
                 .padding(14)
@@ -255,6 +261,7 @@ private struct AppStatusPanel: View {
     let onOpenAbout: () -> Void
     let onOpenStorage: () -> Void
     let onOpenLocalAI: () -> Void
+    let onOpenLocalAILogs: (LocalAIModelCatalogEntry) -> Void
 
     @State private var isTaskCancelHovered = false
     @State private var aiUsageSummary = AIUsageSummary.empty
@@ -267,7 +274,7 @@ private struct AppStatusPanel: View {
             header
             overviewGrid
             aiUsageCard
-            LocalAIStatusSection(onOpenSettings: onOpenLocalAI)
+            LocalAIStatusSection(onOpenSettings: onOpenLocalAI, onOpenLogs: onOpenLocalAILogs)
             integrationGrid
             diagnosticsRow
             undoStarRow

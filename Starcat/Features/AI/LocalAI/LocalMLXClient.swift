@@ -81,31 +81,46 @@ struct LocalMLXClient: AIClientProtocol {
 
     func chatStream(request: AIChatRequest) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
-                let startedAt = Date().timeIntervalSince1970
-                var response: AIChatResponse?
-                do {
-                    let directory = try directoryForModelName(request.model)
-                    let completed = try await LocalAIGenerationPolicy.withTimeout(seconds: request.parameters.timeoutSeconds) {
-                        try await runtime.withLLM(directory: directory) { container in
-                            try await LocalMLXRuntime.generate(container: container, request: request) {
-                                continuation.yield($0)
-                            }
+            let task = Task { await runChat(request: request, continuation: continuation) }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// 日志上下文在请求入口固定，并随超时任务、运行时准入和 MLX 子任务传播。
+    private func runChat(
+        request: AIChatRequest, continuation: AsyncThrowingStream<AIChatStreamEvent, Error>.Continuation
+    ) async {
+        let directory = Result { try directoryForModelName(request.model) }
+        let context = LocalAILogContext(
+            modelName: request.model,
+            feature: (request.usageContext ?? configuration?.usageContext)?.feature.rawValue ?? "chat",
+            directory: try? directory.get())
+        await LocalAILogContext.$current.withValue(context) {
+            let startedAt = Date().timeIntervalSince1970
+            var response: AIChatResponse?
+            LocalAILog.record("request.received", "Generation request received.", fields: [
+                "maxOutputTokens": String(request.parameters.maxCompletionTokens),
+                "timeoutSeconds": String(request.parameters.timeoutSeconds),
+                "temperature": String(request.parameters.temperature), "topP": String(request.parameters.topP)
+            ])
+            do {
+                let directory = try directory.get()
+                let completed = try await LocalAIGenerationPolicy.withTimeout(seconds: request.parameters.timeoutSeconds) {
+                    try await runtime.withLLM(directory: directory) { container in
+                        try await LocalMLXRuntime.generate(container: container, request: request) {
+                            continuation.yield($0)
                         }
                     }
-                    response = completed
-                    try Task.checkCancellation()
-                    try LocalAIGenerationPolicy.validateCompletion(completed)
-                    await recordGeneration(request: request, response: completed, startedAt: startedAt, error: nil)
-                    continuation.yield(.completed(completed))
-                    continuation.finish()
-                } catch {
-                    await recordGeneration(request: request, response: response, startedAt: startedAt, error: error)
-                    continuation.finish(throwing: error)
                 }
-            }
-            continuation.onTermination = { _ in
-                task.cancel()
+                response = completed
+                try Task.checkCancellation()
+                try LocalAIGenerationPolicy.validateCompletion(completed)
+                await recordGeneration(request: request, response: completed, startedAt: startedAt, error: nil)
+                continuation.yield(.completed(completed))
+                continuation.finish()
+            } catch {
+                await recordGeneration(request: request, response: response, startedAt: startedAt, error: error)
+                continuation.finish(throwing: error)
             }
         }
     }
@@ -132,7 +147,27 @@ struct LocalMLXClient: AIClientProtocol {
 
     func embeddings(inputs: [String], model: String?) async throws -> [[Float]] {
         let modelName = model ?? configuration?.embeddingModel ?? ""
-        let directory = try directoryForModelName(modelName)
+        let resolved = Result { try directoryForModelName(modelName) }
+        let context = LocalAILogContext(modelName: modelName, feature: "embedding", directory: try? resolved.get())
+        return try await LocalAILogContext.$current.withValue(context) {
+            let start = ProcessInfo.processInfo.systemUptime
+            LocalAILog.record("request.received", "Embedding request received.", fields: ["items": String(inputs.count)])
+            do {
+                let vectors = try await generateEmbeddings(inputs: inputs, modelName: modelName, directory: resolved.get())
+                LocalAILog.record("request.completed", "Embedding request completed.", fields: [
+                    "items": String(vectors.count), "dimensions": String(vectors.first?.count ?? 0),
+                    "durationSeconds": LocalAILogEvent.seconds(ProcessInfo.processInfo.systemUptime - start)
+                ])
+                return vectors
+            } catch {
+                LocalAILog.record("request.failed", "Embedding request ended without a result.",
+                                  level: error is CancellationError ? .info : .error, fields: LocalAILogEvent.errorFields(error))
+                throw error
+            }
+        }
+    }
+
+    private func generateEmbeddings(inputs: [String], modelName: String, directory: URL) async throws -> [[Float]] {
         let expectedDimension = LocalAIModelCatalog.entries
             .first { $0.displayName == modelName }?
             .embeddingDimension
@@ -140,10 +175,18 @@ struct LocalMLXClient: AIClientProtocol {
         let vectors = try await runtime.withEmbedder(directory: directory) { container in
             // 长文档批次不能按上层数组长度无限扩张，pad 后的注意力张量会同时放大。
             var vectors: [[Float]] = []
+            var lastProgress = ProcessInfo.processInfo.systemUptime
             for start in stride(from: 0, to: inputs.count, by: 4) {
                 try Task.checkCancellation()
                 let batch = Array(inputs[start..<min(start + 4, inputs.count)])
                 vectors += try await Self.embed(container: container, inputs: batch)
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - lastProgress >= 1 {
+                    lastProgress = now
+                    LocalAILog.record("embedding.progress", "Embedding batch completed.", fields: [
+                        "completedItems": String(vectors.count), "totalItems": String(inputs.count)
+                    ])
+                }
             }
             return vectors
         }
@@ -191,7 +234,13 @@ struct LocalMLXClient: AIClientProtocol {
         request: AIChatRequest, response: AIChatResponse?, startedAt: Double, error: Error?
     ) async {
         let reason = error.map(LocalAIGenerationPolicy.finishReason(for:)) ?? response?.finishReason ?? "unknown"
-        AppLog.ai.info("Local AI generation model=\(request.model, privacy: .public) finish=\(reason, privacy: .public) duration=\(Date().timeIntervalSince1970 - startedAt)")
+        var fields = error.map(LocalAILogEvent.errorFields) ?? [:]
+        fields["finishReason"] = reason
+        fields["durationSeconds"] = LocalAILogEvent.seconds(Date().timeIntervalSince1970 - startedAt)
+        fields["inputTokens"] = response?.usage.map { String($0.inputTokens) }
+        fields["outputTokens"] = response?.usage.map { String($0.outputTokens) }
+        LocalAILog.record("request.finished", "Generation request finished.",
+                          level: error == nil || error is CancellationError ? .info : .error, fields: fields)
         guard let configuration else { return }
         let status: AIUsageStatus = error == nil ? .succeeded : (error is CancellationError ? .cancelled : .failed)
         await usageRecorder.record(AIUsageEventFactory.make(
