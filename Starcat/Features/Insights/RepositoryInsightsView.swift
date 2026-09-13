@@ -775,6 +775,10 @@ struct RepositoryInsightsView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// 派生指标卡标题行的图标列宽 + 间距。三个 SF Symbol 自然宽度不一致，
+    /// 钉死列宽才能让三张卡标题文字与数值行都落在同一条 x 线上。
+    private let activityIconColumnWidth: CGFloat = 20
+
     /// 吞吐率卡：进度条直接表达「已处理 / 新建」占比，超过 100% 的合并比例按满格封顶。
     private func activityThroughputCard(
         title: LocalizedStringKey,
@@ -790,6 +794,7 @@ struct RepositoryInsightsView: View {
                 Image(systemName: systemImage)
                     .font(interfaceScale.font(size: 15, weight: .semibold))
                     .foregroundStyle(tint)
+                    .frame(width: activityIconColumnWidth, alignment: .leading)
                 Text(title)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -806,6 +811,7 @@ struct RepositoryInsightsView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .padding(.leading, activityIconColumnWidth + 7)
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -842,6 +848,7 @@ struct RepositoryInsightsView: View {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(interfaceScale.font(size: 15, weight: .semibold))
                     .foregroundStyle(tint)
+                    .frame(width: activityIconColumnWidth, alignment: .leading)
                 Text("insights.repo.activity.netIssueChange")
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -855,6 +862,7 @@ struct RepositoryInsightsView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .padding(.leading, activityIconColumnWidth + 7)
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -3466,6 +3474,10 @@ private struct InsightsSummaryCard: View {
 
     @Environment(\.starcatInterfaceScale) private var interfaceScale
 
+    /// 标题行「图标 chip(26pt) + 间距(7pt)」的总宽度：数值 / 说明行按它缩进，
+    /// 让数据与标题文字对齐到同一列，而不是贴卡片左缘。
+    private let contentLeadingInset: CGFloat = 26 + 7
+
     /// 本地事实卡带说明文案共三行；活动数字卡只有图标行 + 数值行。
     /// 两行卡不配 96pt 的三行高度，右下角插画也缩一档，避免装饰撑出大片留白。
     private var showsCaptionRow: Bool { caption != nil }
@@ -3495,6 +3507,7 @@ private struct InsightsSummaryCard: View {
                         .monospacedDigit()
                 }
             }
+            .padding(.leading, contentLeadingInset)
 
             if let caption {
                 Text(caption)
@@ -3502,6 +3515,7 @@ private struct InsightsSummaryCard: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                    .padding(.leading, contentLeadingInset)
             }
         }
         .frame(
