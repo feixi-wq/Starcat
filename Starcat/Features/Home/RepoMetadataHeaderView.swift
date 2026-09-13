@@ -72,8 +72,6 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     /// OpenSSF 是公开安全信号，所有详情页可见；Repo Health 是 Manage 专属 Pro 能力，
     /// 由 Scaffold 通过 `showsRepoHealthEntry` 明确放行。
     @Environment(AppDependencies.self) private var dependencies
-    /// Forks / Watchers 的语义色按 colorScheme 切换 —— 见 StatSemanticColor。
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @State private var showOpenSSFScoreSheet = false
     @State private var showRepoHealthSheet = false
@@ -165,6 +163,9 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
                     }
                 }
                 badgeRow
+                if repo.isFork {
+                    ForkedFromCaption(repo: repo)
+                }
                 inlineTopicsRow
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -273,24 +274,9 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             )
             .gettingStartedAnchor(.unstarRepo)
 
-            Button {
-                if let url = URL(string: "\(repo.htmlUrl)/fork") {
-                    NSWorkspace.shared.open(url)
-                }
-            } label: {
-                // Forks 用 StatSemanticColor.fork 蓝(light/dark 双主题),
-                // 与 SearchCenter 详情卡 fork 配色同源,详情页与其他 stat 形成视觉差。
-                RepoStatItem(
-                    label: "repo.forks",
-                    value: repo.forksCount,
-                    systemImage: "tuningfork",
-                    tint: StatSemanticColor.fork.resolved(colorScheme: colorScheme)
-                )
-            }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-            .pressableHover()
-            .help("repo.forkAction")
+            // Forks 按所有权分流：别人的仓打开 /fork，自己的原创仓打开网络页，
+            // 自己的 fork 出上游 / Contribute / Sync 菜单。见 ForksMenu。
+            ForksMenu(repo: repo)
 
             WatchersMenu(repo: repo)
 
@@ -1170,7 +1156,7 @@ private struct RepoRawBadgeChip: View {
     }
 }
 
-private struct RepoStatItem: View {
+struct RepoStatItem: View {
     let label: LocalizedStringKey
     let value: Int
     let systemImage: String

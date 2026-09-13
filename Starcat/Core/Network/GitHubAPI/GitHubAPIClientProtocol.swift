@@ -80,6 +80,15 @@ protocol GitHubAPIClientProtocol: Sendable {
     /// - Throws: 网络层 `NetworkError`（404 / 401 / RateLimit 等）。
     func repo(owner: String, repo: String) async throws -> GitHubRepoDTO
 
+    /// 自己的 fork：上游身份 + 默认分支 ahead/behind。
+    ///
+    /// parent 来自 `GET /repos`；ahead/behind 走 GraphQL `ref.compare`，避免 REST compare
+    /// 把整段 files/commits 拉回来。compare 失败时仍返回 parent，计数为 nil。
+    func forkRelation(owner: String, repo: String) async throws -> GitHubForkRelation
+
+    /// `POST /repos/{owner}/{repo}/merge-upstream`。409 由 `NetworkError.clientError` 抛出。
+    func mergeUpstream(owner: String, repo: String, branch: String) async throws -> GitHubMergeUpstreamResult
+
     /// GitHub Repository Search。返回 APIResponse 以保留 rate-limit 与分页响应头。
     func searchRepositories(
         query: GitHubRepositorySearchQuery,
@@ -384,5 +393,13 @@ extension GitHubAPIClientProtocol {
         perPage: Int
     ) async throws -> APIResponse<[GitHubOrganizationIssue]> {
         throw NetworkError.clientError(statusCode: 501, message: "Organization Issues is not implemented by this client")
+    }
+
+    func forkRelation(owner: String, repo: String) async throws -> GitHubForkRelation {
+        throw NetworkError.clientError(statusCode: 501, message: "Fork relation is not implemented by this client")
+    }
+
+    func mergeUpstream(owner: String, repo: String, branch: String) async throws -> GitHubMergeUpstreamResult {
+        throw NetworkError.clientError(statusCode: 501, message: "Merge upstream is not implemented by this client")
     }
 }
