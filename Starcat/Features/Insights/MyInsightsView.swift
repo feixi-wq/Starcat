@@ -1191,8 +1191,7 @@ struct InsightsSectionContainer<Content: View, HeaderTrailing: View>: View {
 }
 
 /// 区块标题行左侧的彩色图标 chip（原型样式：圆角方块底 + 语义色图标）。
-/// 仓库洞察的浮动标题条（RepositoryInsightsView）复用同一 chip，保持视觉同源。
-struct InsightsSectionIconChip: View {
+private struct InsightsSectionIconChip: View {
     let systemImage: String
     let tint: Color
 

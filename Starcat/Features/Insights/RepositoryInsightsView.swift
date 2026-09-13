@@ -362,8 +362,6 @@ struct RepositoryInsightsView: View {
     @State private var insightsContentHeight: CGFloat = 0
     /// 屏幕上 Star 趋势卡的实测尺寸，屏外克隆必须按这个 frame 截，否则 Charts 会被压扁。
     @State private var starHistoryCardSize: CGSize = .zero
-    /// 浮动标题条当前展示的区块；nil 表示还没有区块头滚出视口顶。
-    @State private var floatingSection: InsightsFloatingSectionInfo?
 
     @Environment(\.locale) private var locale
     @Environment(\.colorScheme) private var colorScheme
@@ -378,8 +376,6 @@ struct RepositoryInsightsView: View {
     private static let collapsedTimelineLimit = 5
     /// 与 RepoDetailScrollReport 同口径，忽略亚像素测高抖动。
     private static let contentHeightTolerance: CGFloat = 0.5
-    /// 区块头滚到离视口顶多近算「停靠」：小正值让浮动条在标题刚触顶时接管并盖住真实头部。
-    private static let floatingBarDockThreshold: CGFloat = 4
     /// GitHub 公告解释了 Stargazers 列表的权限收紧，比通用 API 参数页更直接。
     private static let githubStargazersRestrictionURL = URL(
         string: "https://github.blog/changelog/2026-06-30-upcoming-access-restrictions-to-public-api-endpoints-and-ui-views/"
@@ -466,32 +462,6 @@ struct RepositoryInsightsView: View {
                         alignment: .top
                     )
                     .padding(18)
-                }
-            }
-            .coordinateSpace(name: InsightsFloatingSectionBar.scrollSpaceName)
-            .overlay(alignment: .top) {
-                if let floatingSection {
-                    InsightsFloatingSectionBar(section: floatingSection)
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .opacity.combined(with: .move(edge: .top))
-                        )
-                }
-            }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: floatingSection)
-            .onPreferenceChange(InsightsFloatingSectionKey.self) { samples in
-                // 滚动中每帧都会产生新样本；只有「当前停靠区块」变化时才写 @State，避免整页重算。
-                let docked = samples
-                    .filter { $0.topY <= Self.floatingBarDockThreshold }
-                    .min { lhs, rhs in
-                        if abs(lhs.topY - rhs.topY) > Self.contentHeightTolerance { return lhs.topY < rhs.topY }
-                        // 顶距并列（社区 / 安全两卡并排）时取区块顺序靠后的，保证结果确定。
-                        return lhs.section.order < rhs.section.order
-                    }
-                let resolved = docked?.section
-                if resolved != floatingSection {
-                    floatingSection = resolved
                 }
             }
             .detailScrollViewStyle()
@@ -623,10 +593,9 @@ struct RepositoryInsightsView: View {
                 )
             }
         }
-        .insightsFloatingSection(0, "insights.repo.section.local", "cylinder.fill", tint: .blue)
     }
 
-    /// 本地事实卡统一走 InsightsSummaryCard；chevron 垂直居中贴右（原型位置）。
+    /// 本地事实卡统一走 InsightsSummaryCard；chevron 跟数值同一行贴右。
     private func localFact(
         title: LocalizedStringKey,
         caption: LocalizedStringKey,
@@ -650,7 +619,6 @@ struct RepositoryInsightsView: View {
             isPlaceholder: isPlaceholder,
             caption: caption,
             motif: motif,
-            chevronAlignment: .trailing,
             chevronHelpText: String.l10n(detailsHelpKey),
             onChevron: { onDetailsScroll(anchorID) }
         )
@@ -727,7 +695,6 @@ struct RepositoryInsightsView: View {
                 )
             }
         }
-        .insightsFloatingSection(1, "insights.repo.section.activity", "waveform.path.ecg", tint: .orange)
     }
 
     private var activityControls: some View {
@@ -1048,7 +1015,6 @@ struct RepositoryInsightsView: View {
             isPlaceholder: false,
             delta: metric.delta,
             motif: activityMetricMotif(for: metric.id),
-            chevronAlignment: .bottomTrailing,
             chevronHelpText: helpText,
             onChevron: {
                 if let url = activityMetricDestinationURL(for: metric.id) {
@@ -1161,7 +1127,6 @@ struct RepositoryInsightsView: View {
                 else { return }
                 starHistoryCardSize = size
             }
-            .insightsFloatingSection(2, "insights.repo.section.stars", "star.fill", tint: .yellow)
     }
 
     /// 屏幕与剪贴板共用同一套卡片；导出态只藏操作 chrome，不另起布局。
@@ -1704,7 +1669,6 @@ struct RepositoryInsightsView: View {
                 )
             }
         }
-        .insightsFloatingSection(3, "insights.repo.section.commits", "chart.bar.fill", tint: .blue)
     }
 
     private var commitControls: some View {
@@ -2208,7 +2172,6 @@ struct RepositoryInsightsView: View {
                 }
             }
         }
-        .insightsFloatingSection(4, "insights.repo.section.contributors", "person.3.fill", tint: .purple)
     }
 
     private func contributorConcentrationRow(
@@ -2398,7 +2361,6 @@ struct RepositoryInsightsView: View {
                 }
             }
         }
-        .insightsFloatingSection(6, "insights.repo.section.health", "heart.text.square.fill", tint: .pink)
     }
 
     private var releaseCadenceSection: some View {
@@ -2434,7 +2396,6 @@ struct RepositoryInsightsView: View {
                 )
             }
         }
-        .insightsFloatingSection(5, "insights.repo.section.releaseCadence", "tag.fill", tint: .blue)
     }
 
     /// 附件跟最新 Release 走，不跟节奏缓存绑在一起；没有上传附件时整段不占位。
@@ -2776,7 +2737,6 @@ struct RepositoryInsightsView: View {
         // 「开源许可证」本地卡 chevron 的滚动目标（ViewThatFits 两个分支引用同一 var，
         // 同一时刻只安装一份，不会产生重复 id）。
         .id(InsightsSectionAnchor.community)
-        .insightsFloatingSection(7, "insights.repo.section.community", "person.2.fill", tint: .indigo)
     }
 
     private var displayedCommunity: RepositoryCommunityInsight? {
@@ -2809,7 +2769,6 @@ struct RepositoryInsightsView: View {
         }
         // OpenSSF 本地卡 chevron 的滚动目标。
         .id(InsightsSectionAnchor.security)
-        .insightsFloatingSection(8, "insights.repo.section.security", "lock.shield.fill", tint: .red)
     }
 
     @ViewBuilder
@@ -3285,7 +3244,6 @@ struct RepositoryInsightsView: View {
                 }
             }
         }
-        .insightsFloatingSection(9, "insights.repo.section.timeline", "clock.arrow.circlepath", tint: .cyan)
     }
 
     private var displayedRecentActivity: RepositoryRecentActivity? {
@@ -3507,8 +3465,6 @@ private struct InsightsSummaryCard: View {
     var caption: LocalizedStringKey?
     var delta: Int?
     var motif: InsightsCardIllustrationMotif = .branchGraph
-    /// 本地事实卡 chevron 垂直居中贴右；活动卡在右下角。
-    var chevronAlignment: Alignment = .bottomTrailing
     var chevronHelpText: String?
     var onChevron: (() -> Void)?
 
@@ -3518,8 +3474,12 @@ private struct InsightsSummaryCard: View {
     /// 让数据与标题文字对齐到同一列，而不是贴卡片左缘。
     private let contentLeadingInset: CGFloat = 26 + 7
 
+    /// 装饰插画缩小后贴标题行右缘，不进数值行，避免和数字抢位。
+    private let titleRowIllustrationSize = CGSize(width: 36, height: 26)
+    /// 标题与右缘水印之间的缝；只挡文字叠字，不把图标往中间推。
+    private let titleRowIllustrationGap: CGFloat = 4
+
     /// 本地事实卡带说明文案共三行；活动数字卡只有图标行 + 数值行。
-    /// 两行卡不配 96pt 的三行高度，右下角插画也缩一档，避免装饰撑出大片留白。
     private var showsCaptionRow: Bool { caption != nil }
 
     var body: some View {
@@ -3530,21 +3490,36 @@ private struct InsightsSummaryCard: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(
+                        .trailing,
+                        titleRowIllustrationSize.width + titleRowIllustrationGap
+                    )
             }
             .font(interfaceScale.font(.caption))
+            .overlay(alignment: .trailing) {
+                titleRowIllustration
+            }
 
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(verbatim: value)
-                    .font(interfaceScale.font(size: 21, weight: .semibold))
-                    .foregroundStyle(isPlaceholder ? .secondary : .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .monospacedDigit()
-                if let delta {
-                    Text(verbatim: delta >= 0 ? "+\(delta)%" : "\(delta)%")
-                        .font(interfaceScale.font(.captionSmall, weight: .medium))
-                        .foregroundStyle(delta >= 0 ? .green : .red)
+            // 箭头跟数值同一行：活动卡只有两行，不能再为 overlay 撑出空的第三行。
+            HStack(alignment: .center, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: value)
+                        .font(interfaceScale.font(size: 21, weight: .semibold))
+                        .foregroundStyle(isPlaceholder ? .secondary : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .monospacedDigit()
+                    if let delta {
+                        Text(verbatim: delta >= 0 ? "+\(delta)%" : "\(delta)%")
+                            .font(interfaceScale.font(.captionSmall, weight: .medium))
+                            .foregroundStyle(delta >= 0 ? .green : .red)
+                            .monospacedDigit()
+                    }
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                if let chevronHelpText, let onChevron {
+                    InsightsCardChevronButton(helpText: chevronHelpText, action: onChevron)
                 }
             }
             .padding(.leading, contentLeadingInset)
@@ -3558,39 +3533,32 @@ private struct InsightsSummaryCard: View {
                     .padding(.leading, contentLeadingInset)
             }
         }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: showsCaptionRow ? 96 : 74,
-            alignment: .topLeading
-        )
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(10)
         .background {
-            let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-            shape
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Self.cardFill(tint))
-                .overlay(alignment: .bottomTrailing) {
-                    InsightsCardIllustration(motif: motif, tint: tint)
-                        .frame(
-                            width: showsCaptionRow ? 64 : 54,
-                            height: showsCaptionRow ? 46 : 40
-                        )
-                        // chevron 居中贴右时插画贴边即可；chevron 在右下角时给它让出 32pt。
-                        .padding(.trailing, chevronAlignment == .trailing ? 8 : 32)
-                        .padding(.bottom, 4)
-                        .opacity(isPlaceholder ? 0.55 : 1)
-                }
-                .clipShape(shape)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(tint.opacity(0.22), lineWidth: 1)
         }
-        .overlay(alignment: chevronAlignment) {
-            if let chevronHelpText, let onChevron {
-                InsightsCardChevronButton(helpText: chevronHelpText, action: onChevron)
-                    .padding(8)
-            }
-        }
+    }
+
+    /// 标题行右缘装饰。活动卡数字更大，外层略压一档；本地卡保持线稿原透明度。
+    /// 不用 `.tertiary`（颜色规范禁止）；0.72 仍能看清母题，避免再叠到看不清。
+    private var titleRowIllustration: some View {
+        InsightsCardIllustration(motif: motif, tint: tint)
+            .frame(
+                width: titleRowIllustrationSize.width,
+                height: titleRowIllustrationSize.height
+            )
+            .opacity(titleRowIllustrationOpacity)
+    }
+
+    private var titleRowIllustrationOpacity: Double {
+        if isPlaceholder { return 0.7 }
+        return showsCaptionRow ? 1 : 0.72
     }
 
     /// 浅 tint 对角渐变：比纯色块略有层次，饱和度压低，避免营销页大渐变。
@@ -3654,114 +3622,5 @@ private struct StarHistoryCardSizeKey: PreferenceKey {
         if next.width >= value.width, next.height >= value.height {
             value = next
         }
-    }
-}
-
-// MARK: - 浮动标题条
-//
-// hero 折叠 / 深滚后区块头会滚出视口顶（首个「本地洞察」头恰好在与 hero 折叠完成点
-// 相同的 ~70pt 处），卡片失去归属上下文。这里用「每区块上报顶边位置 + 顶部 overlay」
-// 实现 App Store 式的当前区块指示条；不引入 LazyVStack（见 body 内 Charts 注释）。
-
-/// 洞察页浮动标题条：只读展示「当前停靠区块」的图标 + 标题。
-///
-/// 不复制区块头的范围切换 / 刷新控件——同一屏出现两份控件会让「点哪个生效」变模糊；
-/// 活动概览 / Star 趋势的真实标题行仍随内容滚动。
-private struct InsightsFloatingSectionBar: View {
-    /// 区块 reporter 用它读取「相对视口」的顶边位置；与本条 overlay 挂在同一个 ScrollView。
-    static let scrollSpaceName = "insightsFloatingSectionScrollSpace"
-
-    let section: InsightsFloatingSectionInfo
-
-    @Environment(\.starcatInterfaceScale) private var interfaceScale
-
-    var body: some View {
-        HStack(spacing: 8) {
-            InsightsSectionIconChip(systemImage: section.systemImage, tint: section.tint)
-            Text(LocalizedStringKey(section.titleKey))
-                .font(interfaceScale.font(.bodyEmphasis))
-                .lineLimit(1)
-            Spacer(minLength: 0)
-        }
-        // 32 = 内容边距 18 + 区块容器内边距 14：与真实区块头的图标 chip 左缘对齐。
-        .padding(.leading, 32)
-        .padding(.trailing, 18)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial)
-        .overlay(alignment: .bottom) {
-            Divider().opacity(0.6)
-        }
-    }
-}
-
-/// 浮动标题条的区块描述。随位置样本一起经 PreferenceKey 上抛，
-/// 避免「区块 → 标题 / 图标 / 颜色」清单在视图里再维护一份造成漂移。
-private struct InsightsFloatingSectionInfo: Equatable, Sendable {
-    /// 视觉顺序；顶距并列（社区 / 安全两卡并排）时的确定性裁决依据。
-    let order: Int
-    /// 本地化 key 存 String（LocalizedStringKey 非 Sendable）；渲染处再包 LocalizedStringKey。
-    let titleKey: String
-    let systemImage: String
-    let tint: Color
-}
-
-/// 单个区块顶部在滚动视口坐标系里的位置样本。
-private struct InsightsFloatingSectionSample: Equatable, Sendable {
-    let section: InsightsFloatingSectionInfo
-    /// `frame.minY`（视口坐标系）：越接近 0 表示标题行越贴近视口顶，越过阈值即「停靠」。
-    let topY: CGFloat
-}
-
-private struct InsightsFloatingSectionKey: PreferenceKey {
-    static let defaultValue: [InsightsFloatingSectionSample] = []
-
-    static func reduce(
-        value: inout [InsightsFloatingSectionSample],
-        nextValue: () -> [InsightsFloatingSectionSample]
-    ) {
-        value.append(contentsOf: nextValue())
-    }
-}
-
-/// 挂在 InsightsSectionContainer 外层：容器顶边即标题行顶边，无需侵入 MyInsightsView 共享的容器。
-private struct InsightsFloatingSectionReporter: ViewModifier {
-    let section: InsightsFloatingSectionInfo
-
-    func body(content: Content) -> some View {
-        content.background {
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: InsightsFloatingSectionKey.self,
-                    value: [
-                        InsightsFloatingSectionSample(
-                            section: section,
-                            topY: proxy
-                                .frame(in: .named(InsightsFloatingSectionBar.scrollSpaceName))
-                                .minY
-                        )
-                    ]
-                )
-            }
-        }
-    }
-}
-
-private extension View {
-    /// 把区块顶边位置上报给浮动标题条；参数与 InsightsSectionContainer 的标题行保持一致。
-    func insightsFloatingSection(
-        _ order: Int,
-        _ titleKey: String,
-        _ systemImage: String,
-        tint: Color
-    ) -> some View {
-        modifier(InsightsFloatingSectionReporter(
-            section: InsightsFloatingSectionInfo(
-                order: order,
-                titleKey: titleKey,
-                systemImage: systemImage,
-                tint: tint
-            )
-        ))
     }
 }
