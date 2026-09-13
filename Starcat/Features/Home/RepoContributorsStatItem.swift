@@ -8,7 +8,8 @@
 //  - 整列一个按钮，头像不各自跳 GitHub，避免和「点开看全部」抢手势。
 //  - Popover 必须 `.appLocaleEnvironment()`，关闭钮走 `SheetCloseButton`。
 //  - `+x` 相对 GitHub 前 12 人样本，不是仓库全量贡献者人数。
-//  - Trending 详情已有本周贡献者 heroExtension，由调用方关掉本列，避免两套口径叠在一起。
+//  - 趋势本周贡献者经常为空；本列展示 GitHub all-time 样本，所有详情场景都开。
+//  - 占比条和右侧百分比都相对样本 commits 合计（合计为 100%），第一名 80% 就不能画成满格。
 //
 
 import SwiftUI
@@ -21,6 +22,9 @@ struct RepoContributorsStatItem: View {
     @Environment(AuthSession.self) private var authSession
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.locale) private var locale
+    /// 百分比列只按「100.0%」预留，避免再给条和数字之间塞出一块空列。
+    private static let percentColumnWidth: CGFloat = 44
+
     @State private var viewModel: RepositoryContributorHeroViewModel
     @State private var isPopoverPresented = false
     @State private var hoveredContributorID: String?
@@ -33,29 +37,13 @@ struct RepoContributorsStatItem: View {
     var body: some View {
         Group {
             if viewModel.shouldShowColumn {
-                Button {
-                    guard !viewModel.contributors.isEmpty else { return }
-                    isPopoverPresented = true
-                } label: {
-                    VStack(alignment: .center, spacing: 2) {
-                        facepile
-                        Text("repo.contributors")
-                            .font(interfaceScale.font(.captionSmall))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .pressableHover()
-                .help("repo.contributors.help")
-                .disabled(viewModel.contributors.isEmpty)
-                .accessibilityLabel(Text("repo.contributors"))
-                .accessibilityValue(Text(verbatim: accessibilityValue))
-                .fixedSize()
-                .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
-                    contributorsPopover
-                        .appLocaleEnvironment()
-                }
+                contributorButton
+            } else {
+                // 空 Group 在 macOS 上会被优化出渲染树，`.task` 不再调度。
+                // 1pt 占位只在确认无样本后出现，不影响 stats 行视觉。
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityHidden(true)
             }
         }
         .task(id: repo.id) {
@@ -65,6 +53,32 @@ struct RepoContributorsStatItem: View {
                 repo: repo,
                 isAuthenticated: authSession.state.isAuthenticated
             )
+        }
+    }
+
+    private var contributorButton: some View {
+        Button {
+            guard !viewModel.contributors.isEmpty else { return }
+            isPopoverPresented = true
+        } label: {
+            VStack(alignment: .center, spacing: 2) {
+                facepile
+                Text("repo.contributors")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .pressableHover()
+        .help("repo.contributors.help")
+        .disabled(viewModel.contributors.isEmpty)
+        .accessibilityLabel(Text("repo.contributors"))
+        .accessibilityValue(Text(verbatim: accessibilityValue))
+        .fixedSize()
+        .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
+            contributorsPopover
+                .appLocaleEnvironment()
         }
     }
 
@@ -120,114 +134,172 @@ struct RepoContributorsStatItem: View {
 
     private var contributorsPopover: some View {
         let ranked = viewModel.contributors
-        let maximum = ranked.map(\.commits).max() ?? 0
+        let total = RepositoryContributorHeroViewModel.sampleTotal(ranked)
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("repo.contributors")
-                        .font(interfaceScale.font(.bodyEmphasis, weight: .semibold))
-                    Text("repo.contributors.subtitle")
-                        .font(interfaceScale.font(.captionSmall))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                SheetCloseButton(
-                    action: { isPopoverPresented = false },
-                    iconFont: .system(size: 16, weight: .medium),
-                    frameSize: 22
-                )
-            }
+        return VStack(alignment: .leading, spacing: 12) {
+            popoverHeader
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(ranked.enumerated()), id: \.element.id) { index, contributor in
                         contributorRow(
                             contributor,
                             rank: index + 1,
-                            share: RepositoryContributorHeroViewModel.share(
+                            sampleShare: RepositoryContributorHeroViewModel.sampleShare(
                                 commits: contributor.commits,
-                                maximum: maximum
+                                total: total
                             )
                         )
+                        if index < ranked.count - 1 {
+                            Divider()
+                        }
                     }
                 }
+                // macOS overlay 滚动条会盖在内容上；百分比右对齐，给滚动槽让出宽度。
+                .padding(.trailing, 10)
             }
-            .frame(maxHeight: 320)
+            .frame(maxHeight: 360)
 
-            Text("repo.contributors.sampleFootnote")
-                .font(interfaceScale.font(.captionSmall))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            popoverFooter
         }
         .padding(14)
-        .frame(width: 320, alignment: .leading)
+        .frame(width: 360, alignment: .leading)
+    }
+
+    private var popoverHeader: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "person.2.fill")
+                .font(interfaceScale.font(.iconLarge))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28, height: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("repo.contributors")
+                    .font(interfaceScale.font(.bodyEmphasis, weight: .semibold))
+                Text("repo.contributors.subtitle")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            SheetCloseButton(
+                action: { isPopoverPresented = false },
+                iconFont: .system(size: 16, weight: .medium),
+                frameSize: 22
+            )
+        }
+    }
+
+    private var popoverFooter: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            HStack(alignment: .center, spacing: 10) {
+                Image("github")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text("repo.contributors.sampleFootnote")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                viewAllContributorsButton
+            }
+        }
+    }
+
+    private var viewAllContributorsButton: some View {
+        Button {
+            isPopoverPresented = false
+            NSWorkspace.shared.open(
+                GitHubURLs.repoContributors(owner: repo.owner, repo: repo.name)
+            )
+        } label: {
+            HStack(spacing: 4) {
+                Text("repo.contributors.viewAll")
+                Image(systemName: "arrow.right")
+            }
+            .font(interfaceScale.font(.caption, weight: .medium))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .pressableHover(scale: 1.0)
+        .help("repo.contributors.viewAllHelp")
+        .accessibilityLabel(Text("repo.contributors.viewAll"))
     }
 
     private func contributorRow(
         _ contributor: RepositoryContributor,
         rank: Int,
-        share: Double
+        sampleShare: Double
     ) -> some View {
         let isHovered = hoveredContributorID == contributor.id
+        let isOwner = RepositoryContributorHeroViewModel.isOwner(
+            login: contributor.login,
+            repoOwner: repo.owner
+        )
         return Button {
             isPopoverPresented = false
             NSWorkspace.shared.open(profileURL(for: contributor))
         } label: {
             HStack(alignment: .center, spacing: 8) {
-                Text(verbatim: "\(rank)")
-                    .font(interfaceScale.font(.captionSmall))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .frame(width: 16, alignment: .trailing)
-
+                rankBadge(rank: rank)
                 RemoteAvatar(
                     urlString: contributor.avatarURL?.absoluteString,
-                    size: 22,
+                    size: 28,
                     showBorder: false
                 )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(verbatim: contributor.login)
                             .font(interfaceScale.font(.caption, weight: .medium))
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text(
-                            String(
-                                format: String.l10n("insights.repo.contributor.commitsFormat"),
-                                locale: locale,
-                                contributor.commits
-                            )
-                        )
-                        .font(interfaceScale.font(.captionSmall))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                    }
-
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(Color.primary.opacity(0.08))
-                            Capsule()
-                                .fill(Color.accentColor.opacity(0.85))
-                                .frame(width: max(4, proxy.size.width * share))
+                        if isOwner {
+                            ownerBadge
                         }
+                        Spacer(minLength: 8)
+                        commitsLabel(contributor.commits)
                     }
-                    .frame(height: 4)
+                    HStack(spacing: 6) {
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.08))
+                                Capsule()
+                                    .fill(Color.accentColor.opacity(0.85))
+                                    .frame(width: max(4, proxy.size.width * sampleShare))
+                            }
+                        }
+                        .frame(height: 6)
+                        Text(verbatim: formattedPercent(sampleShare))
+                            .font(interfaceScale.font(.captionSmall))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .frame(width: Self.percentColumnWidth, alignment: .trailing)
+                    }
                 }
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
-            )
+            .padding(.vertical, 8)
+            .background(rowBackground(isHovered: isHovered))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .help("repo.contributors.openProfileHelp")
         .onHover { hovering in
             if hovering {
                 hoveredContributorID = contributor.id
@@ -235,6 +307,75 @@ struct RepoContributorsStatItem: View {
                 hoveredContributorID = nil
             }
         }
+    }
+
+    /// 前三名用领奖台色块编码名次（1 金+皇冠、2 银灰、3 铜橙），这是数据层级不是装饰。
+    /// 数字本身仍走 `.primary` / `.secondary`，满足文字对比度。
+    private func rankBadge(rank: Int) -> some View {
+        let podiumFill: Color? = {
+            switch rank {
+            case 1: return Color.yellow
+            case 2: return Color.primary
+            case 3: return Color.orange
+            default: return nil
+            }
+        }()
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill((podiumFill ?? Color.primary).opacity(rank <= 3 ? 0.18 : 0.0))
+            Text(verbatim: "\(rank)")
+                .font(interfaceScale.font(.captionSmall, weight: rank <= 3 ? .semibold : .regular))
+                .foregroundStyle(rank <= 3 ? .primary : .secondary)
+                .monospacedDigit()
+        }
+        .overlay(alignment: .top) {
+            if rank == 1 {
+                Image(systemName: "crown.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Color.yellow)
+                    .offset(y: -5)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(width: 24, height: 24)
+        .accessibilityHidden(true)
+    }
+
+    private var ownerBadge: some View {
+        Text("repo.contributors.owner")
+            .font(interfaceScale.font(.captionSmall, weight: .semibold))
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+            )
+            .accessibilityLabel(Text("repo.contributors.owner"))
+    }
+
+    private func commitsLabel(_ commits: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(verbatim: commits.formatted(.number.locale(locale)))
+                .font(interfaceScale.font(.body, weight: .semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+            Text("repo.contributors.commitsUnit")
+                .font(interfaceScale.font(.captionSmall))
+                .foregroundStyle(.secondary)
+        }
+        .layoutPriority(1)
+    }
+
+    /// hover 用 accent 浅底贴合选中态，不用斑马纹，避免和原型的细分隔线打架。
+    private func rowBackground(isHovered: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(isHovered ? Color.accentColor.opacity(0.08) : Color.clear)
+    }
+
+    private func formattedPercent(_ share: Double) -> String {
+        share.formatted(.percent.precision(.fractionLength(1)).locale(locale))
     }
 
     private func profileURL(for contributor: RepositoryContributor) -> URL {

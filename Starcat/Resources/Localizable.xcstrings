@@ -274087,6 +274087,28 @@
         }
       }
     },
+    "repo.contributors.commitsUnit" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "commits"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "次提交"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "次提交"
+          }
+        }
+      }
+    },
     "repo.contributors.help" : {
       "localizations" : {
         "en" : {
@@ -274131,6 +274153,28 @@
         }
       }
     },
+    "repo.contributors.owner" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Owner"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有者"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "擁有者"
+          }
+        }
+      }
+    },
     "repo.contributors.sampleFootnote" : {
       "localizations" : {
         "en" : {
@@ -274171,6 +274215,50 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "依 commits 排序 · 前 12 人"
+          }
+        }
+      }
+    },
+    "repo.contributors.viewAll" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View all contributors"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看全部贡献者"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看全部貢獻者"
+          }
+        }
+      }
+    },
+    "repo.contributors.viewAllHelp" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open GitHub contributors graph"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 GitHub 查看全部贡献者"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 GitHub 查看全部貢獻者"
           }
         }
       }

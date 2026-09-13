@@ -83,6 +83,14 @@ enum GitHubURLs {
             .appendingPathComponent("members")
     }
 
+    /// 贡献者图表页：`https://github.com/{owner}/{repo}/graphs/contributors`。
+    /// 这是 GitHub 网页，不是 REST `/contributors`；用来跳出「前 12 人样本」看全量。
+    static func repoContributors(owner: String, repo: String) -> URL {
+        Self.repo(owner: owner, repo: repo)
+            .appendingPathComponent("graphs")
+            .appendingPathComponent("contributors")
+    }
+
     /// Contribute：从 fork 向上游开 PR 的 compare 页。
     ///
     /// 不用 `appendingPathComponent`，避免把 `owner:repo:branch` 里的冒号编成 `%3A`。

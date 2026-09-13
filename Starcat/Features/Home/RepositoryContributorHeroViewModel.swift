@@ -15,8 +15,9 @@ final class RepositoryContributorHeroViewModel {
     static let visibleAvatarLimit = 3
 
     private(set) var contributors: [RepositoryContributor] = []
-    /// 首屏还没有可用样本时为 true；刷新已上屏数据时保持 false，避免 facepile 闪骨架。
-    private(set) var isLoading = false
+    /// 首帧就必须为 true：列一旦因 `shouldShowColumn == false` 变成空 Group，
+    /// macOS 上 `.task` 经常不调度，贡献者会永远不出现。有数据后保持 false，避免刷新闪骨架。
+    private(set) var isLoading = true
 
     private let service: any RepositoryContributorHeroServing
     private var activeRequestID: UUID?
@@ -89,10 +90,19 @@ final class RepositoryContributorHeroViewModel {
         max(0, total - visibleAvatarLimit)
     }
 
-    /// 占比条以当前样本里最多的 commits 为 100%，方便扫一眼相对贡献，而不是伪装全仓占比。
-    static func share(commits: Int, maximum: Int) -> Double {
-        guard maximum > 0 else { return 0 }
-        return min(1, Double(max(commits, 0)) / Double(maximum))
+    /// 占比条和百分比都相对样本 commits 合计，合计为 100%。
+    static func sampleShare(commits: Int, total: Int) -> Double {
+        guard total > 0 else { return 0 }
+        return min(1, Double(max(commits, 0)) / Double(total))
+    }
+
+    static func sampleTotal(_ contributors: [RepositoryContributor]) -> Int {
+        contributors.reduce(0) { $0 + max($1.commits, 0) }
+    }
+
+    /// GitHub login 大小写不敏感，Owner 徽章必须跟 `repo.owner` 忽略大小写比较。
+    static func isOwner(login: String, repoOwner: String) -> Bool {
+        login.compare(repoOwner, options: .caseInsensitive) == .orderedSame
     }
 
     static func normalized(_ contributors: [RepositoryContributor]) -> [RepositoryContributor] {

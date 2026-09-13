@@ -104,7 +104,6 @@ struct TrendingScaffoldShell: View {
             // displayRepo 还是旧 ephemeral」的瞬间 stale 问题**(详见
             // `StarringSubsystem.swift` v2.0 修订段)。
             starHelpKey: repo.isStarred ? "repo.unstar" : "trending.star",
-            showsContributorsStat: false,
             onStarTapped: {
                 try await handleStarTapped(repo: repo)
             },

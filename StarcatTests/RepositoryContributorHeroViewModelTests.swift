@@ -2,7 +2,7 @@
 //  RepositoryContributorHeroViewModelTests.swift
 //  StarcatTests
 //
-//  验证详情 Hero 贡献者列的 cache-first、溢出人数与占比条口径。
+//  验证详情 Hero 贡献者列的 cache-first、溢出人数与样本份额口径。
 //
 
 import Foundation
@@ -12,6 +12,32 @@ import Testing
 @MainActor
 @Suite("Repository contributor hero")
 struct RepositoryContributorHeroViewModelTests {
+    @Test("首帧就必须占位，否则空 Group 会导致 .task 不跑")
+    func showsColumnOnFirstFrame() {
+        let service = ContributorHeroServiceStub(
+            cached: nil,
+            refreshed: insight([contributor("later", commits: 1)])
+        )
+        let viewModel = RepositoryContributorHeroViewModel(service: service)
+        #expect(viewModel.isLoading)
+        #expect(viewModel.shouldShowColumn)
+    }
+
+    @Test("成功但空样本时隐藏列")
+    func emptySampleHidesColumn() async {
+        let service = ContributorHeroServiceStub(
+            cached: nil,
+            refreshed: insight([])
+        )
+        let viewModel = RepositoryContributorHeroViewModel(service: service)
+
+        await viewModel.load(repo: makeRepo(id: 10), isAuthenticated: true)
+
+        #expect(viewModel.contributors.isEmpty)
+        #expect(viewModel.shouldShowColumn == false)
+        #expect(await service.refreshCount == 1)
+    }
+
     @Test("超过 3 人时溢出人数是样本人数减 3")
     func overflowCountUsesSampleMinusVisible() {
         #expect(RepositoryContributorHeroViewModel.overflowCount(total: 0) == 0)
@@ -19,11 +45,30 @@ struct RepositoryContributorHeroViewModelTests {
         #expect(RepositoryContributorHeroViewModel.overflowCount(total: 12) == 9)
     }
 
-    @Test("占比条以样本内最高 commits 为 100%")
-    func shareScalesToMaximumInSample() {
-        #expect(RepositoryContributorHeroViewModel.share(commits: 50, maximum: 100) == 0.5)
-        #expect(RepositoryContributorHeroViewModel.share(commits: 100, maximum: 100) == 1)
-        #expect(RepositoryContributorHeroViewModel.share(commits: 10, maximum: 0) == 0)
+    @Test("占比条和百分比都相对样本 commits 合计")
+    func sampleShareUsesTotalCommits() {
+        #expect(RepositoryContributorHeroViewModel.sampleShare(commits: 1, total: 4) == 0.25)
+        #expect(RepositoryContributorHeroViewModel.sampleShare(commits: 80, total: 100) == 0.8)
+        #expect(RepositoryContributorHeroViewModel.sampleShare(commits: 0, total: 10) == 0)
+        #expect(RepositoryContributorHeroViewModel.sampleShare(commits: 9, total: 0) == 0)
+        #expect(RepositoryContributorHeroViewModel.sampleTotal([
+            contributor("a", commits: 3),
+            contributor("b", commits: 1)
+        ]) == 4)
+    }
+
+    @Test("Owner 判定忽略 login 大小写")
+    func ownerMatchIgnoresCase() {
+        #expect(RepositoryContributorHeroViewModel.isOwner(login: "MxYng", repoOwner: "mxyng"))
+        #expect(RepositoryContributorHeroViewModel.isOwner(login: "other", repoOwner: "mxyng") == false)
+    }
+
+    @Test("贡献者图表页走 graphs/contributors")
+    func contributorsGraphURL() {
+        #expect(
+            GitHubURLs.repoContributors(owner: "mxyng", repo: "ollama").absoluteString
+                == "https://github.com/mxyng/ollama/graphs/contributors"
+        )
     }
 
     @Test("新鲜缓存直接上屏且不刷新网络")

@@ -181,7 +181,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
     /// Manage 详情传入时展示语言分布分割线；其它详情场景保持 nil，不加载语言数据。
     let onLanguageTapped: ((String) -> Void)?
 
-    /// Trending 详情已有本周贡献者 heroExtension，关掉 all-time 贡献者列避免两套口径叠在一起。
+    /// 默认展示 Hero 贡献者列。目前所有详情场景都开；保留开关避免以后某一场景要单独关掉。
     let showsContributorsStat: Bool
 
     /// 账本行等场景的顶栏一句（如「你 Star 了 · 2 小时前」）。

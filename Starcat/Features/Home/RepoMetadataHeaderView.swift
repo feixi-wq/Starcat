@@ -66,7 +66,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     /// Scaffold 已读取的知识库状态；Release stat 复用它，避免首屏重复查 repo_notes。
     let libraryState: LibraryState
     let onLanguageTapped: ((String) -> Void)?
-    /// Trending 详情已有本周贡献者 heroExtension，关掉本列避免两套口径叠在一起。
+    /// 默认展示 Hero 贡献者列。目前所有详情场景都开。
     let showsContributorsStat: Bool
     private let trailingActions: TrailingActions
 
