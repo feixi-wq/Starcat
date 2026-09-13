@@ -18,6 +18,8 @@ struct TranslationSettingsTab: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.openURL) private var openURL
     @State private var availableEngines: [ReadmeTranslationEngine] = []
+    @State private var systemLanguageCatalog = SystemTranslationLanguageCatalog()
+    @State private var isSystemLanguageManagerPresented = false
     @State private var googleAPIKey = ""
     @State private var hasStoredGoogleAPIKey = false
     @State private var isGoogleAPIKeyVisible = false
@@ -36,6 +38,9 @@ struct TranslationSettingsTab: View {
             engineSection
             // dong4j 2026-09-11 确认：引擎专属配置只在该引擎被选中时展示，
             // 后续新增翻译引擎也按此规则追加 Section。
+            if settings.readmeTranslationEngine == .system {
+                systemTranslationSection
+            }
             if settings.readmeTranslationEngine == .google {
                 googleSection
             }
@@ -49,6 +54,14 @@ struct TranslationSettingsTab: View {
         }
         .task {
             loadGoogleAPIKey()
+        }
+        .sheet(isPresented: $isSystemLanguageManagerPresented) {
+            SystemTranslationLanguageManagerSheet(
+                targetLanguage: settings.effectiveReadmeTranslationLanguage,
+                catalog: systemLanguageCatalog,
+                openSystemSettings: openSystemLanguageSettings
+            )
+            .appLocaleEnvironment()
         }
     }
 
@@ -76,6 +89,81 @@ struct TranslationSettingsTab: View {
         } footer: {
             Text("settings.translation.section.engine.footer")
         }
+    }
+
+    // MARK: - 系统翻译
+
+    /// 仅默认引擎 = 系统翻译时显示。这里展示语言组合的实时摘要；完整列表和下载
+    /// 交给独立 Sheet，避免把二十余种语言直接铺进主设置页。
+    private var systemTranslationSection: some View {
+        let target = settings.effectiveReadmeTranslationLanguage
+        return Section {
+            LabeledContent("settings.translation.system.targetLanguage") {
+                Text(verbatim: target.displayName)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("settings.translation.system.languages")
+                        .foregroundStyle(.primary)
+                    Text(verbatim: systemLanguageReadinessText(for: target))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Button("settings.translation.system.manage") {
+                    isSystemLanguageManagerPresented = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                Button(action: openSystemLanguageSettings) {
+                    Label(
+                        "settings.translation.system.openSettings",
+                        systemImage: "gearshape"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+            }
+        } header: {
+            SettingsSectionHeader(
+                "settings.translation.section.system",
+                systemImage: "character.bubble",
+                style: .prominent
+            )
+        } footer: {
+            Text("settings.translation.section.system.footer")
+        }
+        .task(id: target.rawValue) {
+            await systemLanguageCatalog.refresh(target: target)
+        }
+    }
+
+    private func systemLanguageReadinessText(
+        for target: ReadmeTranslationLanguage
+    ) -> String {
+        guard systemLanguageCatalog.isLoaded(for: target) else {
+            return String.l10n("settings.translation.system.readiness.loading")
+        }
+        return String(
+            format: String.l10n("settings.translation.system.readiness.format"),
+            systemLanguageCatalog.readyCount,
+            systemLanguageCatalog.availablePairCount
+        )
+    }
+
+    /// Apple 没有公开直接弹出「翻译语言」二级窗口的稳定 API；打开官方支持的
+    /// 「语言与地区」面板，由用户进入翻译语言完成删除或全局管理。
+    private func openSystemLanguageSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Localization-Settings.extension"
+        ) else { return }
+        openURL(url)
     }
 
     // MARK: - Google 翻译
