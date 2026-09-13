@@ -887,7 +887,16 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 var host = document.getElementById('starcat-readme-star-history');
                 if (!host) { return; }
                 if (host.starcatHistoryCleanup) { host.starcatHistoryCleanup(); }
-                if (!html) {
+                // README 已内嵌 history-api 的星标历史卡片时跳过注入，避免同一页面
+                // 出现两张相同卡片。识别两类标记：官方 <picture> 模板的
+                // data-starcat-star-history 属性，以及任意域名（含自托管）embed
+                // 端点的图片；在 DOM 层查询，代码块里展示的示例文本不会被误判。
+                var embedded = document.querySelector(
+                    '[data-starcat-star-history],' +
+                    'img[src*="/embed/v1/repos/"][src*="star-history.svg"],' +
+                    'source[srcset*="/embed/v1/repos/"][srcset*="star-history.svg"]'
+                );
+                if (embedded || !html) {
                     host.replaceChildren();
                     host.hidden = true;
                     schedule();
