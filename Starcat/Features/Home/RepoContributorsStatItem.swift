@@ -197,15 +197,18 @@ struct RepoContributorsStatItem: View {
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 16, height: 16)
+                    .frame(width: 18, height: 18)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text("repo.contributors.sampleFootnote")
                     .font(interfaceScale.font(.captionSmall))
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 viewAllContributorsButton
+                    .layoutPriority(1)
             }
         }
     }
@@ -219,12 +222,14 @@ struct RepoContributorsStatItem: View {
         } label: {
             HStack(spacing: 4) {
                 Text("repo.contributors.viewAll")
+                    .lineLimit(1)
                 Image(systemName: "arrow.right")
             }
             .font(interfaceScale.font(.caption, weight: .medium))
             .foregroundStyle(.primary)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
+            .fixedSize()
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color(nsColor: .controlBackgroundColor))

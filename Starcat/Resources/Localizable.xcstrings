@@ -274180,19 +274180,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "GitHub’s top 12 contributors by commits, not the full contributor count."
+            "value" : "Showing top 12 contributors by commits,\nnot the full contributor count."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "GitHub 按 commits 排序的前 12 人，不是仓库全量人数。"
+            "value" : "GitHub 按 commits 排序的前 12 人，\n不是仓库全量人数。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "GitHub 依 commits 排序的前 12 人，不是倉庫全量人數。"
+            "value" : "GitHub 依 commits 排序的前 12 人，\n不是倉庫全量人數。"
           }
         }
       }
@@ -274224,19 +274224,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "View all contributors"
+            "value" : "View All"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看全部贡献者"
+            "value" : "查看全部"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看全部貢獻者"
+            "value" : "查看全部"
           }
         }
       }
