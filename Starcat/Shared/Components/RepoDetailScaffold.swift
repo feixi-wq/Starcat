@@ -181,6 +181,9 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
     /// Manage 详情传入时展示语言分布分割线；其它详情场景保持 nil，不加载语言数据。
     let onLanguageTapped: ((String) -> Void)?
 
+    /// Trending 详情已有本周贡献者 heroExtension，关掉 all-time 贡献者列避免两套口径叠在一起。
+    let showsContributorsStat: Bool
+
     /// 账本行等场景的顶栏一句（如「你 Star 了 · 2 小时前」）。
     ///
     /// 必须画在本骨架内部、tint 下面：挂在 Scaffold 外面会挡住语言色光晕，
@@ -298,6 +301,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         starHelpKey: LocalizedStringKey = "repo.unstar",
         showsRepoHealthEntry: Bool = false,
         onLanguageTapped: ((String) -> Void)? = nil,
+        showsContributorsStat: Bool = true,
         topBanner: String? = nil,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder heroExtension: @escaping () -> HeroExt,
@@ -309,6 +313,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         self.starHelpKey = starHelpKey
         self.showsRepoHealthEntry = showsRepoHealthEntry
         self.onLanguageTapped = onLanguageTapped
+        self.showsContributorsStat = showsContributorsStat
         self.topBanner = topBanner
         self.onStarTapped = onStarTapped
         self.heroExtension_ = heroExtension
@@ -323,6 +328,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         starHelpKey: LocalizedStringKey = "repo.unstar",
         showsRepoHealthEntry: Bool = false,
         onLanguageTapped: ((String) -> Void)? = nil,
+        showsContributorsStat: Bool = true,
         topBanner: String? = nil,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder body: @escaping (@escaping (RepoDetailScrollReport) -> Void) -> Body
@@ -334,6 +340,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             starHelpKey: starHelpKey,
             showsRepoHealthEntry: showsRepoHealthEntry,
             onLanguageTapped: onLanguageTapped,
+            showsContributorsStat: showsContributorsStat,
             topBanner: topBanner,
             onStarTapped: onStarTapped,
             heroExtension: { EmptyView() },
@@ -771,6 +778,7 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                     showsRepoHealthEntry: showsRepoHealthEntry,
                     libraryState: libraryState,
                     onLanguageTapped: onLanguageTapped,
+                    showsContributorsStat: showsContributorsStat,
                     onStarTapped: onStarTapped
                 ) {
                     trailingActionsView

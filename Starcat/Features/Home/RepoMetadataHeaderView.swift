@@ -66,6 +66,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     /// Scaffold 已读取的知识库状态；Release stat 复用它，避免首屏重复查 repo_notes。
     let libraryState: LibraryState
     let onLanguageTapped: ((String) -> Void)?
+    /// Trending 详情已有本周贡献者 heroExtension，关掉本列避免两套口径叠在一起。
+    let showsContributorsStat: Bool
     private let trailingActions: TrailingActions
 
     /// OpenSSF 与 Repo Health 都放在 `full_name` 同行。
@@ -85,6 +87,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         showsRepoHealthEntry: Bool = false,
         libraryState: LibraryState = .outsideLibrary,
         onLanguageTapped: ((String) -> Void)? = nil,
+        showsContributorsStat: Bool = true,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder trailingActions: () -> TrailingActions
     ) {
@@ -95,6 +98,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         self.showsRepoHealthEntry = showsRepoHealthEntry
         self.libraryState = libraryState
         self.onLanguageTapped = onLanguageTapped
+        self.showsContributorsStat = showsContributorsStat
         self.onStarTapped = onStarTapped
         self.trailingActions = trailingActions()
     }
@@ -261,7 +265,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     }
 
     private var statsSection: some View {
-        HStack(alignment: .center, spacing: 24) {
+        // 贡献者列头像 22pt，比同行 14pt 数字略高；底对齐让 Stars / 贡献者等 caption 仍在一条线上。
+        HStack(alignment: .bottom, spacing: 24) {
             // R-01 §3.2.3 状态机：StarStatChipButton 封装 idle / loading /
             // shake / error-flash 4 状态。已 star → ⭐ 实心黄；未 star →
             // ☆ 空心灰；API 进行中 → ProgressView；失败 → 抖动 + 短暂红色。
@@ -286,6 +291,15 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             // 与 Stars / Forks / Watchers / Created / Updated 同行展示。详见
             // `Starcat/Features/Releases/RepoReleaseSection.swift` 文件头 v2.0 演化说明。
             RepoReleaseStatItem(repo: repo, libraryState: libraryState)
+            if showsContributorsStat {
+                RepoContributorsStatItem(
+                    repo: repo,
+                    service: RepositoryContributorHeroService(
+                        remote: dependencies.repositoryRemoteInsightsProvider,
+                        access: dependencies.repositoryRemoteInsightsAccessProvider
+                    )
+                )
+            }
         }
     }
 }
