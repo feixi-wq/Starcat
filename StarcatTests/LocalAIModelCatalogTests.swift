@@ -65,12 +65,25 @@ struct LocalAIModelCatalogTests {
 
     @Test("ModelScope 仅收录已验证镜像")
     func modelScopeWhitelist() {
-        // 2026-09-12 全量核验：11 个模型在 HF 与魔塔均有 mlx-community 镜像
-        //（新入册 embeddinggemma / reranker-4B 亦已双源验证）。
+        // 2026-09-12 全量核验：12 个模型在 HF 与魔塔均有可用仓库；大多数来自
+        // mlx-community，MiniCPM5 使用 OpenBMB 官方双源仓库。
         for entry in LocalAIModelCatalog.entries {
             #expect(entry.isAvailable(on: .modelScope), "\(entry.id) 应有魔塔镜像")
             #expect(entry.isAvailable(on: .huggingFace), "\(entry.id) 应有 HF 仓库")
         }
+    }
+
+    @Test("MiniCPM5 使用官方双源并携带独立聊天模板")
+    func miniCPM5Contract() throws {
+        let entry = try #require(LocalAIModelCatalog.entry(id: "minicpm5-2b-mlx-4bit"))
+
+        #expect(entry.displayName == "MiniCPM5 2B 4bit")
+        #expect(entry.type == .llm)
+        #expect(entry.capability == .chat)
+        #expect(entry.contextLength == 131_072)
+        #expect(entry.source(for: .huggingFace)?.repo == "openbmb/MiniCPM5-2B-MLX")
+        #expect(entry.source(for: .modelScope)?.repo == "OpenBMB/MiniCPM5-2B-MLX")
+        #expect(entry.files.contains { $0.name == "chat_template.jinja" && $0.isRequired })
     }
 
     @Test("内置 profile id 与 catalog 解析稳定")

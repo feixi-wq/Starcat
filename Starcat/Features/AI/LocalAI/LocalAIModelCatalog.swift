@@ -13,10 +13,10 @@
 //    ——下载源选了 ModelScope 而某模型没有镜像时，该模型显示「暂未收录」。
 //  - ModelScope 镜像为社区同步（master 分支），revision 记录为 master 快照；
 //    HF 为权威源（安装时解析 commit SHA）。
-//  - 2026-09-12 二轮扩充：Embedding 4 / Reranker 3 / LLM 4（Qwen3.5 已入册）。
+//  - 2026-09-12 二轮扩充：Embedding 4 / Reranker 3 / LLM 5（Qwen3.5、MiniCPM5 已入册）。
 //    Nemotron-3-Embed（model_type ministral3）上游 registry 不支持，未收录；
 //    jina-reranker-v3 为 CC BY-NC 非商业许可，未收录；Qwen3-VL-Reranker 为
-//    视觉语言架构，文本管线暂不支持。11 个模型均已核验 HF + ModelScope 双源。
+//    视觉语言架构，文本管线暂不支持。12 个模型均已核验 HF + ModelScope 双源。
 //  - 换默认模型 = 改这里，业务层无感。
 //
 
@@ -253,7 +253,7 @@ enum LocalAIModelCatalog {
         ],
         files: mlxConfigFiles)
 
-    // MARK: - LLM（4）
+    // MARK: - LLM（5）
 
     /// 最新一代推荐：Qwen3.5 4B（mlx-swift-lm 锁定版本原生支持 Qwen3_5 架构）。
     static let llm = LocalAIModelCatalogEntry(
@@ -290,6 +290,27 @@ enum LocalAIModelCatalog {
             LocalAIModelSource(kind: .modelScope, repo: "mlx-community/Qwen3-4B-Instruct-2507-4bit", revision: nil),
         ],
         files: llmConfigFiles)
+
+    /// MiniCPM5 2B：标准 LlamaForCausalLM 架构，面向 Apple Silicon 的官方 4bit 权重。
+    ///
+    /// 上游把聊天模板放在独立的 `chat_template.jinja`，未嵌入 tokenizer_config.json；
+    /// 该文件必须随模型安装，否则 swift-transformers 无法构造多轮对话输入。
+    static let llmMiniCPM5 = LocalAIModelCatalogEntry(
+        id: "minicpm5-2b-mlx-4bit",
+        displayName: "MiniCPM5 2B 4bit",
+        type: .llm,
+        capability: .chat,
+        recommended: false,
+        isLite: false,
+        estimatedDownloadSize: 1_430_000_000,
+        memoryRecommendation: 3_000_000_000,
+        contextLength: 131_072,
+        embeddingDimension: nil,
+        sources: [
+            LocalAIModelSource(kind: .huggingFace, repo: "openbmb/MiniCPM5-2B-MLX", revision: nil),
+            LocalAIModelSource(kind: .modelScope, repo: "OpenBMB/MiniCPM5-2B-MLX", revision: nil),
+        ],
+        files: llmConfigFiles + [.required("chat_template.jinja")])
 
     static let llmQwen35Lite = LocalAIModelCatalogEntry(
         id: "qwen3.5-0.8b-mlx-4bit",
@@ -336,6 +357,7 @@ enum LocalAIModelCatalog {
         reranker4B,
         llm,
         llmQwen3_4B,
+        llmMiniCPM5,
         llmQwen35Lite,
         llmLite,
     ]
