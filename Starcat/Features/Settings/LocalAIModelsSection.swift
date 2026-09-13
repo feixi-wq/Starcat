@@ -29,8 +29,6 @@ struct LocalAIModelsSection: View {
 
     @State private var manager = LocalAIModelManager.shared
     @State private var pendingClearAllConfirm = false
-    /// 每个类别当前在下拉里选中的 entry id；nil = 用默认（已安装优先，其次推荐）。
-    @State private var selectedIDs: [LocalAIModelType: String] = [:]
     /// 当前展开浮层下拉的类别（同一时刻至多一个）。
     @State private var expandedDropdown: LocalAIModelType?
 
@@ -267,7 +265,7 @@ struct LocalAIModelsSection: View {
             ForEach(LocalAIModelCatalog.entries(of: type)) { entry in
                 let isSelected = entry.id == selected.id
                 Button {
-                    selectedIDs[type] = entry.id
+                    settings.localAIModelSelections[type.rawValue] = entry.id
                     expandedDropdown = nil
                 } label: {
                     HStack(spacing: 8) {
@@ -292,6 +290,7 @@ struct LocalAIModelsSection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusEffectDisabled()
             }
         }
     }
@@ -324,23 +323,7 @@ struct LocalAIModelsSection: View {
 
     /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
     private func selectedEntry(for type: LocalAIModelType) -> LocalAIModelCatalogEntry {
-        let entries = LocalAIModelCatalog.entries(of: type)
-        guard !entries.isEmpty else {
-            // catalog 保证每类非空；防御性兜底避免强制解包。
-            return LocalAIModelCatalog.entries[0]
-        }
-        if let id = selectedIDs[type], let entry = entries.first(where: { $0.id == id }) {
-            return entry
-        }
-        return entries.first { manager.installedModel(id: $0.id) != nil }
-            ?? entries.first { $0.recommended }
-            ?? entries[0]
-    }
-
-    private func selectionBinding(for type: LocalAIModelType) -> Binding<String> {
-        Binding(
-            get: { selectedEntry(for: type).id },
-            set: { selectedIDs[type] = $0 })
+        settings.selectedLocalAIModel(for: type, installedModels: manager.installedModels)
     }
 
     private func typeLabel(_ type: LocalAIModelType) -> String {

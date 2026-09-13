@@ -46,16 +46,14 @@ struct AISettingsTab: View {
     /// 用户每次进入 AI 设置都会被强行切回 DeepSeek（第一个），第二行 Provider
     /// picker 也跟着回到 DeepSeek，违反"进页面时显示当前选中的已配好服务商"诉求。
     ///
-    /// 改成 `@AppStorage` 跨 Settings 窗口和 app 启动都持久化，空串当 nil 哨兵
-    /// （`@AppStorage` 不直接支持 `String?`）。`ensureSelection()` 仍保留兜底逻辑：
+    /// 选择现在由 AppSettings 共用并持久化，沿用原 key 与空串 nil 哨兵，
+    /// 让 toolbar 同步知道设置页当前查看的服务商。`ensureSelection()` 保留兜底逻辑：
     /// 持久化的 ID 在当前已验证列表里找不到（profile 被删 / 升级后改了 ID）时
     /// 降级到 `verifiedProfiles.first?.id`，避免"指向幽灵 profile"。
-    @AppStorage("settings.ai.lastSelectedProfileID") private var lastSelectedProfileIDStorage: String = ""
-
     /// 当前选中的服务商 profile ID。空串持久化值视为 nil。
     /// 真正的写入入口走 `setSelectedProfileID(_:)`，避免散落的赋值绕过空串哨兵。
     private var selectedProfileID: String? {
-        lastSelectedProfileIDStorage.isEmpty ? nil : lastSelectedProfileIDStorage
+        settings.aiSettingsSelectedProfileID.isEmpty ? nil : settings.aiSettingsSelectedProfileID
     }
 
     @State private var draftProfile: AIProviderProfile?
@@ -2574,8 +2572,8 @@ struct AISettingsTab: View {
     /// nil → 持久化层写空串哨兵；非 nil → 直接写入 ID。
     /// 集中走这个 helper 是为了让"空串 ↔ nil"语义不要散落到 4 个赋值点。
     private func setSelectedProfileID(_ id: String?) {
-        AppLog.ai.debug("[AISettings] setSelectedProfileID(\(id ?? "nil", privacy: .public)) prev=\(self.lastSelectedProfileIDStorage, privacy: .public)")
-        lastSelectedProfileIDStorage = id ?? ""
+        AppLog.ai.debug("[AISettings] setSelectedProfileID(\(id ?? "nil", privacy: .public)) prev=\(self.settings.aiSettingsSelectedProfileID, privacy: .public)")
+        settings.aiSettingsSelectedProfileID = id ?? ""
     }
 
     private func ensureSelection() {

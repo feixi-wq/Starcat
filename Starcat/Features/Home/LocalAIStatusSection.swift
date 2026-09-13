@@ -10,6 +10,7 @@ import SwiftUI
 
 /// 模型状态与释放入口保持在同一分区，让用户区分「卸载内存」与「删除下载文件」。
 struct LocalAIStatusSection: View {
+    @Environment(AppSettings.self) private var settings
     @Environment(\.locale) private var locale
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @State private var manager = LocalAIModelManager.shared
@@ -18,6 +19,16 @@ struct LocalAIStatusSection: View {
     @State private var error: String?
 
     var body: some View {
+        let models = settings.localAIStatusModels(installedModels: manager.installedModels)
+        if LocalAIHardwareSupport.isLocalAIAvailable, !models.isEmpty {
+            Divider()
+            statusContent(models)
+            Divider()
+        }
+    }
+
+    /// 服务商切走时连同分隔线与采样 task 一起移除，不留空白区块。
+    private func statusContent(_ models: [LocalAIModelCatalogEntry]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("toolbar.localai.title", systemImage: "cpu")
@@ -34,11 +45,8 @@ struct LocalAIStatusSection: View {
                 metric("toolbar.localai.cache", bytes: snapshot.cacheBytes)
                 metric("toolbar.localai.budget", bytes: snapshot.budgetBytes)
             }
-            ForEach(manager.installedModels) { model in
+            ForEach(models) { model in
                 modelRow(model)
-            }
-            if manager.installedModels.isEmpty {
-                Text("toolbar.localai.empty").foregroundStyle(.secondary)
             }
             HStack {
                 Text(String(format: String.l10n("toolbar.localai.queued"), snapshot.queuedCount))
@@ -81,21 +89,27 @@ struct LocalAIStatusSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func modelRow(_ model: LocalAIInstalledModel) -> some View {
+    private func modelRow(_ model: LocalAIModelCatalogEntry) -> some View {
+        let installed = manager.installedModel(id: model.id)
         let resident = snapshot.models[model.type].flatMap {
-            $0.directory.lastPathComponent == model.idWithRevision ? $0 : nil
+            $0.directory.lastPathComponent == installed?.idWithRevision ? $0 : nil
         }
         let phase = resident?.phase ?? .notLoaded
         let canUnload = [.ready, .running, .loading].contains(phase)
         let actionKey = canUnload ? "toolbar.localai.unload" : "toolbar.localai.load"
         return HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: model.displayName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(model.displayName)
+                HStack(spacing: 6) {
+                    Text(Self.modelTypeLabelKey(model.type))
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    Text(verbatim: model.displayName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(model.displayName)
+                }
                 HStack(spacing: 4) {
-                    Text(LocalizedStringKey(phase.localizationKey))
+                    Text(LocalizedStringKey(installed == nil ? "toolbar.localai.notDownloaded" : phase.localizationKey))
                     if let resident, resident.loadedBytes > 0 {
                         Text(
                             String(
@@ -115,17 +129,25 @@ struct LocalAIStatusSection: View {
                 run(model.id) {
                     if canUnload {
                         await LocalMLXRuntime.shared.unload(types: [model.type])
-                    } else if let entry = LocalAIModelCatalog.entry(id: model.id),
-                        let directory = manager.installedDirectoryURL(entryID: model.id)
+                    } else if let directory = manager.installedDirectoryURL(entryID: model.id)
                     {
-                        try await LocalMLXRuntime.shared.preload(entry: entry, directory: directory)
+                        try await LocalMLXRuntime.shared.preload(entry: model, directory: directory)
                     }
                 }
             }
             .controlSize(.small)
             // 手动加载尚未返回时仍允许点卸载，由运行时取消加载并等待 GPU 收尾。
-            .disabled((pending.contains(model.id) && !canUnload) || pending.contains("all") || phase == .unloading)
+            .disabled(installed == nil || (pending.contains(model.id) && !canUnload) || pending.contains("all") || phase == .unloading)
             .accessibilityLabel("\(String.l10n(actionKey)) \(model.displayName)")
+        }
+    }
+
+    /// 使用完整字面量 key；LocalizedStringKey 的直接插值会生成 %@ 格式键，无法命中类别翻译。
+    static func modelTypeLabelKey(_ type: LocalAIModelType) -> LocalizedStringKey {
+        switch type {
+        case .embedding: return "settings.localai.model.type.embedding"
+        case .reranker: return "settings.localai.model.type.reranker"
+        case .llm: return "settings.localai.model.type.llm"
         }
     }
 

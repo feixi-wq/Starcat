@@ -1009,6 +1009,18 @@ final class AppSettings {
         didSet { persist(key: Keys.localAIDownloadSource, value: localAIDownloadSource.rawValue) }
     }
 
+    /// 设置页正在查看的服务商；沿用原持久化 key，状态面板与设置页共用同一观察源。
+    /// 这是设置页选择，不是对话、摘要等任务的路由，不能触发模型加载或卸载。
+    var aiSettingsSelectedProfileID: String = "" {
+        didSet { persist(key: Keys.aiSettingsSelectedProfileID, value: aiSettingsSelectedProfileID) }
+    }
+
+    /// 三类本地模型下拉的选择，按类别 rawValue 保存 catalog entry ID。
+    /// 与任务模型配置分离，避免浏览下载选项时意外改变实际推理模型。
+    var localAIModelSelections: [String: String] = [:] {
+        didSet { persistJSON(key: Keys.localAIModelSelections, value: localAIModelSelections) }
+    }
+
     /// 多服务商 AI 配置。
     ///
     /// 为什么放 UserDefaults JSON：
@@ -1904,6 +1916,10 @@ final class AppSettings {
         self.localAIDownloadSource = LocalAIModelSource.Kind(
             rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
         ) ?? .huggingFace
+        self.aiSettingsSelectedProfileID = defaults.string(forKey: Keys.aiSettingsSelectedProfileID) ?? ""
+        self.localAIModelSelections = Self.decodeJSON(
+            [String: String].self, key: Keys.localAIModelSelections, defaults: defaults
+        ) ?? [:]
         // init 里不能调实例方法（其余 stored 属性尚未齐），且 didSet 也不会触发；
         // 若消毒改写了内容，直接写 UserDefaults，避免每次冷启动重复处理同一份脏 JSON。
         if !profiles.isEmpty, sanitizedProfiles != profiles {
@@ -2817,6 +2833,8 @@ final class AppSettings {
         static let aiEmbeddingModel = "settings.ai.embeddingModel"
         static let aiProviderProfiles = "settings.ai.providerProfiles.v2"
         static let localAIDownloadSource = "settings.localai.downloadSource.v1"
+        static let aiSettingsSelectedProfileID = "settings.ai.lastSelectedProfileID"
+        static let localAIModelSelections = "settings.localai.modelSelections.v1"
         static let aiSummaryTask = "settings.ai.task.summary.v2"
         static let aiTagsTask = "settings.ai.task.tags.v2"
         static let aiTagSuggestionMinCount = "settings.ai.tagSuggestion.minCount.v1"

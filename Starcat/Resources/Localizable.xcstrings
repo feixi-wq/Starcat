@@ -3372,6 +3372,12 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "卸载" } }
       }
     },
+    "toolbar.localai.notDownloaded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not downloaded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未下载" } }
+      }
+    },
     "toolbar.localai.state.notLoaded" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Not loaded" } },

@@ -301,11 +301,7 @@ private struct AppStatusPanel: View {
                         .focusEffectDisabled()
                 }
             )
-            if LocalAIHardwareSupport.isLocalAIAvailable {
-                Divider()
-                LocalAIStatusSection()
-                Divider()
-            }
+            LocalAIStatusSection()
             statusRow(
                 icon: serviceIcon,
                 tint: serviceTint,
