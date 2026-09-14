@@ -103,6 +103,18 @@ struct DiagnosticsTests {
         #expect(error.title == String.l10n("readme.translate.engine.system"))
     }
 
+    @Test("本地 AI 超上下文不再显示为访问 AI 失败")
+    func userFacingErrorMapsLocalAIContextTooLong() {
+        let error = UserFacingError.map(
+            LocalAIError.contextTooLong,
+            operation: String.l10n("diagnostics.operation.aiChat"),
+            service: "AI"
+        )
+        #expect(error.message == String.l10n("toolbar.localai.contextTooLong"))
+        #expect(!error.message.contains("在访问 AI 时失败"))
+        #expect(!error.shouldRecordDiagnostic)
+    }
+
     @Test("系统翻译语言包缺失不写入开发者诊断")
     func userFacingErrorSystemTranslationLanguagePackMissing() throws {
         let error = UserFacingError.map(
