@@ -7,7 +7,8 @@
 //  为什么不让业务层直接说 Anthropic：
 //  - Agent / 摘要 / Chat 只认 `user` / `assistant` / `tool`。
 //  - Anthropic 没有 `role: tool`，连续 tool 结果必须合并成一条 `user` + 多个 `tool_result`。
-//  - `.jsonObject` 用强制 tool `starcat_json_result` 收取，再把 arguments 填回 `content`。
+//  - `.jsonObject` 不注入假 tool：Haiku / 中转对强制 tool_choice 会 400，
+//    auto 又常交空 `{}` 盖掉正文。标签 prompt 已要求 JSON，只在 system 再钉一句。
 //
 //  关键约束：
 //  - `max_tokens` 必填，钳制到 1...32768（Starcat 默认 128K 会被官方拒绝）。
@@ -20,6 +21,8 @@ import Foundation
 /// Anthropic Messages 请求 / 响应编解码。
 enum AnthropicMessagesCodec {
     static let jsonResultToolName = "starcat_json_result"
+    /// 标签 / 翻译 / RAG 规划都靠 `.jsonObject`；Anthropic 没有 `json_object` 模式。
+    static let jsonObjectSystemSuffix = "Return a single JSON object only. No markdown fences, no prose."
     static let apiVersion = "2023-06-01"
     static let maxTokensRange = 1...32_768
     static let allowedImageTypes: Set<String> = [
@@ -50,7 +53,7 @@ enum AnthropicMessagesCodec {
             body["top_k"] = request.parameters.topK
         }
 
-        let systemPrompt = request.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let systemPrompt = encodedSystemPrompt(request)
         if !systemPrompt.isEmpty {
             body["system"] = systemPrompt
         }
@@ -128,7 +131,10 @@ enum AnthropicMessagesCodec {
             }
         }
 
-        let content = jsonResultContent ?? textParts.joined()
+        let content = preferredJSONContent(
+            toolResult: jsonResultContent,
+            text: textParts.joined()
+        )
         if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && toolCalls.isEmpty {
             throw AIClientError.emptyResponse
         }
@@ -246,35 +252,30 @@ enum AnthropicMessagesCodec {
 
     // MARK: - Tools
 
+    private static func encodedSystemPrompt(_ request: AIChatRequest) -> String {
+        let system = request.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard request.responseFormat == .jsonObject else { return system }
+        if system.isEmpty {
+            return jsonObjectSystemSuffix
+        }
+        if system.contains(jsonObjectSystemSuffix) {
+            return system
+        }
+        return system + "\n\n" + jsonObjectSystemSuffix
+    }
+
+    /// 只转发业务自己带的 tools。假 tool 在 Haiku / 中转上要么 400，要么交空 `{}`。
     private static func encodeTools(_ request: AIChatRequest) throws -> [[String: Any]] {
-        var tools: [[String: Any]] = []
-        for tool in request.tools {
-            tools.append([
+        try request.tools.map { tool in
+            [
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": try jsonObject(from: tool.inputSchema)
-            ])
+            ]
         }
-        if request.responseFormat == .jsonObject {
-            // Anthropic 要求 object schema 带 `properties`；只有 additionalProperties
-            // 会 400。Haiku 4.5 / 中转对 tool_choice=tool 也会 400，改 auto。
-            tools.append([
-                "name": jsonResultToolName,
-                "description": "Return the JSON object required by the user request.",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [String: Any](),
-                    "additionalProperties": true
-                ]
-            ])
-        }
-        return tools
     }
 
     private static func encodeToolChoice(_ request: AIChatRequest) -> [String: Any] {
-        if request.responseFormat == .jsonObject {
-            return ["type": "auto"]
-        }
         switch request.toolChoice {
         case .none:
             return ["type": "none"]
@@ -285,6 +286,72 @@ enum AnthropicMessagesCodec {
         case .tool(let name):
             return ["type": "tool", "name": name]
         }
+    }
+
+    /// 空 `{}` 不算结构化结果，不能盖掉正文里的 JSON。
+    static func preferredJSONContent(toolResult: String?, text: String) -> String {
+        if let toolResult, let useful = usefulJSONString(toolResult) {
+            return useful
+        }
+        if let useful = usefulJSONString(text) {
+            return useful
+        }
+        let trimmedTool = toolResult?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedTool.isEmpty {
+            return trimmedTool
+        }
+        return text
+    }
+
+    static func usefulJSONString(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "{}" else { return nil }
+        if let data = trimmed.data(using: .utf8),
+           let value = try? JSONSerialization.jsonObject(with: data),
+           !isEmptyJSON(value) {
+            return unwrapJSONValue(value) ?? trimmed
+        }
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}"),
+              start < end
+        else {
+            return nil
+        }
+        let sliced = String(trimmed[start...end])
+        guard sliced != "{}",
+              sliced != trimmed,
+              let nested = usefulJSONString(sliced)
+        else {
+            return nil
+        }
+        return nested
+    }
+
+    private static func isEmptyJSON(_ value: Any) -> Bool {
+        if let dictionary = value as? [String: Any] { return dictionary.isEmpty }
+        if let array = value as? [Any] { return array.isEmpty }
+        return false
+    }
+
+    private static func unwrapJSONValue(_ value: Any) -> String? {
+        if let dictionary = value as? [String: Any] {
+            let wrappers: Set<String> = ["result", "data", "json", "output", "value"]
+            if dictionary.count == 1,
+               let key = dictionary.keys.first,
+               wrappers.contains(key.lowercased()) {
+                if let nested = dictionary[key] as? [String: Any], !nested.isEmpty {
+                    return jsonString(from: nested)
+                }
+                if let nested = dictionary[key] as? String {
+                    return usefulJSONString(nested) ?? nested
+                }
+            }
+            return jsonString(from: dictionary)
+        }
+        if JSONSerialization.isValidJSONObject(value) {
+            return jsonString(from: value)
+        }
+        return nil
     }
 
     // MARK: - JSON helpers
@@ -514,15 +581,15 @@ struct AnthropicSSEStreamParser {
                 arguments: partial.json.isEmpty ? "{}" : partial.json
             ))
         }
-        let jsonContent = jsonResultArguments.flatMap { fragment in
-            fragment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : fragment
-        }
-        let resolvedContent = jsonContent ?? content
-        if resolvedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && toolCalls.isEmpty {
+        let jsonContent = AnthropicMessagesCodec.preferredJSONContent(
+            toolResult: jsonResultArguments,
+            text: content
+        )
+        if jsonContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && toolCalls.isEmpty {
             throw AIClientError.emptyResponse
         }
         return AIChatResponse(
-            content: resolvedContent,
+            content: jsonContent,
             reasoningContent: nil,
             toolCalls: toolCalls,
             usage: usage,

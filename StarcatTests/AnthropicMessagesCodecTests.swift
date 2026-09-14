@@ -2,7 +2,7 @@
 //  AnthropicMessagesCodecTests.swift
 //  StarcatTests
 //
-//  覆盖历史 tool 合并、jsonObject 强制 tool、max_tokens 钳制、stop_reason 映射。
+//  覆盖历史 tool 合并、jsonObject 正文 JSON、max_tokens 钳制、stop_reason 映射。
 //
 
 import Foundation
@@ -79,8 +79,8 @@ struct AnthropicMessagesCodecTests {
         }
     }
 
-    @Test("jsonObject 注入 starcat_json_result，schema 带 properties，tool_choice 用 auto")
-    func jsonObjectForcedTool() throws {
+    @Test("jsonObject 不注入假 tool，system 追加 JSON only")
+    func jsonObjectDoesNotInjectDummyTool() throws {
         let object = try AnthropicMessagesCodec.requestJSONObject(
             AIChatRequest(
                 systemPrompt: "",
@@ -91,13 +91,37 @@ struct AnthropicMessagesCodecTests {
             ),
             stream: false
         )
-        let tools = try #require(object["tools"] as? [[String: Any]])
-        let jsonTool = try #require(tools.first { $0["name"] as? String == AnthropicMessagesCodec.jsonResultToolName })
-        let schema = try #require(jsonTool["input_schema"] as? [String: Any])
-        #expect(schema["type"] as? String == "object")
-        #expect(schema["properties"] != nil)
-        let choice = try #require(object["tool_choice"] as? [String: Any])
-        #expect(choice["type"] as? String == "auto")
+        #expect(object["tools"] == nil)
+        #expect(object["tool_choice"] == nil)
+        #expect(object["system"] as? String == AnthropicMessagesCodec.jsonObjectSystemSuffix)
+    }
+
+    @Test("空 starcat_json_result 不能盖掉正文 JSON")
+    func emptyJSONToolFallsBackToText() throws {
+        let data = Data(#"""
+        {
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu-1",
+              "name": "starcat_json_result",
+              "input": {}
+            },
+            {
+              "type": "text",
+              "text": "{\"suggestedTags\":[{\"name\":\"Swift\",\"confidence\":0.9,\"reason\":\"lang\"}]}"
+            }
+          ],
+          "stop_reason": "end_turn",
+          "model": "claude-haiku-4-5"
+        }
+        """#.utf8)
+        let response = try AnthropicMessagesCodec.decodeMessageResponse(
+            data,
+            fallbackModel: "claude-haiku-4-5"
+        )
+        #expect(response.content.contains("suggestedTags"))
+        #expect(response.toolCalls.isEmpty)
     }
 
     @Test("max_tokens 128K 被钳成 32768")

@@ -1741,14 +1741,19 @@ final class RepoAIInsightService {
     nonisolated static func decodeTagSuggestions(json raw: String) throws -> [AITagSuggestion] {
         let json = extractJSONObject(from: raw)
         guard let data = json.data(using: .utf8) else { throw RepoAIInsightError.invalidJSON }
-        do {
-            if let envelope = try? JSONDecoder().decode(AITagSuggestionEnvelope.self, from: data) {
-                return envelope.suggestedTags
-            }
-            return try JSONDecoder().decode([AITagSuggestion].self, from: data)
-        } catch {
+        if let envelope = try? JSONDecoder().decode(AITagSuggestionEnvelope.self, from: data) {
+            return envelope.suggestedTags
+        }
+        if let list = try? JSONDecoder().decode([AITagSuggestion].self, from: data) {
+            return list
+        }
+        // Anthropic / 中转常给 snake_case、缺 reason、或把标签写成字符串数组。
+        guard let parsed = try? JSONSerialization.jsonObject(with: data),
+              let tags = tagSuggestions(fromJSON: parsed)
+        else {
             throw RepoAIInsightError.invalidJSON
         }
+        return tags
     }
 
     nonisolated static func decodeBatchTagSuggestions(
@@ -1848,14 +1853,71 @@ final class RepoAIInsightService {
     }
 
     private nonisolated static func extractJSONObject(from raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let start = trimmed.firstIndex(of: "{"),
-              let end = trimmed.lastIndex(of: "}"),
-              start <= end
-        else {
-            return trimmed
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("```") {
+            var lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            if lines.first?.hasPrefix("```") == true {
+                lines.removeFirst()
+            }
+            if lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```") == true {
+                lines.removeLast()
+            }
+            trimmed = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return String(trimmed[start...end])
+        if let start = trimmed.firstIndex(of: "{"),
+           let end = trimmed.lastIndex(of: "}"),
+           start <= end {
+            return String(trimmed[start...end])
+        }
+        if let start = trimmed.firstIndex(of: "["),
+           let end = trimmed.lastIndex(of: "]"),
+           start <= end {
+            return String(trimmed[start...end])
+        }
+        return trimmed
+    }
+
+    /// 宽松解析标签列表：envelope / 数组 / 字符串标签 / snake_case。
+    private nonisolated static func tagSuggestions(fromJSON value: Any) -> [AITagSuggestion]? {
+        if let dictionary = value as? [String: Any] {
+            if let rawTags = dictionary["suggestedTags"]
+                ?? dictionary["suggested_tags"]
+                ?? dictionary["tags"] {
+                return tagSuggestions(fromJSON: rawTags)
+            }
+            if dictionary["name"] != nil || dictionary["tag"] != nil {
+                return parseTagItem(dictionary).map { [$0] }
+            }
+            return nil
+        }
+        if let array = value as? [Any] {
+            let items = array.compactMap(parseTagItem)
+            return items.isEmpty && !array.isEmpty ? nil : items
+        }
+        return nil
+    }
+
+    private nonisolated static func parseTagItem(_ value: Any) -> AITagSuggestion? {
+        if let name = value as? String {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return AITagSuggestion(name: trimmed, confidence: 0.8, reason: "")
+        }
+        guard let dictionary = value as? [String: Any] else { return nil }
+        let name = ((dictionary["name"] as? String) ?? (dictionary["tag"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let reason = (dictionary["reason"] as? String) ?? ""
+        let confidence = parseTagConfidence(dictionary["confidence"])
+        return AITagSuggestion(name: name, confidence: confidence, reason: reason)
+    }
+
+    private nonisolated static func parseTagConfidence(_ value: Any?) -> Double {
+        if let number = value as? Double { return number }
+        if let number = value as? Int { return Double(number) }
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let text = value as? String, let number = Double(text) { return number }
+        return 0.8
     }
 
     // 2026-06-12：原 `stripHTML(_:)` 已被 `ReadmePreprocessor.process(html:)` 取代。
