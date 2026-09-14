@@ -322208,6 +322208,40 @@
         }
       }
     },
+    "settings.ai.provider.discardDraft.addHelp" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel adding this provider"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消新增服务商"
+          }
+        }
+      }
+    },
+    "settings.ai.provider.discardDraft.editHelp" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Discard unsaved provider changes"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "放弃未保存的修改"
+          }
+        }
+      }
+    },
     "settings.ai.provider.displayName" : {
       "extractionState" : "manual",
       "localizations" : {
