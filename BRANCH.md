@@ -6,7 +6,7 @@
 >
 > 操作规范：[`docs/5-规范/Git-分支与Worktree规范.md`](docs/5-规范/Git-分支与Worktree规范.md)
 >
-> 最后核对：2026-09-13
+> 最后核对：2026-09-14
 
 ## 登记说明
 
@@ -32,9 +32,10 @@
 
 | 分支 | 位置 | 用途 | 当前状态 | 下一步 |
 |---|---|---|---|---|
-| `dev` | 本地 + `origin/dev` | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；1.6.1 发布基线与 `main` 已同步（`abcaf63f`），Direct、官网、appcast 与 Homebrew 已于 2026-09-09 发布。 | 继续承载 1.6.1 后续维护与新功能开发；App Store 版本发布由 dong4j 完成。 |
+| `dev` | 本地 + `origin/dev`；仓库根目录 worktree | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；1.6.1 发布基线与 `main` 已同步（`abcaf63f`），Direct、官网、appcast 与 Homebrew 已于 2026-09-09 发布。 | 继续承载 1.6.1 后续维护与新功能开发；App Store 版本发布由 dong4j 完成。 |
+| `feature/anthropic-cc-switch-import` | 本地；worktree `../Starcat-anthropic-cc-switch` | 接入 Anthropic Messages API（文档 68）并从 CC Switch 导入 BYOK Provider（文档 69）。基于本地 `dev` 创建独立分支，不占用 `dev` checkout。 | `开发中`；2026-09-14 从本地 `dev@9ccf5c62` 建分支。 | 验收后合回 `dev`；未经 dong4j 授权不 push、不删 worktree。 |
 | `codex/performance-optimization` | 本地；无独立 worktree | Starcat macOS App 的 UI、列表分页、数据加载与缓存性能专项优化。 | `已合并`；多轮优化与交互修复已于 2026-09-06 合入 `dev`，独有提交为 0，原 worktree 已安全删除。 | 暂时保留本地分支；如需删除分支，等待 dong4j 单独授权。 |
-| `main` | 本地 + `origin/main`；仓库根目录 worktree | 远端默认稳定主线和发布基线。 | `长期保留`；1.6.1 已于 2026-09-09 推送 `main` 与 `v1.6.1`，Direct 公证、官网、appcast 和 Homebrew 已完成，App Store archive `1.6.1 (3171)` 已生成待上传。 | 保持 1.6.1 发布基线；App Store 版本发布由 dong4j 完成，后续版本继续从已验收的 `dev` 快进。 |
+| `main` | 本地 + `origin/main`；仓库根目录 worktree | 远端默认稳定主线和发布基线。 | `长期保留`；1.6.1 已于 2026-09-09 推送 `main` 与 `v1.6.1`，Direct、官网、appcast 和 Homebrew 已完成，App Store archive `1.6.1 (3171)` 已生成待上传。 | 保持 1.6.1 发布基线；App Store 版本发布由 dong4j 完成，后续版本继续从已验收的 `dev` 快进。 |
 
 ## 推荐数据链路跨仓分支
 

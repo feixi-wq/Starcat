@@ -21,6 +21,7 @@
 import AppKit
 import OSLog
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 主设置中的 AI 分类页。
 ///
@@ -116,6 +117,9 @@ struct AISettingsTab: View {
     @State private var pendingRebuildAllConfirm: Bool = false
     /// 免费用户点击 AI 设置页升级入口时展示统一 Pro 付费墙。
     @State private var paywallContext: ProPaywallContext?
+    /// CC Switch 导入预览。确认前不写 Keychain。
+    @State private var ccSwitchImportSession: CCSwitchImportSession?
+    @State private var ccSwitchImportError: String?
 
     init(page: AISettingsPage = .models) {
         self.page = page
@@ -188,6 +192,28 @@ struct AISettingsTab: View {
         } message: {
             Text("settings.aiIndex.rebuildAll.confirmMessage")
         }
+        .alert(
+            "settings.ai.provider.importCCSwitch",
+            isPresented: Binding(
+                get: { ccSwitchImportError != nil },
+                set: { if !$0 { ccSwitchImportError = nil } }
+            )
+        ) {
+            Button("general.cancel", role: .cancel) {}
+        } message: {
+            Text(ccSwitchImportError ?? "")
+        }
+        .sheet(item: $ccSwitchImportSession) { session in
+            CCSwitchImportPreviewSheet(
+                preview: session.preview,
+                onImport: { candidates, progress in
+                    await importCCSwitchCandidates(candidates, progress: progress)
+                },
+                onSelectProfile: { profileID in
+                    setSelectedProfileID(profileID)
+                }
+            )
+        }
         .formStyle(.grouped)
         // Placeholders popover 锚在 Prompt 区按钮上：Form 一滚就关，避免锚点滚走后浮层悬空。
         .onScrollPhaseChange { _, newPhase in
@@ -253,11 +279,7 @@ struct AISettingsTab: View {
             // 成功路径里已被晋升为 verified profile 并把 draftProfile 置 nil,
             // 这里看到的 draftProfile != nil 全是"未完成"草稿。
             AppLog.ai.debug("[AISettings] SettingsWindowCloseListener.onClose fired draftID=\(self.draftProfile?.id ?? "nil", privacy: .public)")
-            if draftProfile != nil {
-                draftProfile = nil
-                draftAPIKey = ""
-                keyError = nil
-            }
+            discardDraft()
         })
         // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12 (dong4j 反馈)：
         // 删除服务商二次确认。用 `presenting:` 把 profile 注入到 alert 闭包，
@@ -393,24 +415,22 @@ struct AISettingsTab: View {
 
     private var providerSection: some View {
         Section {
-            // HOM-68 follow-up v2 (dong4j 反馈 #1)：
-            // "新增服务商" / "删除当前" 按钮移到 picker 同一行的右侧，
-            // 紧凑且符合设置面板"次要操作贴近主控件"的常见 macOS 布局。
-            HStack {
-                // HOM-AIPROVIDERS-2026-06-06：服务商配置 picker 在每个 profile 行
-                // 前面挂当前 provider 的 logo，让用户在多 profile（"OpenAI 摘要 +
-                // DeepSeek 翻译 + Ollama embedding"）场景下一眼分辨。
-                // SwiftUI Picker 的 menu style 会把 Label 内的 Image 一起渲染到下拉
-                // 菜单和已选 caption 区，无需为下拉 / 当前选中分别画。
+            // 与下方「显示名称」同一套：左 label 列 + 垂直居中。
+            // 不用 LabeledContent——Form 会按首行基线排 label，右侧 28pt 按钮一高，
+            // 标题就会看起来偏上。下拉靠右，贴着导入 / + / 删除。
+            HStack(alignment: .center, spacing: ProviderFieldLayout.rowSpacing) {
+                Text("settings.ai.provider.pickerLabel")
+                    .font(.body)
+                    .frame(width: ProviderFieldLayout.labelWidth, alignment: .leading)
+                    .lineLimit(1)
+
                 if pickerProfiles.isEmpty {
-                    // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
-                    // zero state 文案补充行动指引——之前只说「暂无已验证服务商」是
-                    // 状态描述，用户不知道下一步要做什么。改成「...点右侧 + 新增」
-                    // 让新用户直接看到入口。
                     Text("settings.ai.provider.empty")
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 } else {
+                    Spacer(minLength: 8)
                     Picker("settings.ai.provider.pickerLabel", selection: selectedProfileBinding) {
                         ForEach(pickerProfiles) { profile in
                             Label {
@@ -422,30 +442,47 @@ struct AISettingsTab: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
                 }
 
-                Spacer(minLength: 12)
+                ImportIconButton(help: Text("settings.ai.provider.importCCSwitch.help")) {
+                    beginCCSwitchImport()
+                }
+                .disabled(draftProfile != nil || isTestingProfileID != nil)
 
                 AddIconButton(help: Text("settings.ai.provider.addHelp")) {
-                    // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12：包 withAnimation 让下方
-                    // Provider 行 + 输入区伴随 transition 滑入，而不是瞬切。
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                         beginDraft(provider: .openAICompatible)
                     }
                 }
                 .disabled(draftProfile != nil)
 
-                // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12：先弹二次确认 dialog，
-                // dialog 内点「删除」才真正执行 `deleteProfile(id:)`。
-                DestructiveIconButton(
-                    help: Text("settings.ai.provider.deleteHelp"),
-                    font: SettingsIconMetrics.standardGlyph,
-                    frameSize: SettingsIconMetrics.actionFrameSize
-                ) {
-                    pendingDeleteProfileID = selectedProfileID
+                if draftProfile != nil {
+                    CancelIconButton(
+                        help: Text(
+                            isAddingNewProviderDraft
+                                ? "settings.ai.provider.discardDraft.addHelp"
+                                : "settings.ai.provider.discardDraft.editHelp"
+                        ),
+                        font: SettingsIconMetrics.standardGlyph,
+                        frameSize: SettingsIconMetrics.actionFrameSize
+                    ) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            discardDraft()
+                        }
+                    }
+                    .disabled(isTestingProfileID != nil)
+                } else {
+                    DestructiveIconButton(
+                        help: Text("settings.ai.provider.deleteHelp"),
+                        font: SettingsIconMetrics.standardGlyph,
+                        frameSize: SettingsIconMetrics.actionFrameSize
+                    ) {
+                        pendingDeleteProfileID = selectedProfileID
+                    }
+                    .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
                 }
-                // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
-                .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
             }
 
             // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
@@ -502,6 +539,23 @@ struct AISettingsTab: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     providerInputRows(profile)
+
+                    if profile.provider == .anthropic {
+                        // 两条 caption 收进同一 Form 行，避免 grouped Form 给每句各垫一行高。
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(
+                                SettingsCaptionASCIILinks.attributedString(
+                                    from: String.l10n("settings.ai.provider.anthropic.baseURLHint")
+                                )
+                            )
+                            .tint(.accentColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                            Text("settings.ai.provider.anthropic.embeddingUnsupported")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     HStack {
                         Text(profile.lastTestStatus.displayText)
@@ -564,6 +618,7 @@ struct AISettingsTab: View {
                             capabilityBinding: { model in modelCapabilityBinding(profile.id, model.id) },
                             parametersBinding: { model in modelParametersBinding(profile.id, model.id) }
                         )
+                        .id(profile.id)
                     }
                 }
             }
@@ -643,7 +698,7 @@ struct AISettingsTab: View {
                             .tag("")
                     } else {
                         ForEach(availableModels) { model in
-                            Text(model.name).tag(model.name)
+                            Text(AnthropicModelCatalog.displayName(forAPIID: model.name)).tag(model.name)
                         }
                     }
                 }
@@ -698,61 +753,46 @@ struct AISettingsTab: View {
     // parameterMaxTokensKBinding / parameterTimeoutSecondsBinding——这些都是
     // "task → AIModelParameters" 路径上的辅助，迁移后 popover 内部自带等价控件。
 
-    /// AI 服务商三个长输入项的自定义表格块。
+    /// 显示名称 / Base URL / API Key：跟「服务」页同一套行高。
     ///
-    /// 这里不再让 `Form(.grouped)` 分别布局三条 `TextField` row。macOS 的 Form 会
-    /// 对每个 row 单独测量，短文本输入框、长 URL 输入框、聚焦态输入框得到的
-    /// proposed width 可能不同；单行内 `GeometryReader` 也只能读到该 row 自己的
-    /// 宽度，无法保证三行一致。
-    ///
-    /// 把三行收进同一个 `VStack` 后，Form 只测量一次这个块；块内部固定 label 列宽，
-    /// 右侧输入框吃满剩余宽度，三个输入框自然共享同一左边界和右边界。
-    ///
-    /// 输入控件不能用 SwiftUI 原生 `TextField`：在 macOS `Form(.grouped)` 里，超长
-    /// Base URL 仍可能参与 row 测量并把布局顶成换行。这里用 AppKit `NSTextField`
-    /// 包装，明确要求单行、不可换行、内容超出时在字段内横向滚动。
+    /// 旧实现把三行锁成 52pt 再塞进一个固定高度 VStack，Form 行被撑得比系统
+    /// grouped 行高一倍。`SingleLineTextField` 已压低 hugging，超长 URL 不会再
+    /// 把行顶换行，因此改回独立 Form 行，高度交给 22pt bezel 字段。
+    private enum ProviderFieldLayout {
+        static let labelWidth: CGFloat = 96
+        static let fieldHeight: CGFloat = 22
+        static let rowSpacing: CGFloat = 8
+    }
+
     @ViewBuilder
     private func providerInputRows(_ profile: AIProviderProfile) -> some View {
-        let labelWidth: CGFloat = 96
-        let columnSpacing: CGFloat = 14
-        let rowHeight: CGFloat = 52
-
-        VStack(spacing: 0) {
-            providerInputRow(label: "settings.ai.provider.displayName", labelWidth: labelWidth, columnSpacing: columnSpacing, rowHeight: rowHeight) {
-                SingleLineTextField(text: editableProfileTextBinding(keyPath: \.displayName))
-                    .accessibilityLabel("settings.ai.provider.displayName")
-            }
-            Divider()
-            providerInputRow(label: "Base URL", labelWidth: labelWidth, columnSpacing: columnSpacing, rowHeight: rowHeight) {
-                SingleLineTextField(text: editableProfileTextBinding(keyPath: \.baseURL))
-                    .accessibilityLabel("Base URL")
-            }
-            Divider()
-            providerInputRow(label: "API Key", labelWidth: labelWidth, columnSpacing: columnSpacing, rowHeight: rowHeight) {
-                SingleLineTextField(text: editableAPIKeyBinding(), isSecure: true)
-                    .accessibilityLabel("API Key")
-            }
+        providerInputRow(label: "settings.ai.provider.displayName") {
+            SingleLineTextField(text: editableProfileTextBinding(keyPath: \.displayName))
+                .accessibilityLabel("settings.ai.provider.displayName")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: rowHeight * 3 + 2)
+        providerInputRow(label: "Base URL") {
+            SingleLineTextField(text: editableProfileTextBinding(keyPath: \.baseURL))
+                .accessibilityLabel("Base URL")
+        }
+        providerInputRow(label: "API Key") {
+            SingleLineTextField(text: editableAPIKeyBinding(), isSecure: true)
+                .accessibilityLabel("API Key")
+        }
     }
 
     private func providerInputRow<Field: View>(
         label: LocalizedStringKey,
-        labelWidth: CGFloat,
-        columnSpacing: CGFloat,
-        rowHeight: CGFloat,
         @ViewBuilder field: () -> Field
     ) -> some View {
-        HStack(alignment: .center, spacing: columnSpacing) {
+        HStack(alignment: .center, spacing: ProviderFieldLayout.rowSpacing) {
             Text(label)
-                .frame(width: labelWidth, alignment: .leading)
+                .font(.body)
+                .frame(width: ProviderFieldLayout.labelWidth, alignment: .leading)
                 .lineLimit(1)
             field()
+                .frame(height: ProviderFieldLayout.fieldHeight)
                 .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: rowHeight)
     }
 
     /// HOM-68 follow-up v5 (dong4j 反馈 2026-06-05 23:00)：
@@ -2290,10 +2330,152 @@ struct AISettingsTab: View {
         keyError = nil
     }
 
+    /// 放弃未完成的服务商草稿。草稿从未写入 `aiProviderProfiles`，所以只清内存态。
+    /// 编辑已有服务商时，落盘配置仍在原 ID 上，丢掉草稿即恢复已保存值。
+    private func discardDraft() {
+        guard draftProfile != nil else { return }
+        AppLog.ai.debug("[AISettings] discardDraft() draftID=\(self.draftProfile?.id ?? "nil", privacy: .public)")
+        draftProfile = nil
+        draftAPIKey = ""
+        keyError = nil
+    }
+
+    /// 点 `+` 生成的新草稿 ID 不在已保存列表里；从已有 profile 提升的草稿沿用原 ID。
+    private var isAddingNewProviderDraft: Bool {
+        guard let draftID = draftProfile?.id else { return false }
+        return !settings.aiProviderProfiles.contains { $0.id == draftID }
+    }
+
     // `deleteSelectedProfile()` 已被 `deleteProfile(id:)` + `confirmationDialog`
     // 二次确认链路取代（HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12）。原函数
     // 隐式依赖 `selectedProfileID`，confirm dialog 期间用户可能切换 selection
     // 导致语义偏差，新函数收紧到显式 ID 删除。
+
+    @MainActor
+    private func beginCCSwitchImport() {
+        ccSwitchImportError = nil
+        if DistributionChannel.current.isDirect,
+           let url = POSIXHome.ccSwitchDefaultDatabase,
+           FileManager.default.isReadableFile(atPath: url.path) {
+            openCCSwitchFile(url)
+            return
+        }
+        presentCCSwitchOpenPanel()
+    }
+
+    @MainActor
+    private func presentCCSwitchOpenPanel() {
+        let panel = NSOpenPanel()
+        let defaultPath = POSIXHome.ccSwitchDefaultDatabase?.path ?? "~/.cc-switch/cc-switch.db"
+        panel.message = String(format: String.l10n("settings.ai.provider.importCCSwitch.panelMessage"), defaultPath)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "db"),
+            UTType(filenameExtension: "sqlite"),
+            UTType(filenameExtension: "sqlite3"),
+            UTType(filenameExtension: "sql")
+        ].compactMap { $0 }
+        panel.allowsOtherFileTypes = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        openCCSwitchFile(url)
+    }
+
+    @MainActor
+    private func openCCSwitchFile(_ url: URL) {
+        do {
+            let rows = try CCSwitchConfigStore.open(url: url)
+            let preview = CCSwitchProviderMapper.preview(
+                rows: rows,
+                sourcePath: url.path,
+                anthropicAvailable: CCSwitchProviderMapper.isAnthropicAdapterAvailable
+            )
+            ccSwitchImportSession = CCSwitchImportSession(preview: preview)
+        } catch {
+            ccSwitchImportError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func importCCSwitchCandidates(
+        _ candidates: [CCSwitchImportCandidate],
+        progress: @MainActor (Int, Int, String) -> Void
+    ) async -> CCSwitchImportOutcome {
+        var succeeded: [CCSwitchImportResultRow] = []
+        var failed: [CCSwitchImportResultRow] = []
+        var existingNames = settings.aiProviderProfiles.map(\.displayName)
+        var cancelled = false
+
+        for (offset, candidate) in candidates.enumerated() {
+            if Task.isCancelled {
+                cancelled = true
+                break
+            }
+            progress(offset + 1, candidates.count, candidate.displayName)
+            let displayName = CCSwitchProviderMapper.uniquedDisplayName(
+                candidate.displayName,
+                existing: existingNames
+            )
+            existingNames.append(displayName)
+            let profile = AIProviderProfile(
+                id: UUID().uuidString,
+                provider: candidate.provider,
+                displayName: displayName,
+                baseURL: candidate.baseURL,
+                isEnabled: false,
+                lastTestStatus: .notTested
+            )
+            var profiles = settings.aiProviderProfiles
+            profiles.append(profile)
+            settings.aiProviderProfiles = profiles
+            do {
+                try persistAPIKey(
+                    candidate.apiKey,
+                    forProvider: profile.id,
+                    allowsEmpty: profile.provider.allowsEmptyAPIKey
+                )
+                apiKeys[profile.id] = candidate.apiKey
+            } catch {
+                failed.append(CCSwitchImportResultRow(
+                    id: profile.id,
+                    displayName: displayName,
+                    profileID: profile.id,
+                    succeeded: false,
+                    statusText: error.localizedDescription
+                ))
+                AppLog.ai.error("CC Switch import persist failed appType=\(candidate.appType, privacy: .public) provider=\(candidate.provider.rawValue, privacy: .public)")
+                continue
+            }
+
+            await testAndFetchModels(profile)
+            let updated = settings.aiProviderProfiles.first { $0.id == profile.id } ?? profile
+            let ok: Bool
+            if case .success = updated.lastTestStatus {
+                ok = true
+            } else {
+                ok = false
+            }
+            let row = CCSwitchImportResultRow(
+                id: profile.id,
+                displayName: displayName,
+                profileID: profile.id,
+                succeeded: ok,
+                statusText: updated.lastTestStatus.displayText
+            )
+            if ok {
+                succeeded.append(row)
+            } else {
+                failed.append(row)
+            }
+            AppLog.ai.info("CC Switch import appType=\(candidate.appType, privacy: .public) provider=\(candidate.provider.rawValue, privacy: .public) success=\(ok, privacy: .public)")
+        }
+
+        if Task.isCancelled {
+            cancelled = true
+        }
+        return CCSwitchImportOutcome(succeeded: succeeded, failed: failed, cancelled: cancelled)
+    }
 
     @MainActor
     private func testAndFetchModels(_ profile: AIProviderProfile) async {
@@ -2303,7 +2485,7 @@ struct AISettingsTab: View {
 
         let testingKey = apiKey(for: profile)
         do {
-            let models = try await AIClientFactory.make(configuration: AIClientConfiguration(
+            let client = try AIClientFactory.make(configuration: AIClientConfiguration(
                 providerID: profile.id,
                 provider: profile.provider,
                 apiKey: testingKey,
@@ -2311,11 +2493,18 @@ struct AISettingsTab: View {
                 chatModel: profile.models.first(where: { $0.capability == .chat })?.name ?? profile.provider.defaultChatModel,
                 embeddingModel: profile.models.first(where: { $0.capability == .embedding })?.name ?? profile.provider.defaultEmbeddingModel,
                 timeoutInterval: 60
-            )).listModels()
+            ))
+            let models = try await client.listModels()
 
             var verified = profile
+            if let anthropic = client as? AnthropicClient {
+                verified.baseURL = anthropic.probedBaseURL
+            }
             // 去重 / 大目录不全开 / 容量上限：避免 OpenRouter 类目录在勾选时卡死主线程。
-            verified.mergeDiscoveredModels(models)
+            verified.mergeDiscoveredModels(
+                models,
+                referencedModelNames: referencedModelNames(for: profile.id)
+            )
             verified.isEnabled = true
             verified.lastTestedAt = ISO8601DateFormatter.shared.string(from: Date())
             verified.lastTestStatus = .success(modelCount: verified.models.count)
@@ -2535,6 +2724,7 @@ struct AISettingsTab: View {
             get: { model(profileID: profileID, modelID: modelID)?.isEnabled ?? false },
             set: { enabled in
                 // 取消勾选前先记下是否被任务引用：未引用时不必跑 repair（会连写 5 份 task JSON）。
+                guard model(profileID: profileID, modelID: modelID)?.isEnabled != enabled else { return }
                 let modelName = model(profileID: profileID, modelID: modelID)?.name
                 let needsTaskRepair = !enabled && isModelReferencedByAnyTask(
                     providerID: profileID,
@@ -2560,10 +2750,22 @@ struct AISettingsTab: View {
         }
     }
 
+    /// 合并 / 消毒大目录时保住任务仍在用的模型名（含自定义名称，避免关掉正在跑的配置）。
+    private func referencedModelNames(for profileID: String) -> Set<String> {
+        Set(AIModelTask.allCases.compactMap { task in
+            let config = taskConfig(task)
+            guard config.providerID == profileID else { return nil }
+            let name = config.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? nil : name
+        })
+    }
+
     private func modelCapabilityBinding(_ profileID: String, _ modelID: String) -> Binding<AIModelCapability> {
         Binding(
             get: { model(profileID: profileID, modelID: modelID)?.capability ?? .unknown },
             set: { capability in
+                // Picker 出现时可能把当前值再 set 一遍；无变化就不要写回整个 profiles 数组。
+                guard model(profileID: profileID, modelID: modelID)?.capability != capability else { return }
                 updateModel(profileID: profileID, modelID: modelID) { model in
                     model.capability = capability
                 }

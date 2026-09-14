@@ -532,10 +532,13 @@ extension LocalMLXRuntime {
                 input: UserInput(chat: promptMessages, additionalContext: setup.additionalContext))
             return prepared.text.tokens.size
         }
+        LocalAILog.record("input.prepared", "Input token budget validated.", fields: [
+            "inputTokens": String(promptTokenCount),
+            "inputTokenLimit": String(LocalAIMemoryPolicy.inputTokens)
+        ])
         guard promptTokenCount <= LocalAIMemoryPolicy.inputTokens else {
             throw LocalAIError.contextTooLong
         }
-        LocalAILog.record("input.prepared", "Input token budget validated.", fields: ["inputTokens": String(promptTokenCount)])
         var output = ""
         var reasoningOutput = ""
         var completion: GenerateCompletionInfo?

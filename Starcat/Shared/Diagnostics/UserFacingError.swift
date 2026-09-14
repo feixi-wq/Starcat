@@ -68,6 +68,16 @@ struct UserFacingError: Equatable, Sendable {
         if let insight = error as? RepoAIInsightError {
             return mapRepoAIInsight(insight, operation: operation, service: service)
         }
+        if let localAI = error as? LocalAIError {
+            // 本地模型超上下文 / 重复输出等已有专用文案，不能再套「访问 AI 失败」。
+            return UserFacingError(
+                title: String.l10n("error.user.aiProvider.title"),
+                message: localAI.localizedDescription,
+                recovery: String.l10n("error.user.aiProvider.recovery"),
+                diagnosticSummary: DiagnosticEvent.redact(String(describing: localAI)),
+                shouldRecordDiagnostic: false
+            )
+        }
         if let translation = error as? ReadmeTranslationError {
             return mapReadmeTranslation(translation, operation: operation, service: service)
         }

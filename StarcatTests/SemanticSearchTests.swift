@@ -225,6 +225,19 @@ struct RepoAIInsightTests {
         #expect(tags[0].name == "local-ai")
     }
 
+    @Test("AI Tags: snake_case、缺 reason、字符串数组也能解析")
+    func decodeTagSuggestionsLenientShapes() throws {
+        let snake = #"{"suggested_tags":[{"name":"Swift","confidence":"0.9"}]}"#
+        let snakeTags = try RepoAIInsightService.decodeTagSuggestions(json: snake)
+        #expect(snakeTags.count == 1)
+        #expect(snakeTags[0].name == "Swift")
+        #expect(snakeTags[0].confidence == 0.9)
+
+        let names = #"["macOS","Swift"]"#
+        let nameTags = try RepoAIInsightService.decodeTagSuggestions(json: names)
+        #expect(nameTags.map(\.name) == ["macOS", "Swift"])
+    }
+
     @Test("AI Tags: 批量建议按 repo_id 解码")
     func decodeBatchTagSuggestions() throws {
         let raw = #"{"results":[{"repo_id":1,"suggestedTags":[{"name":"Swift","confidence":0.96,"reason":"match"}]},{"repo_id":2,"suggestedTags":[]}]}"#

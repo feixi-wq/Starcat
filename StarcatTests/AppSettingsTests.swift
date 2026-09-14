@@ -1203,6 +1203,23 @@ struct AppSettingsTests {
         #expect(try JSONDecoder().decode(AIServiceProvider.self, from: encoded) == provider)
     }
 
+    @Test("AI: Anthropic 一等 Provider 默认值与持久化契约")
+    func anthropicProviderPreset() throws {
+        let provider = AIServiceProvider.anthropic
+        #expect(provider.displayName == "Anthropic")
+        #expect(provider.defaultProfileName == "Anthropic")
+        #expect(provider.defaultBaseURL == "https://api.anthropic.com")
+        #expect(provider.defaultChatModel == "claude-sonnet-4-5")
+        #expect(provider.defaultEmbeddingModel.isEmpty)
+        #expect(!provider.supportsEmbeddingEndpoint)
+        #expect(!provider.allowsEmptyAPIKey)
+        #expect(provider.iconAssetName == "claudecode")
+        #expect(AIServiceProvider.userSelectableCases.contains(.anthropic))
+
+        let encoded = try JSONEncoder().encode(provider)
+        #expect(try JSONDecoder().decode(AIServiceProvider.self, from: encoded) == provider)
+    }
+
     @Test("AI: provider 只有测试成功且启用后才算正式配置")
     func aiProviderProfileVerifiedState() {
         let draft = AIProviderProfile(

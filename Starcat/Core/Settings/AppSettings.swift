@@ -246,9 +246,9 @@ enum RepoSortOption: String, CaseIterable, Identifiable {
 ///
 /// 设计选择：
 /// - 当前第一阶段只落地 OpenAI-compatible 路线，**所有 case 都假定走 OpenAI Chat
-///   Completions 协议**，由 `OpenAIClient` 统一适配。Anthropic Messages API（Claude
-///   官方、`*_anthropic` 系列入口）暂未支持，故未列入；未来若新增 Anthropic 客户端
-///   再扩展。
+///   Completions 协议**，由 `OpenAIClient` 统一适配。`.anthropic` 是第二个非 Completions
+///   case：走 Messages API（`AnthropicClient`），给官方 Claude 与各家 `*/anthropic`
+///   中转用；不能把它改写成 OpenAI `/v1/chat/completions`。
 /// - 保留具体 provider 枚举不是为了锁死 SDK，而是给设置页提供"一键填好 base URL +
 ///   chat / embedding 默认值 + logo"的快捷选项。dong4j 仍然可以选 `.openAICompatible`
 ///   + 自填 URL 接入任何 OpenAI 兼容服务。
@@ -306,6 +306,12 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     // 设计文档：docs/2-产品/需求讨论/starcat-local-ai-framework-and-model-plan.md。
     case localAI
 
+    // MARK: - 2026-09-14 新增（Anthropic Messages API，非 OpenAI Completions）
+    //
+    // 必须追加在 `localAI` **之后**，禁止插入中间以免改已有 rawValue 的持久化语义。
+    // 设计文档：docs/3-设计/详细设计/68-Anthropic服务商详细设计.md。
+    case anthropic
+
     var id: String { rawValue }
 
     /// 设置页 picker 显示的服务商名（i18n key 复用 LocalizedStringKey 自动解析）。
@@ -336,6 +342,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zai:              return "Z.AI"
         case .orcaRouter:       return "OrcaRouter"
         case .localAI:          return "Starcat Local AI"
+        case .anthropic:        return "Anthropic"
         }
     }
 
@@ -372,6 +379,8 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .orcaRouter:       return "orcarouter"
         // 自绘 CPU+火花矢量（本地推理语义），非上游品牌资源。
         case .localAI:          return "localai"
+        // 复用已有 Claude Spark imageset，不新增品牌资源。
+        case .anthropic:        return "claudecode"
         }
     }
 
@@ -438,6 +447,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .zai:              return "https://api.z.ai/api/coding/paas/v4"
         case .orcaRouter:       return "https://api.orcarouter.ai/v1"
         case .localAI:          return ""
+        case .anthropic:        return "https://api.anthropic.com"
         }
     }
 
@@ -470,6 +480,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .orcaRouter:       return "openai/gpt-4o-mini"
         // 占位提示：真实可用列表来自内置 profile 的已安装模型（LocalAIModelManager）。
         case .localAI:          return "Qwen3 4B Instruct 4bit"
+        case .anthropic:        return "claude-sonnet-4-5"
         }
     }
 
@@ -524,6 +535,9 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
             return ""
         case .localAI:
             return "Qwen3 Embedding 0.6B 8bit"
+        case .anthropic:
+            // Anthropic 不提供 embeddings；空值只用于构造测试客户端，任务门禁拦截。
+            return ""
         }
     }
 
@@ -533,7 +547,7 @@ enum AIServiceProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     /// capability 校验，把 OrcaRouter 误用于当前并不存在的 Embedding API。
     var supportsEmbeddingEndpoint: Bool {
         switch self {
-        case .orcaRouter:
+        case .orcaRouter, .anthropic:
             return false
         default:
             return true
@@ -1903,10 +1917,13 @@ final class AppSettings {
         )
         let profiles = Self.decodeJSON([AIProviderProfile].self, key: Keys.aiProviderProfiles, defaults: defaults) ?? []
         // 临时诊断（provider 列表消失问题）：确认启动时 decode 到的 profile 数量。
-        // 历史脏数据（重复 id / 超大目录）会在设置页勾选模型时卡死主线程；启动时只做去重+截断。
+        // 历史脏数据（重复 id / 超大目录 / 大目录全开）会在设置页勾选或滚动模型时卡死主线程。
+        let referencedByProfile = Self.referencedAIModelNamesByProfileID(defaults: defaults)
         let sanitizedProfiles = profiles.isEmpty
             ? [defaultProfile]
-            : profiles.map { $0.sanitizedForStorage() }
+            : profiles.map {
+                $0.sanitizedForStorage(referencedModelNames: referencedByProfile[$0.id] ?? [])
+            }
         self.aiProviderProfiles = sanitizedProfiles
         self.localAIDownloadSource = LocalAIModelSource.Kind(
             rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
@@ -2558,6 +2575,33 @@ final class AppSettings {
             settings[.firecrawl] = firecrawl
         }
         return settings
+    }
+
+    /// 启动消毒前先从任务 JSON 收集「仍在用的模型名」，避免把任务引用的模型关掉。
+    private static func referencedAIModelNamesByProfileID(defaults: UserDefaults) -> [String: Set<String>] {
+        let keys = [
+            Keys.aiSummaryTask,
+            Keys.aiTagsTask,
+            Keys.aiEmbeddingTask,
+            Keys.aiTranslationTask,
+            Keys.aiChatTask,
+        ]
+        var result: [String: Set<String>] = [:]
+        for key in keys {
+            guard let task = decodeJSON(AIModelTaskConfiguration.self, key: key, defaults: defaults) else {
+                continue
+            }
+            let resolved = task.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.providerID.isEmpty else { continue }
+            if !resolved.isEmpty {
+                result[task.providerID, default: []].insert(resolved)
+            }
+            let modelID = task.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !modelID.isEmpty {
+                result[task.providerID, default: []].insert(modelID)
+            }
+        }
+        return result
     }
 
     private static func decodeJSON<T: Decodable>(
