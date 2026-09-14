@@ -415,90 +415,73 @@ struct AISettingsTab: View {
 
     private var providerSection: some View {
         Section {
-            // HOM-68 follow-up v2 (dong4j 反馈 #1)：
-            // "新增服务商" / "删除当前" 按钮移到 picker 同一行的右侧，
-            // 紧凑且符合设置面板"次要操作贴近主控件"的常见 macOS 布局。
-            // LabeledContent 把「服务商配置」留在左边；Picker 再 labelsHidden，
-            // 避免 Form 标题被藏掉。右侧菜单锁 28pt，和导入 / + / 删除对齐。
-            LabeledContent("settings.ai.provider.pickerLabel") {
-                HStack(alignment: .center, spacing: 8) {
-                    // HOM-AIPROVIDERS-2026-06-06：服务商配置 picker 在每个 profile 行
-                    // 前面挂当前 provider 的 logo，让用户在多 profile（"OpenAI 摘要 +
-                    // DeepSeek 翻译 + Ollama embedding"）场景下一眼分辨。
-                    // SwiftUI Picker 的 menu style 会把 Label 内的 Image 一起渲染到下拉
-                    // 菜单和已选 caption 区，无需为下拉 / 当前选中分别画。
-                    if pickerProfiles.isEmpty {
-                        // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
-                        // zero state 文案补充行动指引——之前只说「暂无已验证服务商」是
-                        // 状态描述，用户不知道下一步要做什么。改成「...点右侧 + 新增」
-                        // 让新用户直接看到入口。
-                        Text("settings.ai.provider.empty")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Picker("settings.ai.provider.pickerLabel", selection: selectedProfileBinding) {
-                            ForEach(pickerProfiles) { profile in
-                                Label {
-                                    Text(profile.displayName)
-                                } icon: {
-                                    AIProviderIconView(provider: profile.provider, size: 14)
-                                }
-                                .tag(Optional(profile.id))
+            // 与下方「显示名称」同一套：左 label 列 + 垂直居中。
+            // 不用 LabeledContent——Form 会按首行基线排 label，右侧 28pt 按钮一高，
+            // 标题就会看起来偏上。下拉靠右，贴着导入 / + / 删除。
+            HStack(alignment: .center, spacing: ProviderFieldLayout.rowSpacing) {
+                Text("settings.ai.provider.pickerLabel")
+                    .font(.body)
+                    .frame(width: ProviderFieldLayout.labelWidth, alignment: .leading)
+                    .lineLimit(1)
+
+                if pickerProfiles.isEmpty {
+                    Text("settings.ai.provider.empty")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                } else {
+                    Spacer(minLength: 8)
+                    Picker("settings.ai.provider.pickerLabel", selection: selectedProfileBinding) {
+                        ForEach(pickerProfiles) { profile in
+                            Label {
+                                Text(profile.displayName)
+                            } icon: {
+                                AIProviderIconView(provider: profile.provider, size: 14)
                             }
+                            .tag(Optional(profile.id))
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .fixedSize()
-                        .frame(height: SettingsIconMetrics.actionFrameSize, alignment: .center)
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                }
 
-                    Spacer(minLength: 12)
+                ImportIconButton(help: Text("settings.ai.provider.importCCSwitch.help")) {
+                    beginCCSwitchImport()
+                }
+                .disabled(draftProfile != nil || isTestingProfileID != nil)
 
-                    ImportIconButton(help: Text("settings.ai.provider.importCCSwitch.help")) {
-                        beginCCSwitchImport()
+                AddIconButton(help: Text("settings.ai.provider.addHelp")) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                        beginDraft(provider: .openAICompatible)
                     }
-                    .disabled(draftProfile != nil || isTestingProfileID != nil)
+                }
+                .disabled(draftProfile != nil)
 
-                    AddIconButton(help: Text("settings.ai.provider.addHelp")) {
-                        // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12：包 withAnimation 让下方
-                        // Provider 行 + 输入区伴随 transition 滑入，而不是瞬切。
+                if draftProfile != nil {
+                    CancelIconButton(
+                        help: Text(
+                            isAddingNewProviderDraft
+                                ? "settings.ai.provider.discardDraft.addHelp"
+                                : "settings.ai.provider.discardDraft.editHelp"
+                        ),
+                        font: SettingsIconMetrics.standardGlyph,
+                        frameSize: SettingsIconMetrics.actionFrameSize
+                    ) {
                         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                            beginDraft(provider: .openAICompatible)
+                            discardDraft()
                         }
                     }
-                    .disabled(draftProfile != nil)
-
-                    if draftProfile != nil {
-                        // 草稿态占用原删除槽位：取消新增 / 放弃未保存修改。
-                        // 不能继续走垃圾桶——selectedProfile 仍是点 + 之前的已有服务商，
-                        // 误点会弹「删除 DeepSeek」而不是丢掉这份还没落盘的草稿。
-                        CancelIconButton(
-                            help: Text(
-                                isAddingNewProviderDraft
-                                    ? "settings.ai.provider.discardDraft.addHelp"
-                                    : "settings.ai.provider.discardDraft.editHelp"
-                            ),
-                            font: SettingsIconMetrics.standardGlyph,
-                            frameSize: SettingsIconMetrics.actionFrameSize
-                        ) {
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                discardDraft()
-                            }
-                        }
-                        .disabled(isTestingProfileID != nil)
-                    } else {
-                        // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12：先弹二次确认 dialog，
-                        // dialog 内点「删除」才真正执行 `deleteProfile(id:)`。
-                        DestructiveIconButton(
-                            help: Text("settings.ai.provider.deleteHelp"),
-                            font: SettingsIconMetrics.standardGlyph,
-                            frameSize: SettingsIconMetrics.actionFrameSize
-                        ) {
-                            pendingDeleteProfileID = selectedProfileID
-                        }
-                        // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
-                        .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
+                    .disabled(isTestingProfileID != nil)
+                } else {
+                    DestructiveIconButton(
+                        help: Text("settings.ai.provider.deleteHelp"),
+                        font: SettingsIconMetrics.standardGlyph,
+                        frameSize: SettingsIconMetrics.actionFrameSize
+                    ) {
+                        pendingDeleteProfileID = selectedProfileID
                     }
+                    .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
                 }
             }
 
@@ -558,19 +541,20 @@ struct AISettingsTab: View {
                     providerInputRows(profile)
 
                     if profile.provider == .anthropic {
-                        Text(
-                            SettingsCaptionASCIILinks.attributedString(
-                                from: String.l10n("settings.ai.provider.anthropic.baseURLHint")
+                        // 两条 caption 收进同一 Form 行，避免 grouped Form 给每句各垫一行高。
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(
+                                SettingsCaptionASCIILinks.attributedString(
+                                    from: String.l10n("settings.ai.provider.anthropic.baseURLHint")
+                                )
                             )
-                        )
+                            .tint(.accentColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                            Text("settings.ai.provider.anthropic.embeddingUnsupported")
+                                .foregroundStyle(.secondary)
+                        }
                         .font(.caption)
-                        .tint(.accentColor)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        Text("settings.ai.provider.anthropic.embeddingUnsupported")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
                     HStack {
@@ -769,61 +753,46 @@ struct AISettingsTab: View {
     // parameterMaxTokensKBinding / parameterTimeoutSecondsBinding——这些都是
     // "task → AIModelParameters" 路径上的辅助，迁移后 popover 内部自带等价控件。
 
-    /// AI 服务商三个长输入项的自定义表格块。
+    /// 显示名称 / Base URL / API Key：跟「服务」页同一套行高。
     ///
-    /// 这里不再让 `Form(.grouped)` 分别布局三条 `TextField` row。macOS 的 Form 会
-    /// 对每个 row 单独测量，短文本输入框、长 URL 输入框、聚焦态输入框得到的
-    /// proposed width 可能不同；单行内 `GeometryReader` 也只能读到该 row 自己的
-    /// 宽度，无法保证三行一致。
-    ///
-    /// 把三行收进同一个 `VStack` 后，Form 只测量一次这个块；块内部固定 label 列宽，
-    /// 右侧输入框吃满剩余宽度，三个输入框自然共享同一左边界和右边界。
-    ///
-    /// 输入控件不能用 SwiftUI 原生 `TextField`：在 macOS `Form(.grouped)` 里，超长
-    /// Base URL 仍可能参与 row 测量并把布局顶成换行。这里用 AppKit `NSTextField`
-    /// 包装，明确要求单行、不可换行、内容超出时在字段内横向滚动。
+    /// 旧实现把三行锁成 52pt 再塞进一个固定高度 VStack，Form 行被撑得比系统
+    /// grouped 行高一倍。`SingleLineTextField` 已压低 hugging，超长 URL 不会再
+    /// 把行顶换行，因此改回独立 Form 行，高度交给 22pt bezel 字段。
+    private enum ProviderFieldLayout {
+        static let labelWidth: CGFloat = 96
+        static let fieldHeight: CGFloat = 22
+        static let rowSpacing: CGFloat = 8
+    }
+
     @ViewBuilder
     private func providerInputRows(_ profile: AIProviderProfile) -> some View {
-        let labelWidth: CGFloat = 96
-        let columnSpacing: CGFloat = 14
-        let rowHeight: CGFloat = 52
-
-        VStack(spacing: 0) {
-            providerInputRow(label: "settings.ai.provider.displayName", labelWidth: labelWidth, columnSpacing: columnSpacing, rowHeight: rowHeight) {
-                SingleLineTextField(text: editableProfileTextBinding(keyPath: \.displayName))
-                    .accessibilityLabel("settings.ai.provider.displayName")
-            }
-            Divider()
-            providerInputRow(label: "Base URL", labelWidth: labelWidth, columnSpacing: columnSpacing, rowHeight: rowHeight) {
-                SingleLineTextField(text: editableProfileTextBinding(keyPath: \.baseURL))
-                    .accessibilityLabel("Base URL")
-            }
-            Divider()
-            providerInputRow(label: "API Key", labelWidth: labelWidth, columnSpacing: columnSpacing, rowHeight: rowHeight) {
-                SingleLineTextField(text: editableAPIKeyBinding(), isSecure: true)
-                    .accessibilityLabel("API Key")
-            }
+        providerInputRow(label: "settings.ai.provider.displayName") {
+            SingleLineTextField(text: editableProfileTextBinding(keyPath: \.displayName))
+                .accessibilityLabel("settings.ai.provider.displayName")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: rowHeight * 3 + 2)
+        providerInputRow(label: "Base URL") {
+            SingleLineTextField(text: editableProfileTextBinding(keyPath: \.baseURL))
+                .accessibilityLabel("Base URL")
+        }
+        providerInputRow(label: "API Key") {
+            SingleLineTextField(text: editableAPIKeyBinding(), isSecure: true)
+                .accessibilityLabel("API Key")
+        }
     }
 
     private func providerInputRow<Field: View>(
         label: LocalizedStringKey,
-        labelWidth: CGFloat,
-        columnSpacing: CGFloat,
-        rowHeight: CGFloat,
         @ViewBuilder field: () -> Field
     ) -> some View {
-        HStack(alignment: .center, spacing: columnSpacing) {
+        HStack(alignment: .center, spacing: ProviderFieldLayout.rowSpacing) {
             Text(label)
-                .frame(width: labelWidth, alignment: .leading)
+                .font(.body)
+                .frame(width: ProviderFieldLayout.labelWidth, alignment: .leading)
                 .lineLimit(1)
             field()
+                .frame(height: ProviderFieldLayout.fieldHeight)
                 .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: rowHeight)
     }
 
     /// HOM-68 follow-up v5 (dong4j 反馈 2026-06-05 23:00)：
