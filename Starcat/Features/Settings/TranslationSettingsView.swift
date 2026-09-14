@@ -283,7 +283,7 @@ struct TranslationSettingsTab: View {
                                 .tag("")
                         } else {
                             ForEach(enabledModels) { model in
-                                Text(model.name).tag(model.name)
+                                Text(AnthropicModelCatalog.displayName(forAPIID: model.name)).tag(model.name)
                             }
                         }
                     }

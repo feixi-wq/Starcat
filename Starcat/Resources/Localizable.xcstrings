@@ -321609,6 +321609,23 @@
         }
       }
     },
+    "settings.ai.provider.anthropic.baseURLHint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Official: https://api.anthropic.com. Relays: paste the vendor root; /anthropic is optional."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "官方填 https://api.anthropic.com。中转按文档填根地址，/anthropic 可有可无。"
+          }
+        }
+      }
+    },
     "settings.ai.provider.anthropic.embeddingUnsupported" : {
       "extractionState" : "manual",
       "localizations" : {

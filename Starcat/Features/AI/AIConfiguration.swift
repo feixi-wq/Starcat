@@ -277,11 +277,15 @@ struct AIProviderProfile: Codable, Identifiable, Equatable, Sendable {
     /// - 按 `name` 去重，避免 ForEach 重复 `id` 触发 SwiftUI 布局异常；
     /// - 保留用户已有的启用态 / capability 修正 / 参数覆盖；
     /// - 大目录不全开；超过 `maxStoredModels` 时优先保留已启用与 Chat/Embedding。
-    mutating func mergeDiscoveredModels(_ incoming: [AIModelDescriptor]) {
+    mutating func mergeDiscoveredModels(
+        _ incoming: [AIModelDescriptor],
+        referencedModelNames: Set<String> = []
+    ) {
         models = Self.mergedDiscoveredModels(
             existing: models,
             incoming: incoming,
-            providerID: id
+            providerID: id,
+            referencedModelNames: referencedModelNames
         )
     }
 
@@ -289,7 +293,8 @@ struct AIProviderProfile: Codable, Identifiable, Equatable, Sendable {
     static func mergedDiscoveredModels(
         existing: [AIModelDescriptor],
         incoming: [AIModelDescriptor],
-        providerID: String
+        providerID: String,
+        referencedModelNames: Set<String> = []
     ) -> [AIModelDescriptor] {
         var seenNames = Set<String>()
         var uniqueIncoming: [AIModelDescriptor] = []
@@ -348,32 +353,72 @@ struct AIProviderProfile: Codable, Identifiable, Equatable, Sendable {
             }
         }
 
-        guard merged.count > maxStoredModels else { return merged }
+        let truncated: [AIModelDescriptor]
+        if merged.count > maxStoredModels {
+            // 超额时优先保住用户已启用与任务相关能力，再按原顺序补齐。
+            var kept: [AIModelDescriptor] = []
+            kept.reserveCapacity(maxStoredModels)
+            var keptNames = Set<String>()
 
-        // 超额时优先保住用户已启用与任务相关能力，再按原顺序补齐。
-        var kept: [AIModelDescriptor] = []
-        kept.reserveCapacity(maxStoredModels)
-        var keptNames = Set<String>()
-
-        func appendPreferentially(from items: [AIModelDescriptor]) {
-            for model in items where kept.count < maxStoredModels {
-                if keptNames.insert(model.name).inserted {
-                    kept.append(model)
+            func appendPreferentially(from items: [AIModelDescriptor]) {
+                for model in items where kept.count < maxStoredModels {
+                    if keptNames.insert(model.name).inserted {
+                        kept.append(model)
+                    }
                 }
             }
+
+            appendPreferentially(from: merged.filter(\.isEnabled))
+            appendPreferentially(from: merged.filter {
+                $0.capability == .chat || $0.capability == .unknown
+            })
+            appendPreferentially(from: merged.filter { $0.capability == .embedding })
+            appendPreferentially(from: merged)
+            truncated = kept
+        } else {
+            truncated = merged
         }
 
-        appendPreferentially(from: merged.filter(\.isEnabled))
-        appendPreferentially(from: merged.filter {
-            $0.capability == .chat || $0.capability == .unknown
-        })
-        appendPreferentially(from: merged.filter { $0.capability == .embedding })
-        appendPreferentially(from: merged)
-        return kept
+        // 旧版 merge 会把已全开的大目录原样保留；再次测试或启动消毒都走这里收口。
+        return cappingExcessEnabledModels(truncated, referencedNames: referencedModelNames)
     }
 
-    /// 读库后的轻量消毒：去重 + 截断。不改用户启用态，只防止历史脏数据再次卡死设置页。
-    func sanitizedForStorage() -> AIProviderProfile {
+    /// 大目录启用数超过 `autoEnableModelLimit` 时，收口到首次拉取额度。
+    ///
+    /// 任务仍在引用的模型始终保住，避免冷启动把正在用的 Chat / Embedding 关掉。
+    static func cappingExcessEnabledModels(
+        _ models: [AIModelDescriptor],
+        referencedNames: Set<String> = []
+    ) -> [AIModelDescriptor] {
+        guard models.count > autoEnableModelLimit else { return models }
+        let enabledCount = models.reduce(into: 0) { count, model in
+            if model.isEnabled { count += 1 }
+        }
+        guard enabledCount > autoEnableModelLimit else { return models }
+
+        var remainingChat = firstFetchAutoEnableCount
+        var keepFirstEmbedding = true
+        return models.map { model in
+            guard model.isEnabled else { return model }
+            if referencedNames.contains(model.name) {
+                return model
+            }
+            if model.capability == .embedding, keepFirstEmbedding {
+                keepFirstEmbedding = false
+                return model
+            }
+            if (model.capability == .chat || model.capability == .unknown), remainingChat > 0 {
+                remainingChat -= 1
+                return model
+            }
+            var disabled = model
+            disabled.isEnabled = false
+            return disabled
+        }
+    }
+
+    /// 读库后的轻量消毒：去重、截断，并把历史「大目录全开」收口到首次拉取额度。
+    func sanitizedForStorage(referencedModelNames: Set<String> = []) -> AIProviderProfile {
         var copy = self
         var seen = Set<String>()
         var unique: [AIModelDescriptor] = []
@@ -383,7 +428,10 @@ struct AIProviderProfile: Codable, Identifiable, Equatable, Sendable {
             unique.append(model)
             if unique.count >= Self.maxStoredModels { break }
         }
-        copy.models = unique
+        copy.models = Self.cappingExcessEnabledModels(
+            unique,
+            referencedNames: referencedModelNames
+        )
         return copy
     }
 }

@@ -2,15 +2,16 @@
 //  AnthropicEndpoint.swift
 //  Starcat
 //
-//  把用户填写的 Anthropic / `*/anthropic` Base URL 归一成 messages 与 models 端点。
+//  把用户填写的 Anthropic Base URL 归一成 messages 与 models 端点。
 //
 //  为什么单独抽出来：
-//  - 官方入口是 `https://api.anthropic.com`，中转常见 `https://api.deepseek.com/anthropic`。
-//  - 若把 `/anthropic` 误改成 OpenAI 的 `/v1`，请求会打到 Completions，连接测试必失败。
+//  - 官方是 `https://api.anthropic.com`，中转常见根地址或 `*/anthropic`。
+//  - 归一只拼 `/v1/messages`，不改写用户已写的 `/anthropic`。
+//  - 测连接时若 Messages 404/405，再用 `anthropicPathCandidate()` 补一层 `/anthropic`。
 //
 //  关键约束：
-//  - 只剥末尾 `/`，不改写 path 中的 `/anthropic`。
-//  - path 已以 `/v1` 结尾时只再拼 `/messages` 与 `/models`，避免 `/v1/v1/...`。
+//  - 只剥末尾 `/`；path 已以 `/v1` 结尾时只再拼 `/messages` 与 `/models`。
+//  - `api.anthropic.com` 与已经含 `/anthropic` 的地址禁止再补 path。
 //
 
 import Foundation
@@ -57,5 +58,33 @@ struct AnthropicEndpoint: Equatable, Sendable {
             modelsURL: modelsURL,
             normalizedBaseURL: trimmed
         )
+    }
+
+    /// 中转根地址在 Messages 404 时的 `/anthropic` 候选。官方与已经带该 path 的返回 `nil`。
+    func anthropicPathCandidate() throws -> AnthropicEndpoint? {
+        guard let url = URL(string: normalizedBaseURL),
+              let host = url.host?.lowercased(),
+              host.isEmpty == false
+        else {
+            return nil
+        }
+        if host == "api.anthropic.com" || host.hasSuffix(".anthropic.com") {
+            return nil
+        }
+        let segments = url.path.split(separator: "/").map { $0.lowercased() }
+        if segments.contains("anthropic") {
+            return nil
+        }
+
+        var stem = normalizedBaseURL
+        let hadV1 = url.path == "/v1" || url.path.hasSuffix("/v1")
+        if hadV1, stem.lowercased().hasSuffix("/v1") {
+            stem.removeLast(3)
+            while stem.hasSuffix("/") {
+                stem.removeLast()
+            }
+        }
+        let candidate = hadV1 ? "\(stem)/anthropic/v1" : "\(stem)/anthropic"
+        return try AnthropicEndpoint.normalize(baseURL: candidate)
     }
 }

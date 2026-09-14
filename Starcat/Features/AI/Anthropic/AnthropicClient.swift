@@ -11,7 +11,7 @@
 //  关键约束：
 //  - 同时发 `x-api-key` 与 `Authorization: Bearer`，兼容官方与多数中转。
 //  - `listModels` 遇到 401/403 直接失败，禁止回落内置目录。
-//  - 404/405 才用 `AnthropicModelCatalog` + 一次最小 ping。
+//  - Messages 404/405 时再试 `/anthropic` 候选，测通后把 Base URL 写回。
 //  - embedding 入口必须拒绝，设置页任务门禁漏拦时也不能发出无效请求。
 //  - 取消必须落到 URLSession：外层 Task.cancel() 取消 `bytes(for:)` / `data(for:)`。
 //
@@ -25,6 +25,23 @@ struct AnthropicClient: AIClientProtocol {
     private let session: URLSession
     private let usageRecorder: any AIUsageRecording
     private let apiKey: String
+    private let probeState: ProbeState
+
+    /// 测连接后实际打通的 Base URL；可能比用户输入多了一段 `/anthropic`。
+    var probedBaseURL: String { probeState.resolvedBaseURL }
+
+    /// 结构体客户端不能在 async listModels 里 mutating self，用引用记下改写后的 URL。
+    private final class ProbeState: @unchecked Sendable {
+        var resolvedBaseURL: String
+        init(_ resolvedBaseURL: String) {
+            self.resolvedBaseURL = resolvedBaseURL
+        }
+    }
+
+    private enum ProbeResult {
+        case ready(models: [AIModelDescriptor])
+        case wrongPath(listedModels: [AIModelDescriptor])
+    }
 
     init(
         configuration: AIClientConfiguration,
@@ -39,6 +56,7 @@ struct AnthropicClient: AIClientProtocol {
         self.session = session ?? Self.makeSession(timeoutInterval: configuration.timeoutInterval)
         self.usageRecorder = usageRecorder
         self.apiKey = trimmedKey
+        self.probeState = ProbeState(self.endpoint.normalizedBaseURL)
     }
 
     func chat(request: AIChatRequest) async throws -> AIChatResponse {
@@ -137,21 +155,27 @@ struct AnthropicClient: AIClientProtocol {
     }
 
     func listModels() async throws -> [AIModelDescriptor] {
-        var request = URLRequest(url: endpoint.modelsURL)
-        request.httpMethod = "GET"
-        applyHeaders(&request)
-
-        let (data, http) = try await send(request)
-        switch http.statusCode {
-        case 200..<300:
-            return try decodeModels(data)
-        case 401, 403:
-            throw mapHTTPError(statusCode: http.statusCode, data: data)
-        case 404, 405:
-            _ = try await ping()
-            return AnthropicModelCatalog.bundledDescriptors(providerID: configuration.providerID)
-        default:
-            throw mapHTTPError(statusCode: http.statusCode, data: data)
+        switch try await probe(endpoint) {
+        case .ready(let models):
+            probeState.resolvedBaseURL = endpoint.normalizedBaseURL
+            return models
+        case .wrongPath(let listed):
+            guard let alt = try endpoint.anthropicPathCandidate() else {
+                throw AIClientError.requestRejected(
+                    statusCode: 404,
+                    detail: "Anthropic messages endpoint not found"
+                )
+            }
+            switch try await probe(alt) {
+            case .ready(let models):
+                probeState.resolvedBaseURL = alt.normalizedBaseURL
+                return listed.isEmpty ? models : listed
+            case .wrongPath:
+                throw AIClientError.requestRejected(
+                    statusCode: 404,
+                    detail: "Anthropic messages endpoint not found"
+                )
+            }
         }
     }
 
@@ -250,8 +274,12 @@ struct AnthropicClient: AIClientProtocol {
 
     // MARK: - HTTP
 
-    private func makeMessagesRequest(_ request: AIChatRequest, stream: Bool) throws -> URLRequest {
-        var urlRequest = URLRequest(url: endpoint.messagesURL)
+    private func makeMessagesRequest(
+        _ request: AIChatRequest,
+        stream: Bool,
+        endpoint: AnthropicEndpoint? = nil
+    ) throws -> URLRequest {
+        var urlRequest = URLRequest(url: (endpoint ?? self.endpoint).messagesURL)
         urlRequest.httpMethod = "POST"
         urlRequest.httpBody = try AnthropicMessagesCodec.requestJSONData(request, stream: stream)
         applyHeaders(&urlRequest)
@@ -338,9 +366,50 @@ struct AnthropicClient: AIClientProtocol {
         }
     }
 
-    /// 中转没有 `/models` 时，用最小 messages 验 Key。失败则测试失败。
-    private func ping() async throws {
-        let pingRequest = AIChatRequest(
+    /// 中转没有可用 `/models` 时，用最小 messages 验 Key。失败则测试失败。
+    ///
+    /// 不走 `chat()` / 完整 decode：正式 chat 会把 `max_tokens` 当截断、把空 text
+    /// 当 emptyResponse。DeepSeek thinking 模型常把 8 tokens 全花在 thinking 上，
+    /// HTTP 200 且不是 error envelope 就已经证明 Key 和 Messages 端点可用。
+    private func probe(_ endpoint: AnthropicEndpoint) async throws -> ProbeResult {
+        var request = URLRequest(url: endpoint.modelsURL)
+        request.httpMethod = "GET"
+        applyHeaders(&request)
+
+        let (data, http) = try await send(request)
+        switch http.statusCode {
+        case 200..<300:
+            let listed = (try? decodeModels(data)) ?? []
+            do {
+                try await ping(endpoint)
+                return .ready(models: listed.isEmpty
+                    ? AnthropicModelCatalog.bundledDescriptors(providerID: configuration.providerID)
+                    : listed)
+            } catch {
+                if Self.isMissingMessagesPath(error) {
+                    return .wrongPath(listedModels: listed)
+                }
+                throw error
+            }
+        case 401, 403:
+            throw mapHTTPError(statusCode: http.statusCode, data: data)
+        case 404, 405:
+            do {
+                try await ping(endpoint)
+                return .ready(models: AnthropicModelCatalog.bundledDescriptors(providerID: configuration.providerID))
+            } catch {
+                if Self.isMissingMessagesPath(error) {
+                    return .wrongPath(listedModels: [])
+                }
+                throw error
+            }
+        default:
+            throw mapHTTPError(statusCode: http.statusCode, data: data)
+        }
+    }
+
+    private func ping(_ endpoint: AnthropicEndpoint) async throws {
+        let pingRequest = resolvedRequest(AIChatRequest(
             systemPrompt: "",
             userPrompt: "ping",
             model: configuration.chatModel,
@@ -352,8 +421,19 @@ struct AnthropicClient: AIClientProtocol {
                 timeoutSeconds: configuration.timeoutInterval,
                 streamEnabled: false
             )
-        )
-        _ = try await chat(request: pingRequest)
+        ))
+        let urlRequest = try makeMessagesRequest(pingRequest, stream: false, endpoint: endpoint)
+        let (data, http) = try await send(urlRequest)
+        try throwIfHTTPError(http, data: data)
+        try AnthropicMessagesCodec.throwIfErrorEnvelope(data)
+    }
+
+    private static func isMissingMessagesPath(_ error: Error) -> Bool {
+        guard let error = error as? AIClientError else { return false }
+        if case .requestRejected(let statusCode, _) = error, statusCode == 404 || statusCode == 405 {
+            return true
+        }
+        return false
     }
 
     private func resolvedRequest(_ request: AIChatRequest) -> AIChatRequest {

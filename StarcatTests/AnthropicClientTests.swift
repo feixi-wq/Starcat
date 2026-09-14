@@ -12,13 +12,13 @@ import Testing
 
 @Suite("AnthropicClient", .serialized)
 struct AnthropicClientTests {
-    private func makeClient() throws -> AnthropicClient {
+    private func makeClient(baseURL: String = "https://api.anthropic.com") throws -> AnthropicClient {
         try AnthropicClient(
             configuration: AIClientConfiguration(
                 providerID: "anthropic-test",
                 provider: .anthropic,
                 apiKey: "sk-test-xxxx",
-                baseURL: "https://api.anthropic.com",
+                baseURL: baseURL,
                 chatModel: "claude-sonnet-4-5",
                 embeddingModel: ""
             ),
@@ -181,6 +181,117 @@ struct AnthropicClientTests {
         let paths = URLProtocolStub.receivedRequests.compactMap(\.url?.path)
         #expect(paths.contains { $0.hasSuffix("/models") })
         #expect(paths.contains { $0.hasSuffix("/messages") })
+    }
+
+    @Test("/models 404 后 ping 被 max_tokens 截断仍算连接成功")
+    func models404PingTruncationStillSucceeds() async throws {
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let url = try #require(request.url)
+            if url.path.hasSuffix("/models") {
+                return jsonResponse(404, url: url, body: #"{"error":{"message":"not found"}}"#)
+            }
+            return jsonResponse(
+                200,
+                url: url,
+                body: #"""
+                {
+                  "content": [{"type": "text", "text": "p"}],
+                  "stop_reason": "max_tokens",
+                  "model": "claude-sonnet-4-5",
+                  "usage": {"input_tokens": 1, "output_tokens": 8}
+                }
+                """#
+            )
+        }
+
+        let client = try makeClient()
+        let models = try await client.listModels()
+        #expect(!models.isEmpty)
+    }
+
+    @Test("/models 200 无 data 时回落 ping，thinking 空 text 仍算成功")
+    func models200UnparseableThinkingPingSucceeds() async throws {
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let url = try #require(request.url)
+            if url.path.hasSuffix("/models") {
+                return jsonResponse(200, url: url, body: #"{"type":"error","error":{"message":"no models"}}"#)
+            }
+            return jsonResponse(
+                200,
+                url: url,
+                body: #"""
+                {
+                  "type": "message",
+                  "content": [{"type": "thinking", "thinking": "plan"}],
+                  "stop_reason": "max_tokens",
+                  "model": "deepseek-v4-flash",
+                  "usage": {"input_tokens": 1, "output_tokens": 8}
+                }
+                """#
+            )
+        }
+
+        let client = try makeClient()
+        let models = try await client.listModels()
+        #expect(models.contains { $0.name == "claude-sonnet-4-5" })
+        let paths = URLProtocolStub.receivedRequests.compactMap(\.url?.path)
+        #expect(paths.contains { $0.hasSuffix("/models") })
+        #expect(paths.contains { $0.hasSuffix("/messages") })
+    }
+
+    @Test("根地址 Messages 404 时改走 /anthropic 并记下 Base URL")
+    func retriesAnthropicPathAndRecordsBaseURL() async throws {
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let url = try #require(request.url)
+            switch url.path {
+            case "/v1/models":
+                return jsonResponse(
+                    200,
+                    url: url,
+                    body: #"{"data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}"#
+                )
+            case "/v1/messages", "/anthropic/v1/models":
+                return jsonResponse(404, url: url, body: #"{"error":{"message":"not found"}}"#)
+            case "/anthropic/v1/messages":
+                return jsonResponse(
+                    200,
+                    url: url,
+                    body: #"{"type":"message","content":[{"type":"thinking","thinking":"x"}],"stop_reason":"max_tokens"}"#
+                )
+            default:
+                Issue.record("unexpected path \(url.path)")
+                return jsonResponse(500, url: url, body: "{}")
+            }
+        }
+
+        let client = try makeClient(baseURL: "https://api.deepseek.com")
+        let models = try await client.listModels()
+        #expect(models.contains { $0.name == "deepseek-chat" })
+        #expect(client.probedBaseURL == "https://api.deepseek.com/anthropic")
+    }
+
+    @Test("官方地址不补 /anthropic")
+    func officialDoesNotRetryAnthropicPath() async throws {
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let url = try #require(request.url)
+            #expect(!url.path.contains("/anthropic"))
+            if url.path.hasSuffix("/models") {
+                return jsonResponse(404, url: url, body: #"{"error":{"message":"not found"}}"#)
+            }
+            return jsonResponse(
+                200,
+                url: url,
+                body: #"{"type":"message","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#
+            )
+        }
+
+        let client = try makeClient()
+        _ = try await client.listModels()
+        #expect(client.probedBaseURL == "https://api.anthropic.com")
     }
 
     @Test("/models 401 失败且不回落目录")

@@ -79,7 +79,7 @@ struct AnthropicMessagesCodecTests {
         }
     }
 
-    @Test("jsonObject 注入 starcat_json_result 并强制 tool_choice")
+    @Test("jsonObject 注入 starcat_json_result，schema 带 properties，tool_choice 用 auto")
     func jsonObjectForcedTool() throws {
         let object = try AnthropicMessagesCodec.requestJSONObject(
             AIChatRequest(
@@ -92,10 +92,12 @@ struct AnthropicMessagesCodecTests {
             stream: false
         )
         let tools = try #require(object["tools"] as? [[String: Any]])
-        #expect(tools.contains { $0["name"] as? String == AnthropicMessagesCodec.jsonResultToolName })
+        let jsonTool = try #require(tools.first { $0["name"] as? String == AnthropicMessagesCodec.jsonResultToolName })
+        let schema = try #require(jsonTool["input_schema"] as? [String: Any])
+        #expect(schema["type"] as? String == "object")
+        #expect(schema["properties"] != nil)
         let choice = try #require(object["tool_choice"] as? [String: Any])
-        #expect(choice["type"] as? String == "tool")
-        #expect(choice["name"] as? String == AnthropicMessagesCodec.jsonResultToolName)
+        #expect(choice["type"] as? String == "auto")
     }
 
     @Test("max_tokens 128K 被钳成 32768")
@@ -118,6 +120,28 @@ struct AnthropicMessagesCodecTests {
         #expect(throws: AIClientError.responseTruncated) {
             _ = try AnthropicMessagesCodec.decodeMessageResponse(data, fallbackModel: "claude-sonnet-4-5")
         }
+    }
+
+    @Test("连接测试允许 ping 被 max_tokens 截断")
+    func pingIgnoresTruncation() throws {
+        let data = Data(#"{"content":[{"type":"text","text":"p"}],"stop_reason":"max_tokens","model":"claude-sonnet-4-5"}"#.utf8)
+        let response = try AnthropicMessagesCodec.decodeMessageResponse(
+            data,
+            fallbackModel: "claude-sonnet-4-5",
+            failOnTruncation: false
+        )
+        #expect(response.content == "p")
+        #expect(response.finishReason == "max_tokens")
+    }
+
+    @Test("error envelope 失败；message 即使只有 thinking 也通过")
+    func pingEnvelopeCheck() throws {
+        let errorData = Data(#"{"type":"error","error":{"message":"nope"}}"#.utf8)
+        #expect(throws: AIClientError.self) {
+            try AnthropicMessagesCodec.throwIfErrorEnvelope(errorData)
+        }
+        let thinkingOnly = Data(#"{"type":"message","content":[{"type":"thinking","thinking":"x"}],"stop_reason":"max_tokens"}"#.utf8)
+        try AnthropicMessagesCodec.throwIfErrorEnvelope(thinkingOnly)
     }
 
     @Test("starcat_json_result 进入 content 而不进入 toolCalls")

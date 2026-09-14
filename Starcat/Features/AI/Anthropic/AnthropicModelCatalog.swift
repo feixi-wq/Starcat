@@ -33,4 +33,14 @@ enum AnthropicModelCatalog {
             )
         }
     }
+
+    /// 列表展示用：官方 API id 是 `claude-sonnet-4-5`，营销名是 4.5。请求仍用原 id。
+    static func displayName(forAPIID id: String) -> String {
+        guard id.hasPrefix("claude-") else { return id }
+        return id.replacingOccurrences(
+            of: #"(\d)-(\d)(?=-|$)"#,
+            with: "$1.$2",
+            options: .regularExpression
+        )
+    }
 }

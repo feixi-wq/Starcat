@@ -1917,10 +1917,13 @@ final class AppSettings {
         )
         let profiles = Self.decodeJSON([AIProviderProfile].self, key: Keys.aiProviderProfiles, defaults: defaults) ?? []
         // 临时诊断（provider 列表消失问题）：确认启动时 decode 到的 profile 数量。
-        // 历史脏数据（重复 id / 超大目录）会在设置页勾选模型时卡死主线程；启动时只做去重+截断。
+        // 历史脏数据（重复 id / 超大目录 / 大目录全开）会在设置页勾选或滚动模型时卡死主线程。
+        let referencedByProfile = Self.referencedAIModelNamesByProfileID(defaults: defaults)
         let sanitizedProfiles = profiles.isEmpty
             ? [defaultProfile]
-            : profiles.map { $0.sanitizedForStorage() }
+            : profiles.map {
+                $0.sanitizedForStorage(referencedModelNames: referencedByProfile[$0.id] ?? [])
+            }
         self.aiProviderProfiles = sanitizedProfiles
         self.localAIDownloadSource = LocalAIModelSource.Kind(
             rawValue: defaults.string(forKey: Keys.localAIDownloadSource) ?? ""
@@ -2572,6 +2575,33 @@ final class AppSettings {
             settings[.firecrawl] = firecrawl
         }
         return settings
+    }
+
+    /// 启动消毒前先从任务 JSON 收集「仍在用的模型名」，避免把任务引用的模型关掉。
+    private static func referencedAIModelNamesByProfileID(defaults: UserDefaults) -> [String: Set<String>] {
+        let keys = [
+            Keys.aiSummaryTask,
+            Keys.aiTagsTask,
+            Keys.aiEmbeddingTask,
+            Keys.aiTranslationTask,
+            Keys.aiChatTask,
+        ]
+        var result: [String: Set<String>] = [:]
+        for key in keys {
+            guard let task = decodeJSON(AIModelTaskConfiguration.self, key: key, defaults: defaults) else {
+                continue
+            }
+            let resolved = task.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.providerID.isEmpty else { continue }
+            if !resolved.isEmpty {
+                result[task.providerID, default: []].insert(resolved)
+            }
+            let modelID = task.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !modelID.isEmpty {
+                result[task.providerID, default: []].insert(modelID)
+            }
+        }
+        return result
     }
 
     private static func decodeJSON<T: Decodable>(

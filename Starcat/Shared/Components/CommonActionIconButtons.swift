@@ -215,6 +215,43 @@ struct AddIconButton: View {
     }
 }
 
+/// icon-only 取消 / 放弃草稿入口。
+///
+/// 与 `AddIconButton` 同口径（15pt / 28pt）。`plus` 是新增唯一入口，对应的退出
+/// 用 `xmark` 而不是 `trash`：垃圾桶仍表示删除已保存服务商，避免草稿态误删当前选中项。
+struct CancelIconButton: View {
+    let help: Text
+    let action: () -> Void
+    var font: Font = SettingsIconMetrics.standardGlyph
+    var frameSize: CGFloat = SettingsIconMetrics.actionFrameSize
+
+    init(
+        help: Text,
+        font: Font = SettingsIconMetrics.standardGlyph,
+        frameSize: CGFloat = SettingsIconMetrics.actionFrameSize,
+        action: @escaping () -> Void
+    ) {
+        self.help = help
+        self.action = action
+        self.font = font
+        self.frameSize = frameSize
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(font)
+                .foregroundStyle(.secondary)
+                .frame(width: frameSize, height: frameSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
 /// icon-only「从外部配置导入」入口。
 ///
 /// 与 `AddIconButton` 同用设置页 15pt glyph + 28pt 命中区；导入不是草稿新增，

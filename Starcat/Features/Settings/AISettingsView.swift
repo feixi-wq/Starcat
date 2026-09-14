@@ -279,11 +279,7 @@ struct AISettingsTab: View {
             // 成功路径里已被晋升为 verified profile 并把 draftProfile 置 nil,
             // 这里看到的 draftProfile != nil 全是"未完成"草稿。
             AppLog.ai.debug("[AISettings] SettingsWindowCloseListener.onClose fired draftID=\(self.draftProfile?.id ?? "nil", privacy: .public)")
-            if draftProfile != nil {
-                draftProfile = nil
-                draftAPIKey = ""
-                keyError = nil
-            }
+            discardDraft()
         })
         // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12 (dong4j 反馈)：
         // 删除服务商二次确认。用 `presenting:` 把 profile 注入到 alert 闭包，
@@ -422,61 +418,88 @@ struct AISettingsTab: View {
             // HOM-68 follow-up v2 (dong4j 反馈 #1)：
             // "新增服务商" / "删除当前" 按钮移到 picker 同一行的右侧，
             // 紧凑且符合设置面板"次要操作贴近主控件"的常见 macOS 布局。
-            HStack {
-                // HOM-AIPROVIDERS-2026-06-06：服务商配置 picker 在每个 profile 行
-                // 前面挂当前 provider 的 logo，让用户在多 profile（"OpenAI 摘要 +
-                // DeepSeek 翻译 + Ollama embedding"）场景下一眼分辨。
-                // SwiftUI Picker 的 menu style 会把 Label 内的 Image 一起渲染到下拉
-                // 菜单和已选 caption 区，无需为下拉 / 当前选中分别画。
-                if pickerProfiles.isEmpty {
-                    // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
-                    // zero state 文案补充行动指引——之前只说「暂无已验证服务商」是
-                    // 状态描述，用户不知道下一步要做什么。改成「...点右侧 + 新增」
-                    // 让新用户直接看到入口。
-                    Text("settings.ai.provider.empty")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Picker("settings.ai.provider.pickerLabel", selection: selectedProfileBinding) {
-                        ForEach(pickerProfiles) { profile in
-                            Label {
-                                Text(profile.displayName)
-                            } icon: {
-                                AIProviderIconView(provider: profile.provider, size: 14)
+            // LabeledContent 把「服务商配置」留在左边；Picker 再 labelsHidden，
+            // 避免 Form 标题被藏掉。右侧菜单锁 28pt，和导入 / + / 删除对齐。
+            LabeledContent("settings.ai.provider.pickerLabel") {
+                HStack(alignment: .center, spacing: 8) {
+                    // HOM-AIPROVIDERS-2026-06-06：服务商配置 picker 在每个 profile 行
+                    // 前面挂当前 provider 的 logo，让用户在多 profile（"OpenAI 摘要 +
+                    // DeepSeek 翻译 + Ollama embedding"）场景下一眼分辨。
+                    // SwiftUI Picker 的 menu style 会把 Label 内的 Image 一起渲染到下拉
+                    // 菜单和已选 caption 区，无需为下拉 / 当前选中分别画。
+                    if pickerProfiles.isEmpty {
+                        // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
+                        // zero state 文案补充行动指引——之前只说「暂无已验证服务商」是
+                        // 状态描述，用户不知道下一步要做什么。改成「...点右侧 + 新增」
+                        // 让新用户直接看到入口。
+                        Text("settings.ai.provider.empty")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Picker("settings.ai.provider.pickerLabel", selection: selectedProfileBinding) {
+                            ForEach(pickerProfiles) { profile in
+                                Label {
+                                    Text(profile.displayName)
+                                } icon: {
+                                    AIProviderIconView(provider: profile.provider, size: 14)
+                                }
+                                .tag(Optional(profile.id))
                             }
-                            .tag(Optional(profile.id))
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .fixedSize()
+                        .frame(height: SettingsIconMetrics.actionFrameSize, alignment: .center)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    ImportIconButton(help: Text("settings.ai.provider.importCCSwitch.help")) {
+                        beginCCSwitchImport()
+                    }
+                    .disabled(draftProfile != nil || isTestingProfileID != nil)
+
+                    AddIconButton(help: Text("settings.ai.provider.addHelp")) {
+                        // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12：包 withAnimation 让下方
+                        // Provider 行 + 输入区伴随 transition 滑入，而不是瞬切。
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            beginDraft(provider: .openAICompatible)
                         }
                     }
-                    .pickerStyle(.menu)
-                }
+                    .disabled(draftProfile != nil)
 
-                Spacer(minLength: 12)
-
-                ImportIconButton(help: Text("settings.ai.provider.importCCSwitch.help")) {
-                    beginCCSwitchImport()
-                }
-                .disabled(draftProfile != nil || isTestingProfileID != nil)
-
-                AddIconButton(help: Text("settings.ai.provider.addHelp")) {
-                    // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12：包 withAnimation 让下方
-                    // Provider 行 + 输入区伴随 transition 滑入，而不是瞬切。
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        beginDraft(provider: .openAICompatible)
+                    if draftProfile != nil {
+                        // 草稿态占用原删除槽位：取消新增 / 放弃未保存修改。
+                        // 不能继续走垃圾桶——selectedProfile 仍是点 + 之前的已有服务商，
+                        // 误点会弹「删除 DeepSeek」而不是丢掉这份还没落盘的草稿。
+                        CancelIconButton(
+                            help: Text(
+                                isAddingNewProviderDraft
+                                    ? "settings.ai.provider.discardDraft.addHelp"
+                                    : "settings.ai.provider.discardDraft.editHelp"
+                            ),
+                            font: SettingsIconMetrics.standardGlyph,
+                            frameSize: SettingsIconMetrics.actionFrameSize
+                        ) {
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                                discardDraft()
+                            }
+                        }
+                        .disabled(isTestingProfileID != nil)
+                    } else {
+                        // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12：先弹二次确认 dialog，
+                        // dialog 内点「删除」才真正执行 `deleteProfile(id:)`。
+                        DestructiveIconButton(
+                            help: Text("settings.ai.provider.deleteHelp"),
+                            font: SettingsIconMetrics.standardGlyph,
+                            frameSize: SettingsIconMetrics.actionFrameSize
+                        ) {
+                            pendingDeleteProfileID = selectedProfileID
+                        }
+                        // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
+                        .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
                     }
                 }
-                .disabled(draftProfile != nil)
-
-                // HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12：先弹二次确认 dialog，
-                // dialog 内点「删除」才真正执行 `deleteProfile(id:)`。
-                DestructiveIconButton(
-                    help: Text("settings.ai.provider.deleteHelp"),
-                    font: SettingsIconMetrics.standardGlyph,
-                    frameSize: SettingsIconMetrics.actionFrameSize
-                ) {
-                    pendingDeleteProfileID = selectedProfileID
-                }
-                // 内置本地 AI profile 由 LocalAIModelManager 托管，不允许删除。
-                .disabled(selectedProfile == nil || selectedProfile?.provider == .localAI)
             }
 
             // HOM-AIPROVIDERS-HIDE-PROVIDER-2026-06-12 (dong4j 反馈)：
@@ -535,6 +558,15 @@ struct AISettingsTab: View {
                     providerInputRows(profile)
 
                     if profile.provider == .anthropic {
+                        Text(
+                            SettingsCaptionASCIILinks.attributedString(
+                                from: String.l10n("settings.ai.provider.anthropic.baseURLHint")
+                            )
+                        )
+                        .font(.caption)
+                        .tint(.accentColor)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                         Text("settings.ai.provider.anthropic.embeddingUnsupported")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -602,6 +634,7 @@ struct AISettingsTab: View {
                             capabilityBinding: { model in modelCapabilityBinding(profile.id, model.id) },
                             parametersBinding: { model in modelParametersBinding(profile.id, model.id) }
                         )
+                        .id(profile.id)
                     }
                 }
             }
@@ -681,7 +714,7 @@ struct AISettingsTab: View {
                             .tag("")
                     } else {
                         ForEach(availableModels) { model in
-                            Text(model.name).tag(model.name)
+                            Text(AnthropicModelCatalog.displayName(forAPIID: model.name)).tag(model.name)
                         }
                     }
                 }
@@ -2328,6 +2361,22 @@ struct AISettingsTab: View {
         keyError = nil
     }
 
+    /// 放弃未完成的服务商草稿。草稿从未写入 `aiProviderProfiles`，所以只清内存态。
+    /// 编辑已有服务商时，落盘配置仍在原 ID 上，丢掉草稿即恢复已保存值。
+    private func discardDraft() {
+        guard draftProfile != nil else { return }
+        AppLog.ai.debug("[AISettings] discardDraft() draftID=\(self.draftProfile?.id ?? "nil", privacy: .public)")
+        draftProfile = nil
+        draftAPIKey = ""
+        keyError = nil
+    }
+
+    /// 点 `+` 生成的新草稿 ID 不在已保存列表里；从已有 profile 提升的草稿沿用原 ID。
+    private var isAddingNewProviderDraft: Bool {
+        guard let draftID = draftProfile?.id else { return false }
+        return !settings.aiProviderProfiles.contains { $0.id == draftID }
+    }
+
     // `deleteSelectedProfile()` 已被 `deleteProfile(id:)` + `confirmationDialog`
     // 二次确认链路取代（HOM-AIPROVIDERS-DELETE-CONFIRM-2026-06-12）。原函数
     // 隐式依赖 `selectedProfileID`，confirm dialog 期间用户可能切换 selection
@@ -2467,7 +2516,7 @@ struct AISettingsTab: View {
 
         let testingKey = apiKey(for: profile)
         do {
-            let models = try await AIClientFactory.make(configuration: AIClientConfiguration(
+            let client = try AIClientFactory.make(configuration: AIClientConfiguration(
                 providerID: profile.id,
                 provider: profile.provider,
                 apiKey: testingKey,
@@ -2475,11 +2524,18 @@ struct AISettingsTab: View {
                 chatModel: profile.models.first(where: { $0.capability == .chat })?.name ?? profile.provider.defaultChatModel,
                 embeddingModel: profile.models.first(where: { $0.capability == .embedding })?.name ?? profile.provider.defaultEmbeddingModel,
                 timeoutInterval: 60
-            )).listModels()
+            ))
+            let models = try await client.listModels()
 
             var verified = profile
+            if let anthropic = client as? AnthropicClient {
+                verified.baseURL = anthropic.probedBaseURL
+            }
             // 去重 / 大目录不全开 / 容量上限：避免 OpenRouter 类目录在勾选时卡死主线程。
-            verified.mergeDiscoveredModels(models)
+            verified.mergeDiscoveredModels(
+                models,
+                referencedModelNames: referencedModelNames(for: profile.id)
+            )
             verified.isEnabled = true
             verified.lastTestedAt = ISO8601DateFormatter.shared.string(from: Date())
             verified.lastTestStatus = .success(modelCount: verified.models.count)
@@ -2699,6 +2755,7 @@ struct AISettingsTab: View {
             get: { model(profileID: profileID, modelID: modelID)?.isEnabled ?? false },
             set: { enabled in
                 // 取消勾选前先记下是否被任务引用：未引用时不必跑 repair（会连写 5 份 task JSON）。
+                guard model(profileID: profileID, modelID: modelID)?.isEnabled != enabled else { return }
                 let modelName = model(profileID: profileID, modelID: modelID)?.name
                 let needsTaskRepair = !enabled && isModelReferencedByAnyTask(
                     providerID: profileID,
@@ -2724,10 +2781,22 @@ struct AISettingsTab: View {
         }
     }
 
+    /// 合并 / 消毒大目录时保住任务仍在用的模型名（含自定义名称，避免关掉正在跑的配置）。
+    private func referencedModelNames(for profileID: String) -> Set<String> {
+        Set(AIModelTask.allCases.compactMap { task in
+            let config = taskConfig(task)
+            guard config.providerID == profileID else { return nil }
+            let name = config.resolvedModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? nil : name
+        })
+    }
+
     private func modelCapabilityBinding(_ profileID: String, _ modelID: String) -> Binding<AIModelCapability> {
         Binding(
             get: { model(profileID: profileID, modelID: modelID)?.capability ?? .unknown },
             set: { capability in
+                // Picker 出现时可能把当前值再 set 一遍；无变化就不要写回整个 profiles 数组。
+                guard model(profileID: profileID, modelID: modelID)?.capability != capability else { return }
                 updateModel(profileID: profileID, modelID: modelID) { model in
                     model.capability = capability
                 }

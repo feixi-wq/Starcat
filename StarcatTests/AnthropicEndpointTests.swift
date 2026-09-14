@@ -25,6 +25,36 @@ struct AnthropicEndpointTests {
         #expect(endpoint.modelsURL.absoluteString == "https://api.anthropic.com/v1/models")
     }
 
+    @Test("DeepSeek 根路径不会被插入 /anthropic")
+    func deepSeekRootDoesNotInsertAnthropic() throws {
+        let endpoint = try AnthropicEndpoint.normalize(baseURL: "https://api.deepseek.com")
+        #expect(endpoint.messagesURL.absoluteString == "https://api.deepseek.com/v1/messages")
+        #expect(endpoint.modelsURL.absoluteString == "https://api.deepseek.com/v1/models")
+        #expect(!endpoint.messagesURL.path.contains("/anthropic"))
+    }
+
+    @Test("中转根地址提供 /anthropic 候选")
+    func deepSeekRootCandidate() throws {
+        let endpoint = try AnthropicEndpoint.normalize(baseURL: "https://api.deepseek.com")
+        let alt = try #require(try endpoint.anthropicPathCandidate())
+        #expect(alt.normalizedBaseURL == "https://api.deepseek.com/anthropic")
+        #expect(alt.messagesURL.absoluteString == "https://api.deepseek.com/anthropic/v1/messages")
+    }
+
+    @Test("官方与已有 /anthropic 不再补 path")
+    func noCandidateWhenOfficialOrAlreadyPresent() throws {
+        #expect(try AnthropicEndpoint.normalize(baseURL: "https://api.anthropic.com").anthropicPathCandidate() == nil)
+        #expect(try AnthropicEndpoint.normalize(baseURL: "https://api.deepseek.com/anthropic").anthropicPathCandidate() == nil)
+    }
+
+    @Test("已带 /v1 时把 /anthropic 插在 v1 前面")
+    func insertsAnthropicBeforeV1() throws {
+        let endpoint = try AnthropicEndpoint.normalize(baseURL: "https://relay.example.com/v1")
+        let alt = try #require(try endpoint.anthropicPathCandidate())
+        #expect(alt.normalizedBaseURL == "https://relay.example.com/anthropic/v1")
+        #expect(alt.messagesURL.absoluteString == "https://relay.example.com/anthropic/v1/messages")
+    }
+
     @Test("DeepSeek /anthropic 中转保留 anthropic path")
     func deepSeekAnthropic() throws {
         let endpoint = try AnthropicEndpoint.normalize(baseURL: "https://api.deepseek.com/anthropic")

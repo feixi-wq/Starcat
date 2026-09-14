@@ -69,16 +69,31 @@ enum AnthropicMessagesCodec {
     }
 
     /// 解码非流式 `POST /v1/messages` 响应。
-    static func decodeMessageResponse(_ data: Data, fallbackModel: String) throws -> AIChatResponse {
+    ///
+    /// `failOnTruncation`：正式 chat 遇到 `stop_reason=max_tokens` 必须失败；
+    /// 连接测试 ping 只有 8 tokens，中转经常截断，不能当成「输出超上限」。
+    static func decodeMessageResponse(
+        _ data: Data,
+        fallbackModel: String,
+        failOnTruncation: Bool = true
+    ) throws -> AIChatResponse {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AIClientError.requestFailed(detail: "Anthropic response is not a JSON object")
         }
-        return try decodeMessageObject(object, fallbackModel: fallbackModel)
+        return try decodeMessageObject(
+            object,
+            fallbackModel: fallbackModel,
+            failOnTruncation: failOnTruncation
+        )
     }
 
-    static func decodeMessageObject(_ object: [String: Any], fallbackModel: String) throws -> AIChatResponse {
+    static func decodeMessageObject(
+        _ object: [String: Any],
+        fallbackModel: String,
+        failOnTruncation: Bool = true
+    ) throws -> AIChatResponse {
         let stopReason = (object["stop_reason"] as? String) ?? ""
-        if stopReason == "max_tokens" {
+        if failOnTruncation, stopReason == "max_tokens" {
             throw AIClientError.responseTruncated
         }
 
@@ -241,11 +256,14 @@ enum AnthropicMessagesCodec {
             ])
         }
         if request.responseFormat == .jsonObject {
+            // Anthropic 要求 object schema 带 `properties`；只有 additionalProperties
+            // 会 400。Haiku 4.5 / 中转对 tool_choice=tool 也会 400，改 auto。
             tools.append([
                 "name": jsonResultToolName,
                 "description": "Return the JSON object required by the user request.",
                 "input_schema": [
                     "type": "object",
+                    "properties": [String: Any](),
                     "additionalProperties": true
                 ]
             ])
@@ -255,7 +273,7 @@ enum AnthropicMessagesCodec {
 
     private static func encodeToolChoice(_ request: AIChatRequest) -> [String: Any] {
         if request.responseFormat == .jsonObject {
-            return ["type": "tool", "name": jsonResultToolName]
+            return ["type": "auto"]
         }
         switch request.toolChoice {
         case .none:
@@ -321,6 +339,17 @@ enum AnthropicMessagesCodec {
         if let number = value as? Double { return Int(number) }
         if let number = value as? NSNumber { return number.intValue }
         return 0
+    }
+
+    /// ping 只认 HTTP 200 + 非 error envelope。thinking 空 text 仍算连通。
+    static func throwIfErrorEnvelope(_ data: Data) throws {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AIClientError.requestFailed(detail: "Anthropic response is not a JSON object")
+        }
+        let isError = (object["type"] as? String) == "error" || object["error"] != nil
+        if isError {
+            throw AIClientError.requestFailed(detail: errorMessage(from: data))
+        }
     }
 
     static func errorMessage(from data: Data) -> String {
