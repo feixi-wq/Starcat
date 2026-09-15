@@ -1051,6 +1051,11 @@ final class AppSettings {
         }
     }
 
+    /// 当前二进制解不出的 profile JSON 片段（例如尚未认识的 `provider` rawValue）。
+    /// 启动时跳过以免整表失败；写回时再拼回去，避免旧版把新版服务商从磁盘抹掉。
+    @ObservationIgnored
+    private var unrecognizedAIProviderProfileJSONFragments: [Data] = []
+
     /// 摘要任务模型配置。摘要与标签拆开，避免 JSON 标签失败拖垮摘要。
     var aiSummaryTask: AIModelTaskConfiguration {
         didSet {
@@ -1915,13 +1920,14 @@ final class AppSettings {
             chatModel: resolvedAIChatModel,
             embeddingModel: resolvedAIEmbeddingModel
         )
-        let profiles = Self.decodeJSON([AIProviderProfile].self, key: Keys.aiProviderProfiles, defaults: defaults) ?? []
+        let profiles = Self.loadAIProviderProfiles(defaults: defaults)
+        unrecognizedAIProviderProfileJSONFragments = profiles.unrecognizedFragments
         // 临时诊断（provider 列表消失问题）：确认启动时 decode 到的 profile 数量。
         // 历史脏数据（重复 id / 超大目录 / 大目录全开）会在设置页勾选或滚动模型时卡死主线程。
         let referencedByProfile = Self.referencedAIModelNamesByProfileID(defaults: defaults)
-        let sanitizedProfiles = profiles.isEmpty
+        let sanitizedProfiles = profiles.items.isEmpty
             ? [defaultProfile]
-            : profiles.map {
+            : profiles.items.map {
                 $0.sanitizedForStorage(referencedModelNames: referencedByProfile[$0.id] ?? [])
             }
         self.aiProviderProfiles = sanitizedProfiles
@@ -1934,12 +1940,12 @@ final class AppSettings {
         ) ?? [:]
         // init 里不能调实例方法（其余 stored 属性尚未齐），且 didSet 也不会触发；
         // 若消毒改写了内容，直接写 UserDefaults，避免每次冷启动重复处理同一份脏 JSON。
-        if !profiles.isEmpty, sanitizedProfiles != profiles {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            if let data = try? encoder.encode(sanitizedProfiles) {
-                defaults.set(String(decoding: data, as: UTF8.self), forKey: Keys.aiProviderProfiles)
-            }
+        if !profiles.items.isEmpty, sanitizedProfiles != profiles.items {
+            Self.persistAIProviderProfiles(
+                sanitizedProfiles,
+                unrecognizedFragments: profiles.unrecognizedFragments,
+                defaults: defaults
+            )
         }
         let defaultSummaryTask = Self.makeDefaultTask(
             task: .summary,
@@ -2349,6 +2355,7 @@ final class AppSettings {
         aiBaseURL = baseURL
         aiChatModel = chatModel
         aiEmbeddingModel = embeddingModel
+        unrecognizedAIProviderProfileJSONFragments = []
         aiProviderProfiles = [defaultProfile]
         aiSummaryTask = Self.makeDefaultTask(task: .summary, profileID: defaultProfile.id, modelName: chatModel)
         aiTagsTask = Self.makeDefaultTask(task: .tags, profileID: defaultProfile.id, modelName: chatModel)
@@ -2490,6 +2497,14 @@ final class AppSettings {
     }
 
     private func persistJSON<T: Encodable>(key: String, value: T) {
+        if key == Keys.aiProviderProfiles, let profiles = value as? [AIProviderProfile] {
+            Self.persistAIProviderProfiles(
+                profiles,
+                unrecognizedFragments: unrecognizedAIProviderProfileJSONFragments,
+                defaults: defaults
+            )
+            return
+        }
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
@@ -2505,6 +2520,34 @@ final class AppSettings {
                 message: "A settings value could not be encoded",
                 underlying: DiagnosticEvent.summarize(error),
                 context: ["key": key]
+            )
+        }
+    }
+
+    /// 已识别 profile + 未知片段一起写回。旧二进制改服务商时不能把新 `provider` 从磁盘抹掉。
+    private static func persistAIProviderProfiles(
+        _ profiles: [AIProviderProfile],
+        unrecognizedFragments: [Data],
+        defaults: UserDefaults
+    ) {
+        do {
+            let data = try LenientJSONArrayDecoding.encode(
+                items: profiles,
+                unrecognizedFragments: unrecognizedFragments
+            )
+            defaults.set(String(decoding: data, as: UTF8.self), forKey: Keys.aiProviderProfiles)
+        } catch {
+            AppLog.general.error(
+                "persistJSON failed for \(Keys.aiProviderProfiles, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            DiagnosticLogStore.record(
+                level: .error,
+                visibility: .issue,
+                category: "settings",
+                operation: "settings.persistJSON",
+                message: "A settings value could not be encoded",
+                underlying: DiagnosticEvent.summarize(error),
+                context: ["key": Keys.aiProviderProfiles]
             )
         }
     }
@@ -2629,6 +2672,56 @@ final class AppSettings {
             )
             return nil
         }
+    }
+
+    /// 逐条解码 AI 服务商列表。单条未知 provider / 脏数据不能让整表变 nil。
+    private static func loadAIProviderProfiles(defaults: UserDefaults) -> LenientJSONArrayDecoding.Outcome<AIProviderProfile> {
+        guard let raw = defaults.string(forKey: Keys.aiProviderProfiles),
+              let data = raw.data(using: .utf8)
+        else {
+            return LenientJSONArrayDecoding.Outcome(
+                items: [],
+                unrecognizedFragments: [],
+                skips: [],
+                topLevelFailure: nil
+            )
+        }
+
+        let outcome = LenientJSONArrayDecoding.decode(AIProviderProfile.self, from: data)
+        if let error = outcome.topLevelFailure {
+            AppLog.general.error(
+                "decodeJSON failed for \(Keys.aiProviderProfiles, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            DiagnosticLogStore.record(
+                level: .error,
+                visibility: .issue,
+                category: "settings",
+                operation: "settings.decodeJSON",
+                message: "A persisted settings value could not be decoded",
+                underlying: DiagnosticEvent.summarize(error),
+                context: ["key": Keys.aiProviderProfiles]
+            )
+            return outcome
+        }
+
+        for skip in outcome.skips {
+            AppLog.general.warning(
+                "skipped AI provider profile at index \(skip.index, privacy: .public): \(skip.summary, privacy: .public)"
+            )
+            DiagnosticLogStore.record(
+                level: .warning,
+                visibility: .context,
+                category: "settings",
+                operation: "settings.decodeJSON.skip",
+                message: "Skipped one persisted AI provider profile",
+                underlying: skip.summary,
+                context: [
+                    "key": Keys.aiProviderProfiles,
+                    "index": String(skip.index)
+                ]
+            )
+        }
+        return outcome
     }
 
     /// 只升级仍等于已发布旧默认值的标签 Prompt，保留用户选择的 Provider / Model / 参数。

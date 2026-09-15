@@ -1220,6 +1220,52 @@ struct AppSettingsTests {
         #expect(try JSONDecoder().decode(AIServiceProvider.self, from: encoded) == provider)
     }
 
+    @Test("AI: 未知 provider 不能让整表服务商解码失败，写回时要原样保留")
+    func unknownAIProviderProfileIsSkippedAndPreserved() throws {
+        let defaults = makeIsolatedDefaults()
+        let raw = """
+        [
+          {"baseURL":"https://api.openai.com/v1","displayName":"Keep Me","id":"keep-me","isEnabled":true,"lastTestStatus":{"kind":"notTested"},"models":[],"provider":"openAICompatible"},
+          {"baseURL":"https://example.invalid/v1","displayName":"Future","id":"future-profile","isEnabled":true,"lastTestStatus":{"kind":"notTested"},"models":[],"provider":"notShippedYet"}
+        ]
+        """
+        defaults.set(raw, forKey: AppSettings.Keys.aiProviderProfiles)
+
+        let loaded = AppSettings(defaults: defaults)
+        #expect(loaded.aiProviderProfiles.map(\.id) == ["keep-me"])
+        let persistedAfterLoad = try #require(defaults.string(forKey: AppSettings.Keys.aiProviderProfiles))
+        #expect(persistedAfterLoad.contains("notShippedYet"))
+        #expect(persistedAfterLoad.contains("future-profile"))
+
+        var profiles = loaded.aiProviderProfiles
+        profiles[0].displayName = "Keep Me Edited"
+        loaded.aiProviderProfiles = profiles
+
+        let persistedAfterEdit = try #require(defaults.string(forKey: AppSettings.Keys.aiProviderProfiles))
+        #expect(persistedAfterEdit.contains("Keep Me Edited"))
+        #expect(persistedAfterEdit.contains("notShippedYet"))
+        #expect(persistedAfterEdit.contains("future-profile"))
+
+        let reloaded = AppSettings(defaults: defaults)
+        #expect(reloaded.aiProviderProfiles.map(\.id) == ["keep-me"])
+        #expect(reloaded.aiProviderProfiles[0].displayName == "Keep Me Edited")
+    }
+
+    @Test("AI: 未知模型 capability 归到 unknown，不拖垮整条 profile")
+    func unknownAIModelCapabilityFallsBackWithoutDroppingProfile() throws {
+        let defaults = makeIsolatedDefaults()
+        let raw = """
+        [
+          {"baseURL":"https://api.openai.com/v1","displayName":"Keep","id":"keep-cap","isEnabled":true,"lastTestStatus":{"kind":"notTested"},"models":[{"capability":"quantum","id":"keep-cap::q","isCustom":false,"isEnabled":true,"name":"q-model","providerID":"keep-cap"}],"provider":"openAICompatible"}
+        ]
+        """
+        defaults.set(raw, forKey: AppSettings.Keys.aiProviderProfiles)
+
+        let loaded = AppSettings(defaults: defaults)
+        #expect(loaded.aiProviderProfiles.map(\.id) == ["keep-cap"])
+        #expect(loaded.aiProviderProfiles[0].models.map(\.capability) == [.unknown])
+    }
+
     @Test("AI: provider 只有测试成功且启用后才算正式配置")
     func aiProviderProfileVerifiedState() {
         let draft = AIProviderProfile(

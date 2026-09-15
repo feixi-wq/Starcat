@@ -34,6 +34,19 @@ enum AIModelCapability: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// 未知 capability 归到 `.unknown`，避免整条 profile 因新目录标签解码失败。
+    /// 写回时会变成 `"unknown"`，不再保留原始未来值；服务商级未知 enum 仍走跳过 + 原片段回写。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        self = AIModelCapability(rawValue: raw) ?? .unknown
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     var displayName: String {
         switch self {
         case .chat:      return "Chat"

@@ -12,6 +12,27 @@ import Testing
 @Suite("Diagnostics")
 struct DiagnosticsTests {
 
+    @Test("DecodingError 摘要包含 codingPath，而不是只留本地化笼统句")
+    func diagnosticEventSummarizesDecodingErrorPath() throws {
+        struct Box: Decodable {
+            let toy: Toy
+        }
+        enum Toy: String, Decodable {
+            case known
+        }
+
+        let data = Data(#"{"toy":"not-a-real-case"}"#.utf8)
+        do {
+            _ = try JSONDecoder().decode(Box.self, from: data)
+            Issue.record("expected DecodingError")
+        } catch {
+            let summary = DiagnosticEvent.summarize(error)
+            #expect(summary.contains("DecodingError"))
+            #expect(summary.contains("toy"))
+            #expect(summary.contains("not-a-real-case") || summary.contains("dataCorrupted") || summary.contains("typeMismatch"))
+        }
+    }
+
     @Test("诊断事件会脱敏 Bearer token 与 API Key")
     func diagnosticEventRedactsSecrets() {
         let event = DiagnosticEvent(
