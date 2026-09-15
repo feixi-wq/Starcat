@@ -134,6 +134,32 @@ struct SemanticSearchTests {
         #expect(!SemanticSearchService.hasLiteralMatch(repo: repo, query: "kubernetes"))
     }
 
+    @Test("hasLiteralMatch: snapshot body 含 README 标题时也能字面命中")
+    func literalMatchIndexedBody() {
+        let repo = makeRepo(
+            fullName: "starcat-app/starcat",
+            description: "Native GitHub Stars Manager",
+            topics: nil
+        )
+        let snapshot = IndexedSnapshot(
+            body: "Starcat — Native GitHub Stars Manager & AI Knowledge Base for macOS",
+            metadata: IndexedSnapshot.Metadata(fullName: repo.fullName, description: repo.description)
+        )
+        #expect(
+            SemanticSearchService.hasLiteralMatch(
+                repo: repo,
+                query: "AI Knowledge Base for macOS",
+                snapshot: snapshot
+            )
+        )
+        #expect(
+            !SemanticSearchService.hasLiteralMatch(
+                repo: repo,
+                query: "AI Knowledge Base for macOS"
+            )
+        )
+    }
+
     @Test("常量约束：literal boost floor / fts boost weight 在合理范围")
     func constantsAreSane() {
         // literal boost 必须 ≥ displayScore 高档阈值 (4 星 = 0.85)
@@ -144,6 +170,28 @@ struct SemanticSearchTests {
         let span = SemanticSearchService.displayScoreHighAnchor - SemanticSearchService.displayScoreLowAnchor
         #expect(SemanticSearchService.ftsBoostWeight < span)
         #expect(SemanticSearchService.ftsBoostWeight > 0)
+    }
+
+    @Test("query 向量缓存：同一句同一模型命中，换模型不命中")
+    func queryEmbeddingCacheHitsSameQueryAndModel() {
+        var cache = QueryEmbeddingSessionCache(limit: 8)
+        let key = QueryEmbeddingSessionCache.Key(query: "AI Knowledge Base", model: "text-embedding-3-small")
+        cache.store([0.1, 0.2], for: key)
+        #expect(cache.value(for: key) == [0.1, 0.2])
+        #expect(cache.value(for: .init(query: "AI Knowledge Base", model: "other-model")) == nil)
+        #expect(cache.value(for: .init(query: "other query", model: "text-embedding-3-small")) == nil)
+    }
+
+    @Test("query 向量缓存：超出上限淘汰最久未用的 key")
+    func queryEmbeddingCacheEvictsLeastRecent() {
+        var cache = QueryEmbeddingSessionCache(limit: 2)
+        cache.store([1], for: .init(query: "a", model: "m"))
+        cache.store([2], for: .init(query: "b", model: "m"))
+        #expect(cache.value(for: .init(query: "a", model: "m")) == [1])
+        cache.store([3], for: .init(query: "c", model: "m"))
+        #expect(cache.value(for: .init(query: "a", model: "m")) == [1])
+        #expect(cache.value(for: .init(query: "b", model: "m")) == nil)
+        #expect(cache.value(for: .init(query: "c", model: "m")) == [3])
     }
 
     // MARK: - helpers

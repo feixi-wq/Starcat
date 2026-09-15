@@ -1396,15 +1396,15 @@ enum AIDefaultPrompts {
     /// - `{topics}` — `IndexedTextBuilder.normalizeTopics()` 处理后的逗号分隔列表
     /// - `{license}` — SPDX 标识
     /// - `{homepage}` — 主页 URL
-    /// - `{body}` — 三级降级主体（AI 摘要 > README 纯文本 > description+topics 兜底）
+    /// - `{body}` — 主体（AI 摘要与 README 并存，都没有才用 description+topics）
     /// - `{notes}` — 用户私有笔记
     ///
     /// **删占位符 = 不注入对应数据**：dict 里有 key 但 value 是空字符串 → 替换为空；
     /// 模板中删掉占位符那行（连同 label）→ 输出根本不渲染对应内容。
     ///
-    /// **`{body}` 不拆细的原因**：三级降级是稳定性兜底（dong4j 2026-06-12 决策 D）。
-    /// 如果拆成 `{summary}` / `{readme}` 让用户控制，用户写 `{summary}` 但 repo
-    /// 没生成过摘要 → 输入退化为只有元数据 → 搜索效果烂。
+    /// **`{body}` 不拆细的原因**：摘要和 README 由 `IndexedTextBuilder` 决定并存顺序，
+    /// 不暴露 `{summary}` / `{readme}`。否则用户只写 `{summary}` 而该仓没有摘要时，
+    /// 输入会退化成只有元数据，搜索效果变差。
     ///
     /// **已知约束**：用户改 prompt template 后，老 vector 是用旧 template 喂出来的，
     /// 跟新 template 不可比；diff 判定（`IndexedTextDiff.shouldRebuild`）只看

@@ -4,8 +4,8 @@
 //
 //  全局搜索中心的界面状态与提交边界。
 //
-//  关键约束：输入草稿不会逐字符访问数据库或网络；只有用户提交、切换 scope 后的
-//  已提交查询重跑、或显式加载更多时才调用 Coordinator，避免远端搜索消耗失控。
+//  关键约束：输入草稿不会逐字符访问数据库或网络；只有用户提交、切换 scope 后补跑
+//  缺失来源、或显式加载更多时才调用 Coordinator，避免远端搜索消耗失控。
 //
 //  历史记录：从 W4 (UserDefaults) 升级到 W5-ready GRDB SQLite + CloudKit-friendly
 //  字段（id UUID / modifiedAt LWW / useCount + 半衰期衰减排序）。详见
@@ -44,6 +44,9 @@ final class SearchCenterViewModel {
     var paywallContext: ProPaywallContext?
 
     private(set) var lastSubmittedQuery: String = ""
+    /// 结果 List 的重建令牌。切 scope 复用候选后 SwiftUI List 会保留旧 contentOffset，
+    /// 首卡会被截在可见区域上方；递增此值让 List 以新身份从顶部开始。
+    private(set) var resultListEpoch: Int = 0
     /// 历史记录（按 `decayedScore` 降序排列；UI 直接遍历即可）。
     /// 持久化由 `historyRepository` 负责；本字段是异步加载后的最新内存快照。
     private(set) var history: [SearchHistory] = []
@@ -95,8 +98,8 @@ final class SearchCenterViewModel {
     }
 
     var isSearching: Bool {
-        coordinator.statuses.values.contains { status in
-            if case .loading = status { return true }
+        processChipSources.contains { source in
+            if case .loading = coordinator.status(for: source) { return true }
             return false
         }
     }
@@ -293,7 +296,7 @@ final class SearchCenterViewModel {
             await self.reloadHistory()
             if shouldRefreshScope, let requestedScope {
                 // “列表搜索”快捷键与 toolbar 入口复用同一 Search Center，只把初始
-                // scope 切到 Local；已有 query 时同步重跑，不能展示旧 scope 的结果。
+                // scope 切到 Local；已有 query 时按来源复用，不能展示旧 scope 的 GitHub 结果。
                 await self.changeScope(requestedScope)
             }
         }
@@ -334,12 +337,13 @@ final class SearchCenterViewModel {
 
     func changeScope(_ newScope: SearchScope) async {
         scope = newScope
+        resultListEpoch += 1
         guard canRunExplicitWebSearch(makeRequest(query: query)) else { return }
         guard !lastSubmittedQuery.isEmpty else { return }
         query = lastSubmittedQuery
         selectedIndex = nil
         currentGitHubPage = 1
-        await coordinator.search(makeRequest(query: lastSubmittedQuery))
+        await coordinator.updateScope(makeRequest(query: lastSubmittedQuery))
         clampSelection()
     }
 

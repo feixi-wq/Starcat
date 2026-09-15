@@ -59546,6 +59546,23 @@
         }
       }
     },
+    "ai.semanticSearch.reason.contentMatchFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indexed content contains this phrase (similarity %@)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "索引正文包含该短语（相似度 %@）"
+          }
+        }
+      }
+    },
     "ai.semanticSearch.reason.descriptionMatchFormat" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -305461,6 +305478,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "还没有向量。点右上角刷新语义索引。"
+          }
+        }
+      }
+    },
+    "search.footer.vector.refreshHint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Click to refresh the semantic index."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "点击刷新语义索引。"
           }
         }
       }

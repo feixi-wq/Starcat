@@ -269,6 +269,42 @@ struct SearchCenterViewModelTests {
         #expect(viewModel.processChips.map(\.source) == [.localKeyword, .localSemantic])
     }
 
+    @Test("changeScope 全部切本地不重跑已加载 Provider")
+    func changeScopeAllToLocalDoesNotRerunProviders() async throws {
+        let db = try InMemoryDatabaseManager()
+        let history = GRDBSearchHistoryRepository(database: db)
+        let keyword = SearchCenterCountingStubProvider(source: .localKeyword, candidate: Self.makeCandidate(id: 1, owner: "apple", name: "swift"))
+        let semantic = SearchCenterCountingStubProvider(
+            source: .localSemantic,
+            candidate: {
+                var item = Self.makeCandidate(id: 1, owner: "apple", name: "swift")
+                item.sources = [.localSemantic]
+                item.semanticScore = 0.9
+                return item
+            }()
+        )
+        let github = SearchCenterCountingStubProvider(
+            source: .github,
+            candidate: Self.makeCandidate(id: 2, owner: "torvalds", name: "linux")
+        )
+        let coordinator = SearchCoordinator(providers: [keyword, semantic, github])
+        let viewModel = SearchCenterViewModel(coordinator: coordinator, historyRepository: history)
+        viewModel.query = "swift"
+        viewModel.scope = .all
+        await viewModel.submit()
+        #expect(keyword.callCount == 1)
+        #expect(semantic.callCount == 1)
+        #expect(github.callCount == 1)
+
+        #expect(viewModel.resultListEpoch == 0)
+        await viewModel.changeScope(.local)
+        #expect(keyword.callCount == 1)
+        #expect(semantic.callCount == 1)
+        #expect(github.callCount == 1)
+        #expect(viewModel.resultListEpoch == 1)
+        #expect(viewModel.candidates.map(\.id) == ["repo:apple/swift"])
+    }
+
     @Test("关键词先返回 0 时不显示骨架，底栏展示语义搜索中")
     func keywordZeroKeepsFooterWhileSemanticLoads() async throws {
         let db = try InMemoryDatabaseManager()
@@ -535,6 +571,34 @@ private struct SearchCenterImmediateStubProvider: SearchProvider {
 
     func search(_ request: SearchRequest) async throws -> SearchProviderPage {
         page
+    }
+}
+
+private final class SearchCenterCountingStubProvider: SearchProvider, @unchecked Sendable {
+    let source: SearchSource
+    let candidate: RepositoryCandidate
+    private let lock = NSLock()
+    private var value = 0
+
+    var callCount: Int {
+        lock.withLock { value }
+    }
+
+    init(source: SearchSource, candidate: RepositoryCandidate) {
+        self.source = source
+        self.candidate = candidate
+    }
+
+    func search(_ request: SearchRequest) async throws -> SearchProviderPage {
+        lock.withLock { value += 1 }
+        var item = candidate
+        item.sources = [source]
+        return SearchProviderPage(
+            repositories: [item],
+            references: [],
+            totalCount: 1,
+            hasNextPage: false
+        )
     }
 }
 

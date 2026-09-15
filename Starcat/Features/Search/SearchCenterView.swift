@@ -278,9 +278,6 @@ struct SearchCenterView: View {
                 .focusEffectDisabled()
             }
             Spacer()
-            if shouldShowSemanticIndexControl {
-                semanticIndexControl
-            }
             if filtersAvailable {
                 Button {
                     isFilterDrawerPresented.toggle()
@@ -300,34 +297,10 @@ struct SearchCenterView: View {
         .frame(height: 46)
     }
 
-    /// “全部 / 本地”都会执行本地语义 Provider，因此只在这两个 scope 暴露索引刷新。
-    /// GitHub / Web 不读取本地向量，显示按钮会错误暗示刷新能影响远端结果。
-    private var shouldShowSemanticIndexControl: Bool {
+    /// “全部 / 本地”才展示向量覆盖率 chip，点击即刷新索引。
+    /// GitHub / Web 不读取本地向量，显示会错误暗示刷新能影响远端结果。
+    private var shouldShowVectorIndexChip: Bool {
         viewModel.scope == .all || viewModel.scope == .local
-    }
-
-    /// 复用项目统一刷新控件。进度数字改走底栏向量 chip，避免和覆盖率抢同一串 30/2037。
-    /// 索引状态继续由 HomeViewModel 单一持有，避免 Search Center 再造一套并发状态。
-    private var semanticIndexControl: some View {
-        SyncIconButton(
-            isRefreshing: homeViewModel.isSemanticIndexing,
-            disabled: homeViewModel.isSemanticIndexing || viewModel.isSearching,
-            tooltip: semanticIndexTooltip,
-            action: refreshSemanticIndex
-        )
-        .accessibilityLabel(Text("search.semantic.refreshIndex"))
-    }
-
-    private var semanticIndexTooltip: String {
-        guard homeViewModel.isSemanticIndexing,
-              let progress = homeViewModel.semanticIndexProgress else {
-            return String.l10n("search.semantic.refreshIndex")
-        }
-        return String(
-            format: String.l10n("search.semantic.indexingProgressFormat"),
-            progress.processed,
-            progress.total
-        )
     }
 
     private func refreshSemanticIndex() {
@@ -607,76 +580,89 @@ struct SearchCenterView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List {
-                ForEach(Array(viewModel.candidates.enumerated()), id: \.element.id) { index, candidate in
-                    // 这里不再用 Button:macOS SwiftUI 在 List 内的 Button + onHover
-                    // 对「最末行紧贴 List 边界」存在 hit-test 缩水 bug,导致最底部一行 hover
-                    // 不触发(safeAreaInset / contentShape 调整都修不彻底)。改成整行
-                    // .contentShape(Rectangle()) + .onTapGesture/.onHover 后,hover 命中区域
-                    // 由我们显式定义,不再受 List 内 Button 容器边界影响,所有行表现一致。
-                    // 牺牲点:丢掉 Button 自带的 keyboard 触发(空格/回车)和 VoiceOver 的
-                    // .isButton trait,所以下面用 .accessibilityAddTraits(.isButton) 补回语义,
-                    // 而 Return 键打开仍由 body 顶层 .onKeyPress(.return) 处理,不受影响。
-                    candidateRow(
-                        candidate,
-                        isSelected: index == viewModel.selectedIndex
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        activate(candidate)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction { activate(candidate) }
-                    .contextMenu {
-                        if case .repository(let repository) = candidate {
-                            Button("search.contextMenu.openInGitHub") { onOpenURL(repository) }
-                            Button("search.contextMenu.copyURL") { onCopyURL(repository) }
-                            if let repo = repository.displayRepo {
-                                Divider()
-                                Button("search.contextMenu.aiSummary") { onOpenAI(repo) }
-                                if isStarred(repo.id) {
-                                    Button("search.contextMenu.unstar") { toggleStarFromContextMenu(repo) }
-                                } else {
-                                    Button("search.contextMenu.star") { toggleStarFromContextMenu(repo) }
+            // 切全部 / 本地会复用同一批候选 id，List 默认保留 contentOffset，
+            // 首卡会被截在分隔线下方。epoch 换身份 + scrollTo 顶部，保证从第一条看起。
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(Array(viewModel.candidates.enumerated()), id: \.element.id) { index, candidate in
+                        // 这里不再用 Button:macOS SwiftUI 在 List 内的 Button + onHover
+                        // 对「最末行紧贴 List 边界」存在 hit-test 缩水 bug,导致最底部一行 hover
+                        // 不触发(safeAreaInset / contentShape 调整都修不彻底)。改成整行
+                        // .contentShape(Rectangle()) + .onTapGesture/.onHover 后,hover 命中区域
+                        // 由我们显式定义,不再受 List 内 Button 容器边界影响,所有行表现一致。
+                        // 牺牲点:丢掉 Button 自带的 keyboard 触发(空格/回车)和 VoiceOver 的
+                        // .isButton trait,所以下面用 .accessibilityAddTraits(.isButton) 补回语义,
+                        // 而 Return 键打开仍由 body 顶层 .onKeyPress(.return) 处理,不受影响。
+                        candidateRow(
+                            candidate,
+                            isSelected: index == viewModel.selectedIndex
+                        )
+                        .id(candidate.id)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            activate(candidate)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction { activate(candidate) }
+                        .contextMenu {
+                            if case .repository(let repository) = candidate {
+                                Button("search.contextMenu.openInGitHub") { onOpenURL(repository) }
+                                Button("search.contextMenu.copyURL") { onCopyURL(repository) }
+                                if let repo = repository.displayRepo {
+                                    Divider()
+                                    Button("search.contextMenu.aiSummary") { onOpenAI(repo) }
+                                    if isStarred(repo.id) {
+                                        Button("search.contextMenu.unstar") { toggleStarFromContextMenu(repo) }
+                                    } else {
+                                        Button("search.contextMenu.star") { toggleStarFromContextMenu(repo) }
+                                    }
+                                }
+                            } else if case .reference(let reference) = candidate {
+                                Button("search.contextMenu.openInBrowser") { NSWorkspace.shared.open(reference.originalURL) }
+                                Button("search.contextMenu.copyURL") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(reference.originalURL.absoluteString, forType: .string)
                                 }
                             }
-                        } else if case .reference(let reference) = candidate {
-                            Button("search.contextMenu.openInBrowser") { NSWorkspace.shared.open(reference.originalURL) }
-                            Button("search.contextMenu.copyURL") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(reference.originalURL.absoluteString, forType: .string)
-                            }
                         }
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                }
 
-                if shouldShowGitHubLoadMoreRow {
-                    githubLoadMoreListRow
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                }
+                    if shouldShowGitHubLoadMoreRow {
+                        githubLoadMoreListRow
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    }
 
-                if shouldShowWebLoadMoreRow {
-                    webLoadMoreListRow
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    if shouldShowWebLoadMoreRow {
+                        webLoadMoreListRow
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    }
                 }
-            }
-            .listStyle(.inset)
-            // List 在亮色主题默认绘制不透明白底，导致结果区与搜索浮层顶部的
-            // regularMaterial 明显断层。只隐藏 scroll content 背景，行选中态继续保留。
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
-            // 给最底部留 8pt 透明缓冲：SwiftUI 在 `.listStyle(.inset)` 下，最后一行
-            // 紧贴 List 边界时 hover hit-test 会被边界裁掉，造成最末项 hover 不触发。
-            // 留出这段缓冲后，最末项有完整命中区域，hover 与其它行表现一致。
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                Color.clear.frame(height: 8)
+                .listStyle(.inset)
+                // List 在亮色主题默认绘制不透明白底，导致结果区与搜索浮层顶部的
+                // regularMaterial 明显断层。只隐藏 scroll content 背景，行选中态继续保留。
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+                // 给最底部留 8pt 透明缓冲：SwiftUI 在 `.listStyle(.inset)` 下，最后一行
+                // 紧贴 List 边界时 hover hit-test 会被边界裁掉，造成最末项 hover 不触发。
+                // 留出这段缓冲后，最末项有完整命中区域，hover 与其它行表现一致。
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    Color.clear.frame(height: 8)
+                }
+                .id(viewModel.resultListEpoch)
+                .task(id: viewModel.resultListEpoch) {
+                    guard let firstID = viewModel.candidates.first?.id else { return }
+                    proxy.scrollTo(firstID, anchor: .top)
+                    // macOS List 有时首帧还没挂上 row identity，下一帧再滚一次。
+                    try? await Task.sleep(nanoseconds: 16_000_000)
+                    proxy.scrollTo(firstID, anchor: .top)
+                }
             }
             // Provider 失败提示已迁到 `webResultFooter` 右侧，避免结果列表底角
             // 玻璃胶囊挡住末行 hover / 与底部状态栏抢视线。
@@ -1128,7 +1114,7 @@ struct SearchCenterView: View {
     ///
     /// - **`.web`**（仅网页）：左侧"X 条 · Y.Ys"汇总 chip + 右侧错误 / rate limit
     /// - **`.all` / `.local`**：过程 chip「关键词 N · 语义搜索中… · GitHub M」
-    ///   + 右侧向量覆盖率 / 刷新进度
+    ///   + 右侧可点击的向量覆盖率 / 刷新进度
     /// - **`.github`**：默认不渲染；若有 provider 失败则仍渲染右侧错误
     ///
     /// 关键约束（不要回退）：
@@ -1145,7 +1131,7 @@ struct SearchCenterView: View {
     private var webResultFooter: some View {
         let processChips = viewModel.processChips
         let counts = viewModel.resultCounts
-        let vectorPhase = shouldShowSemanticIndexControl ? homeViewModel.semanticIndexFooterPhase : .hidden
+        let vectorPhase = shouldShowVectorIndexChip ? homeViewModel.semanticIndexFooterPhase : .hidden
         let rateLimit = viewModel.webMetadata?.rateLimit
         let errors = viewModel.footerErrors
         if !processChips.isEmpty
@@ -1176,21 +1162,31 @@ struct SearchCenterView: View {
         }
     }
 
-    /// 向量库存 / 刷新进度。不要和左侧「语义 1」合成一个数：那是本次查询命中，这是索引覆盖率。
+    /// 向量库存 / 刷新进度。点击即刷新语义索引（原右上角刷新按钮已收进这里）。
+    /// 不要和左侧「语义 1」合成一个数：那是本次查询命中，这是索引覆盖率。
     private func vectorIndexChip(_ phase: SemanticIndexFooterPhase) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "sparkles")
-                .font(interfaceScale.font(.captionSmall, weight: .semibold))
-            Text(verbatim: vectorIndexChipText(phase))
-                .font(interfaceScale.font(.captionSmall, weight: .medium).monospacedDigit())
-                .lineLimit(1)
+        let isDisabled = homeViewModel.isSemanticIndexing || viewModel.isSearching
+        return Button(action: refreshSemanticIndex) {
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(interfaceScale.font(.captionSmall, weight: .semibold))
+                Text(verbatim: vectorIndexChipText(phase))
+                    .font(interfaceScale.font(.captionSmall, weight: .medium).monospacedDigit())
+                    .lineLimit(1)
+            }
+            .foregroundStyle(vectorIndexChipForeground(phase))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(.primary.opacity(phase.isRefreshing ? 0.05 : 0.08), in: Capsule())
         }
-        .foregroundStyle(vectorIndexChipForeground(phase))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(.primary.opacity(phase.isRefreshing ? 0.05 : 0.08), in: Capsule())
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .disabled(isDisabled)
         .fixedSize(horizontal: true, vertical: false)
+        .pointerStyle(.link)
         .help(vectorIndexChipTooltip(phase))
+        .accessibilityLabel(Text("search.semantic.refreshIndex"))
+        .accessibilityHint(Text("search.footer.vector.refreshHint"))
     }
 
     private func vectorIndexChipText(_ phase: SemanticIndexFooterPhase) -> String {
@@ -1250,14 +1246,18 @@ struct SearchCenterView: View {
                 format: String.l10n("search.footer.vector.coverageHelpFormat"),
                 indexed,
                 total
-            )
+            ),
+            String.l10n("search.footer.vector.refreshHint")
         ]
         lines.append(vectorLastPrefetchTooltipLine())
         return lines.joined(separator: "\n")
     }
 
     private func vectorNotReadyTooltip() -> String {
-        [String.l10n("search.footer.vector.notReadyHelp"), vectorLastPrefetchTooltipLine()]
+        [
+            String.l10n("search.footer.vector.refreshHint"),
+            vectorLastPrefetchTooltipLine()
+        ]
             .joined(separator: "\n")
     }
 
