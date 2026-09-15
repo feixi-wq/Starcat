@@ -343,9 +343,16 @@ final class HomeViewModel {
     /// 由 `ensureRepoVisible(repoId:)` 负责把 currentPage 推到对应页。
     var selectedRepo: Repo? {
         if let external = externalSelectedRepo { return external }
-        // 临时置顶优先于列表选中：置顶仓即使 selectedRepoID 被 reload / 筛选清理，
-        // 详情也保持指向它，避免 applyManageDetailSelectionPolicy 抢选列表第一条。
-        if let pinned = temporaryPinnedRepo { return pinned }
+        if let pinned = temporaryPinnedRepo {
+            // 列表已有同一仓时改用列表真源。搜索打开未 Star 仓再 Star 后，
+            // 置顶快照仍是旧的 isStarred=false，但 All Stars 已含新行；
+            // 列表会隐藏置顶卡改画列表行，详情必须跟着切过去，否则星星空心。
+            // 仓还不在列表里时继续用置顶快照，挡住抢选第一条。
+            if let live = filteredSorted.first(where: { $0.id == pinned.id }) {
+                return live
+            }
+            return pinned
+        }
         guard let id = selectedRepoID else { return nil }
         return filteredSorted.first { $0.id == id }
     }
