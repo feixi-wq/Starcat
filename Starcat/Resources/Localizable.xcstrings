@@ -16738,7 +16738,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Undo Star"
+            "value" : "取消星标"
           }
         },
         "zh-Hant" : {
@@ -30130,7 +30130,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mode: Read-only"
+            "value" : "模式：只读"
           }
         },
         "zh-Hant" : {
@@ -30354,7 +30354,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Scope: Starred repos"
+            "value" : "范围：已 Star 的仓库"
           }
         },
         "zh-Hant" : {
@@ -30466,7 +30466,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tools: Registry"
+            "value" : "工具：注册表"
           }
         },
         "zh-Hant" : {
@@ -34506,7 +34506,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%d spans"
+            "value" : "%d 个跨度"
           }
         },
         "zh-Hant" : {
@@ -34730,7 +34730,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Artifact"
+            "value" : "产出物"
           }
         },
         "zh-Hant" : {
@@ -35066,7 +35066,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tool"
+            "value" : "工具"
           }
         },
         "zh-Hant" : {
@@ -35178,7 +35178,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tool Call"
+            "value" : "工具调用"
           }
         },
         "zh-Hant" : {
@@ -36256,7 +36256,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Plan · step %d"
+            "value" : "计划 · 步骤 %d"
           }
         },
         "zh-Hant" : {
@@ -36368,7 +36368,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tool Call · %@"
+            "value" : "工具调用 · %@"
           }
         },
         "zh-Hant" : {
@@ -36480,7 +36480,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Run Trace"
+            "value" : "运行追踪"
           }
         },
         "zh-Hant" : {
@@ -286939,7 +286939,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Updated"
+            "value" : "已更新"
           }
         },
         "zh-Hant" : {
@@ -289764,7 +289764,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Homepage"
+            "value" : "主页"
           }
         },
         "zh-Hant" : {
@@ -290103,7 +290103,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "License"
+            "value" : "许可证"
           }
         },
         "zh-Hant" : {
@@ -291459,7 +291459,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Topics"
+            "value" : "主题"
           }
         },
         "zh-Hant" : {
@@ -312046,7 +312046,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Starred"
+            "value" : "已 Star"
           }
         },
         "zh-Hant" : {
@@ -335405,7 +335405,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "External Search"
+            "value" : "外部搜索"
           }
         },
         "zh-Hant" : {
@@ -357027,7 +357027,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Endpoint"
+            "value" : "端点"
           }
         },
         "zh-Hant" : {
@@ -379128,7 +379128,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Collection"
+            "value" : "集合"
           }
         },
         "zh-Hant" : {
@@ -379352,7 +379352,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Endpoint"
+            "value" : "端点"
           }
         },
         "zh-Hant" : {
@@ -379576,7 +379576,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Index"
+            "value" : "索引"
           }
         },
         "zh-Hant" : {
@@ -407168,7 +407168,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "CONTRIBUTION GRAPH"
+            "value" : "贡献图表"
           }
         },
         "zh-Hant" : {
@@ -411703,7 +411703,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Repos"
+            "value" : "仓库"
           }
         },
         "zh-Hant" : {
@@ -411816,7 +411816,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Starred"
+            "value" : "已 Star"
           }
         },
         "zh-Hant" : {
@@ -462289,7 +462289,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Uncategorized"
+            "value" : "未分类"
           }
         },
         "zh-Hant" : {
@@ -465461,7 +465461,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "All Activity"
+            "value" : "所有活动"
           }
         },
         "zh-Hant" : {
@@ -465573,7 +465573,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ignore"
+            "value" : "忽略"
           }
         },
         "zh-Hant" : {
@@ -465797,7 +465797,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Participating and @mentions"
+            "value" : "参与和提及"
           }
         },
         "zh-Hant" : {
@@ -465910,7 +465910,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "View Watchers on GitHub"
+            "value" : "在 GitHub 上查看观察者"
           }
         },
         "zh-Hant" : {
@@ -468057,7 +468057,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "All Languages"
+            "value" : "全部语言"
           }
         },
         "zh-Hant" : {
