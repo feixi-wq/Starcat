@@ -193,18 +193,15 @@ final class SearchCenterViewModel {
 
     /// 当前 scope 下、各 provider 已加载的命中数。
     ///
-    /// 设计意图（dong4j 2026-06-13 反馈）：`.all` scope 下底部 footer 应该
-    /// 反映"本地 + GitHub + 网页"三者聚合，而不是只展示网页的命中数和耗时。
-    /// 此属性按 scope 选取需要展示的 provider 列表，过滤掉非 `.loaded` 的，
-    /// 输出顺序固定（本地 → GitHub → 网页），保证 UI 不抖动。
+    /// `.web` footer 仍走这里（含用时的汇总 chip）。`.all` / `.local` 的底栏
+    /// 已改用 `processChips`，把关键词与语义拆开，并在搜索过程中显示「搜索中」。
+    /// 本属性保留给 `.web` 与尚未切到过程 chip 的调用方，避免再发明一套计数。
     ///
-    /// - `.all`：返回三段（本地 / GitHub / 网页），只包含已加载的来源。
-    ///   - 本地复合 source 取 `.localKeyword`（FTS）—— 语义搜索算"补强"
-    ///     不单独计列，否则容易让用户看到"本地 3 + 本地 2"两条对相同结果重复计数。
+    /// - `.all`：返回三段（本地关键词 / GitHub / 网页），只包含已加载的来源。
+    ///   语义仍不计列，避免与过程 chip 双计。
     /// - `.web`：返回单段（网页）。
     /// - `.local` / `.github`：返回空数组。
-    ///   - `.local` 命中数瞬时无意义、与左上角已有的语义搜索 chip 信息重复，
-    ///     不显示 footer 避免冗余。
+    ///   - `.local` 走 `processChips`。
     ///   - `.github` 命中数已通过 `githubResultSummary` 在 githubFilterBar 显示。
     var resultCounts: [ResultSourceCount] {
         let sources: [SearchSource]
@@ -224,6 +221,58 @@ final class SearchCenterViewModel {
             // 本地 / web 的 totalCount 与实际返回数相同，无此问题。
             let total = page.totalCount ?? 0
             return ResultSourceCount(source: source, count: total)
+        }
+    }
+
+    /// `.all` / `.local` 底栏过程 chip：谁还在搜、谁已经返回了几条。
+    ///
+    /// 关键词与语义并行，不能合成「本地 N」——否则语义还在跑时用户会以为本地已结束。
+    /// 失败来源不进 chip，交给右侧 `footerErrors`，避免同一失败画两次。
+    var processChips: [SearchProcessChip] {
+        processChipSources.compactMap { source in
+            switch coordinator.status(for: source) {
+            case .loading:
+                return SearchProcessChip(source: source, phase: .loading)
+            case .loaded(let page):
+                return SearchProcessChip(source: source, phase: .loaded(page.totalCount ?? 0))
+            case .idle, .failed:
+                return nil
+            }
+        }
+    }
+
+    /// 至少有一个过程 chip 来源已经 loaded / failed。
+    /// 关键词先返回 0 时必须为 true，这样结果区不再继续画 8 行假骨架。
+    var hasSettledSearchProvider: Bool {
+        processChipSources.contains { source in
+            switch coordinator.status(for: source) {
+            case .loaded, .failed:
+                return true
+            case .idle, .loading:
+                return false
+            }
+        }
+    }
+
+    /// 骨架只在「这次提交后谁都还没落地」时出现。
+    /// 任一 provider 已返回（含 0 条）且列表仍空：交给空白等待区 + 底栏过程文案。
+    var shouldShowSearchSkeleton: Bool {
+        candidates.isEmpty && isSearching && !hasSettledSearchProvider
+    }
+
+    /// 过程 chip 的固定顺序。`.github` / `.web` 不走这里，避免和筛选条 / 用时汇总抢位。
+    private var processChipSources: [SearchSource] {
+        switch scope {
+        case .all:
+            var sources: [SearchSource] = [.localKeyword, .localSemantic, .github]
+            if includeWebInAll() {
+                sources.append(.web)
+            }
+            return sources
+        case .local:
+            return [.localKeyword, .localSemantic]
+        case .github, .web:
+            return []
         }
     }
 
@@ -465,6 +514,51 @@ final class SearchCenterViewModel {
         history = entries.sorted { lhs, rhs in
             lhs.decayedScore(now: now) > rhs.decayedScore(now: now)
         }
+    }
+}
+
+/// 搜索过程 chip 的阶段：加载中显示「语义搜索中…」，落地后显示「语义 1」。
+enum SearchProcessPhase: Equatable, Sendable {
+    case loading
+    case loaded(Int)
+}
+
+struct SearchProcessChip: Identifiable, Equatable, Sendable {
+    let source: SearchSource
+    let phase: SearchProcessPhase
+
+    var id: String { source.rawValue }
+
+    var labelKey: String {
+        switch source {
+        case .localKeyword:
+            return "search.footer.source.keyword"
+        case .localSemantic:
+            return "search.footer.source.semantic"
+        case .github:
+            return "search.footer.source.github"
+        case .web:
+            return "search.footer.source.web"
+        }
+    }
+
+    var displayText: String {
+        let label = String.l10n(labelKey)
+        switch phase {
+        case .loading:
+            return String(format: String.l10n("search.footer.loadingFormat"), label)
+        case .loaded(let count):
+            return String(
+                format: String.l10n("search.footer.summaryFormat"),
+                label,
+                count
+            )
+        }
+    }
+
+    var isLoading: Bool {
+        if case .loading = phase { return true }
+        return false
     }
 }
 

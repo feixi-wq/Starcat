@@ -210,6 +210,169 @@ struct SearchCenterViewModelTests {
         #expect(viewModel.footerErrors.map(\.fullMessage) == viewModel.errorMessages)
     }
 
+    @Test("全部 scope 底栏按关键词、语义、GitHub 分别计数")
+    func allScopeProcessChipsSplitKeywordAndSemantic() async throws {
+        let db = try InMemoryDatabaseManager()
+        let history = GRDBSearchHistoryRepository(database: db)
+        let keywordCandidate = Self.makeCandidate(id: 1, owner: "apple", name: "swift")
+        var keyword = keywordCandidate
+        keyword.sources = [.localKeyword]
+        var semantic = Self.makeCandidate(id: 2, owner: "swiftlang", name: "swift-evolution")
+        semantic.sources = [.localSemantic]
+        semantic.semanticScore = 0.91
+        semantic.semanticReason = "vector"
+        let coordinator = SearchCoordinator(providers: [
+            SearchCenterImmediateStubProvider(
+                source: .localKeyword,
+                page: SearchProviderPage(
+                    repositories: [keyword],
+                    references: [],
+                    totalCount: 1,
+                    hasNextPage: false
+                )
+            ),
+            SearchCenterImmediateStubProvider(
+                source: .localSemantic,
+                page: SearchProviderPage(
+                    repositories: [semantic],
+                    references: [],
+                    totalCount: 1,
+                    hasNextPage: false
+                )
+            ),
+            SearchCenterImmediateStubProvider(
+                source: .github,
+                page: SearchProviderPage(
+                    repositories: [],
+                    references: [],
+                    totalCount: 0,
+                    hasNextPage: false
+                )
+            )
+        ])
+        let viewModel = SearchCenterViewModel(coordinator: coordinator, historyRepository: history)
+
+        viewModel.query = "swift"
+        viewModel.scope = .all
+        await viewModel.submit()
+
+        #expect(viewModel.processChips.map(\.source) == [.localKeyword, .localSemantic, .github])
+        #expect(viewModel.processChips.map(\.phase) == [
+            .loaded(1),
+            .loaded(1),
+            .loaded(0)
+        ])
+        #expect(!viewModel.shouldShowSearchSkeleton)
+        #expect(viewModel.candidates.count == 2)
+
+        viewModel.scope = .local
+        #expect(viewModel.processChips.map(\.source) == [.localKeyword, .localSemantic])
+    }
+
+    @Test("关键词先返回 0 时不显示骨架，底栏展示语义搜索中")
+    func keywordZeroKeepsFooterWhileSemanticLoads() async throws {
+        let db = try InMemoryDatabaseManager()
+        let history = GRDBSearchHistoryRepository(database: db)
+        let semanticGate = SearchHoldGate()
+        var semanticCandidate = Self.makeCandidate(id: 99, owner: "starcat-app", name: "starcat-docs")
+        semanticCandidate.sources = [.localSemantic]
+        semanticCandidate.semanticScore = 0.88
+        let coordinator = SearchCoordinator(providers: [
+            SearchCenterImmediateStubProvider(
+                source: .localKeyword,
+                page: SearchProviderPage(
+                    repositories: [],
+                    references: [],
+                    totalCount: 0,
+                    hasNextPage: false
+                )
+            ),
+            SearchCenterGatedStubProvider(
+                source: .localSemantic,
+                gate: semanticGate,
+                page: SearchProviderPage(
+                    repositories: [semanticCandidate],
+                    references: [],
+                    totalCount: 1,
+                    hasNextPage: false
+                )
+            ),
+            SearchCenterImmediateStubProvider(
+                source: .github,
+                page: SearchProviderPage(
+                    repositories: [],
+                    references: [],
+                    totalCount: 0,
+                    hasNextPage: false
+                )
+            )
+        ])
+        let viewModel = SearchCenterViewModel(coordinator: coordinator, historyRepository: history)
+        viewModel.query = "把 GitHub star 做成知识库"
+        viewModel.scope = .all
+
+        let searchTask = Task { await viewModel.submit() }
+        await semanticGate.waitUntilBlocked()
+        try await waitUntil { viewModel.hasSettledSearchProvider }
+
+        #expect(!viewModel.shouldShowSearchSkeleton)
+        #expect(viewModel.hasSettledSearchProvider)
+        #expect(viewModel.candidates.isEmpty)
+        #expect(viewModel.processChips.contains { $0.source == .localKeyword && $0.phase == .loaded(0) })
+        #expect(viewModel.processChips.contains { $0.source == .localSemantic && $0.phase == .loading })
+        #expect(viewModel.processChips.contains { $0.source == .github && $0.phase == .loaded(0) })
+
+        await semanticGate.resume()
+        await searchTask.value
+
+        #expect(viewModel.candidates.count == 1)
+        #expect(viewModel.processChips.contains { $0.source == .localSemantic && $0.phase == .loaded(1) })
+        #expect(!viewModel.shouldShowSearchSkeleton)
+        #expect(!viewModel.isSearching)
+    }
+
+    @Test("关键词先出结果时立刻展示，不等语义")
+    func keywordHitsAppearBeforeSemanticFinishes() async throws {
+        let db = try InMemoryDatabaseManager()
+        let history = GRDBSearchHistoryRepository(database: db)
+        let semanticGate = SearchHoldGate()
+        var keyword = Self.makeCandidate(id: 1, owner: "apple", name: "swift")
+        keyword.sources = [.localKeyword]
+        let coordinator = SearchCoordinator(providers: [
+            SearchCenterImmediateStubProvider(
+                source: .localKeyword,
+                page: SearchProviderPage(
+                    repositories: [keyword],
+                    references: [],
+                    totalCount: 1,
+                    hasNextPage: false
+                )
+            ),
+            SearchCenterGatedStubProvider(
+                source: .localSemantic,
+                gate: semanticGate,
+                page: .empty
+            )
+        ])
+        let viewModel = SearchCenterViewModel(coordinator: coordinator, historyRepository: history)
+        viewModel.query = "swift"
+        viewModel.scope = .local
+
+        let searchTask = Task { await viewModel.submit() }
+        await semanticGate.waitUntilBlocked()
+        try await waitUntil { viewModel.candidates.count == 1 }
+
+        #expect(viewModel.candidates.count == 1)
+        #expect(!viewModel.shouldShowSearchSkeleton)
+        #expect(viewModel.processChips.contains { $0.source == .localKeyword && $0.phase == .loaded(1) })
+        #expect(viewModel.processChips.contains { $0.source == .localSemantic && $0.phase == .loading })
+
+        await semanticGate.resume()
+        await searchTask.value
+        #expect(viewModel.candidates.count == 1)
+        #expect(!viewModel.isSearching)
+    }
+
     private nonisolated static func makeCandidate(
         id: Int64 = 1,
         owner: String = "apple",
@@ -248,6 +411,18 @@ struct SearchCenterViewModelTests {
             remoteRepo: nil,
             semanticScore: nil
         )
+    }
+
+    private func waitUntil(
+        timeoutNanoseconds: UInt64 = 1_000_000_000,
+        _ condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        Issue.record("waitUntil timed out")
     }
 }
 
@@ -350,5 +525,59 @@ private final class WebLoadMoreStubProvider: SearchProvider, @unchecked Sendable
             totalCount: 2,
             hasNextPage: request.externalSearchFilters.maxResults == 10
         )
+    }
+}
+
+/// 立即返回指定 page，用于断言过程 chip 的终态。
+private struct SearchCenterImmediateStubProvider: SearchProvider {
+    let source: SearchSource
+    let page: SearchProviderPage
+
+    func search(_ request: SearchRequest) async throws -> SearchProviderPage {
+        page
+    }
+}
+
+/// 卡住语义（或任意）provider，直到测试显式 resume。
+private struct SearchCenterGatedStubProvider: SearchProvider {
+    let source: SearchSource
+    let gate: SearchHoldGate
+    let page: SearchProviderPage
+
+    func search(_ request: SearchRequest) async throws -> SearchProviderPage {
+        await gate.wait()
+        return page
+    }
+}
+
+/// 让测试能在「关键词已返回、语义仍在跑」的中间态断言骨架和 chip。
+private actor SearchHoldGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isBlocked = false
+    private var isReleased = false
+
+    func wait() async {
+        if isReleased { return }
+        isBlocked = true
+        let waiters = blockedWaiters
+        blockedWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilBlocked() async {
+        if isBlocked || isReleased { return }
+        await withCheckedContinuation { continuation in
+            blockedWaiters.append(continuation)
+        }
+    }
+
+    func resume() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }

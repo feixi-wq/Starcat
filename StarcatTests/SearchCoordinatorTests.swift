@@ -53,6 +53,7 @@ struct SearchCoordinatorTests {
         let semantic = StubSearchProvider(source: .localSemantic) { _ in
             var exactCandidate = Self.makeCandidate(repo: keywordRepo, source: .localSemantic)
             exactCandidate.semanticScore = 0.95
+            exactCandidate.semanticReason = "name match"
             var semanticCandidate = Self.makeCandidate(repo: semanticOnlyRepo, source: .localSemantic)
             semanticCandidate.semanticScore = 0.88
             return SearchProviderPage(
@@ -72,6 +73,7 @@ struct SearchCoordinatorTests {
         ])
         #expect(coordinator.repositories[0].sources == Set<SearchSource>([.localKeyword, .localSemantic]))
         #expect(coordinator.repositories[0].semanticScore == 0.95)
+        #expect(coordinator.repositories[0].semanticReason == "name match")
     }
 
     @Test("跨来源同一 Repo 合并 sources 并优先保留本地状态")

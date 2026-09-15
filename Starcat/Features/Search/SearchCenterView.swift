@@ -569,9 +569,14 @@ struct SearchCenterView: View {
     private var resultContent: some View {
         if viewModel.lastSubmittedQuery.isEmpty {
             historyContent
-        } else if viewModel.candidates.isEmpty, viewModel.isSearching {
-            // 与主窗口 / 探索列表同款骨架；不再用 ProgressView + 文案，避免 repo 结果区加载态不统一。
+        } else if viewModel.shouldShowSearchSkeleton {
+            // 骨架只在「谁都还没返回」时出现。关键词已落地 0、语义还在跑时
+            // 不能继续画 8 行假列表，否则用户会以为结果还在路上。
             RepoSkeletonListView(rowCount: 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.candidates.isEmpty, viewModel.isSearching {
+            // 已有 provider 落地且仍无候选：撑住结果区高度，底栏用过程 chip 说话。
+            Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if isExternalSearchUnavailableEmpty {
             // 专属空态：.web scope + AnySearch 未启用。
@@ -785,6 +790,12 @@ struct SearchCenterView: View {
                     UnifiedRepoRow(
                         card: repo.card,
                         isSelected: isSelected,
+                        semanticHit: repo.semanticScore.map {
+                            SemanticSearchHit.displayOnly(
+                                score: $0,
+                                reason: repo.semanticReason ?? ""
+                            )
+                        },
                         trailingReservedWidth: sourceIndicatorTrailingReserve(for: source)
                     )
                 }
@@ -1125,13 +1136,13 @@ struct SearchCenterView: View {
     /// 浮层底部 footer。按 scope 分支渲染：
     ///
     /// - **`.web`**（仅网页）：左侧"X 条 · Y.Ys"汇总 chip + 右侧错误 / rate limit
-    /// - **`.all`**（聚合）：左侧多段 chip"本地 N · GitHub M · 网页 K"（按 provider
-    ///   命中数依次展示）+ 右侧错误 chip + rate limit chip（仅当 web 参与且已加载）
-    /// - **`.local` / `.github`**：默认不渲染；若有 provider 失败则仍渲染右侧错误
+    /// - **`.all` / `.local`**：过程 chip「关键词 N · 语义搜索中… · GitHub M」
+    /// - **`.github`**：默认不渲染；若有 provider 失败则仍渲染右侧错误
     ///
     /// 关键约束（不要回退）：
     /// - footer 渲染条件 = "至少有一个 chip 可显示"：
-    ///   - 至少一个 provider 已加载（resultCounts 非空），或
+    ///   - 过程 chip 非空（搜索中也要露出「语义搜索中」），或
+    ///   - 至少一个 provider 已加载（resultCounts 非空，供 `.web`），或
     ///   - rate limit chip 可显示（webMetadata.rateLimit 非 nil），或
     ///   - 至少一个 provider 失败（footerErrors 非空）
     /// - 右侧顺序固定：错误 chip → 限流 chip（限流贴最右，避免错误出现时跳位）
@@ -1139,12 +1150,13 @@ struct SearchCenterView: View {
     /// - remaining ≤ 0 时右侧限流 chip 切换到"额度用尽 · HH:mm 重置"
     @ViewBuilder
     private var webResultFooter: some View {
+        let processChips = viewModel.processChips
         let counts = viewModel.resultCounts
         let rateLimit = viewModel.webMetadata?.rateLimit
         let errors = viewModel.footerErrors
-        if !counts.isEmpty || rateLimit != nil || !errors.isEmpty {
+        if !processChips.isEmpty || !counts.isEmpty || rateLimit != nil || !errors.isEmpty {
             HStack(spacing: 8) {
-                leadingSummaryContent(counts: counts)
+                leadingSummaryContent(processChips: processChips, counts: counts)
                 Spacer(minLength: 8)
                 if !errors.isEmpty {
                     HStack(spacing: 6) {
@@ -1184,24 +1196,46 @@ struct SearchCenterView: View {
 
     /// 左侧汇总区。根据当前 scope 选择渲染策略：
     /// - `.web` scope + 只有 web：用 `searchSummaryChip` 显示"X 条·Y.Ys"（含用时）
-    /// - 其他场景（聚合 / 单 source 但不是 .web）：用多段 sourceChip 串接，
-    ///   不显示用时（"用时"概念只有 web 上可靠，本地 / GitHub 没记录）
+    /// - `.all` / `.local`：过程 chip（关键词 / 语义 / GitHub），搜索中也显示
+    /// - 其他兜底：旧的 resultCounts 多段 chip
     @ViewBuilder
-    private func leadingSummaryContent(counts: [ResultSourceCount]) -> some View {
+    private func leadingSummaryContent(
+        processChips: [SearchProcessChip],
+        counts: [ResultSourceCount]
+    ) -> some View {
         if viewModel.scope == .web,
            let webMetadata = viewModel.webMetadata,
            let total = webMetadata.totalResults,
            let ms = webMetadata.searchTimeMs {
             // .web scope 走"含用时"的紧凑形态（保留 v1 体验）
             webOnlySummaryChip(totalResults: total, timeMs: ms)
+        } else if !processChips.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(processChips) { chip in
+                    processChip(chip)
+                }
+            }
         } else {
-            // 聚合形态：每个 source 一个 chip，按 viewModel.resultCounts 顺序排
             HStack(spacing: 6) {
                 ForEach(counts) { entry in
                     sourceCountChip(entry)
                 }
             }
         }
+    }
+
+    /// `.all` / `.local` 过程 chip：加载中弱化颜色，落地后与 sourceCountChip 同规格。
+    private func processChip(_ chip: SearchProcessChip) -> some View {
+        HStack(spacing: 4) {
+            Text(verbatim: chip.displayText)
+                .font(interfaceScale.font(.captionSmall, weight: .medium).monospacedDigit())
+                .lineLimit(1)
+        }
+        .foregroundStyle(chip.isLoading ? Color.secondary : Color.primary.opacity(0.75))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(.primary.opacity(chip.isLoading ? 0.05 : 0.08), in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     /// `.web` scope 专用 chip：放大镜 + "X 条结果 · Y.Ys"（含用时）。

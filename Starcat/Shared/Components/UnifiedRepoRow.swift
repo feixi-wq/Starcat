@@ -555,7 +555,8 @@ private struct RepoCardInlineMetadataBadge: View {
 /// 语义搜索命中分数 chip。
 ///
 /// 紫色 capsule + sparkles + 百分比，悬停 tooltip 显示命中原因（reason）。
-/// 仅在 Manage 场景的 RepoListView 通过 `viewModel.semanticHit(for:)` 注入。
+/// Manage 列表经 `viewModel.semanticHit(for:)` 注入；Search Center 经候选上的
+/// `semanticScore` 构造 display-only hit。纯关键词行不传，避免假百分比。
 ///
 /// **2026-06-14 dong4j 改造（A 重标定）**：
 /// - 百分数源从原始 cosine `hit.score` 改成重标定后的 `hit.displayScore`，
