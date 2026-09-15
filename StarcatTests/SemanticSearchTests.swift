@@ -604,6 +604,10 @@ struct SemanticIndexProgressSinkTests {
     func countEmbeddingsIntersectsModelAndCandidates() async throws {
         let db = try InMemoryDatabaseManager()
         let repository = GRDBRepoEmbeddingRepository(database: db)
+        // repo_embeddings.repo_id 外键指向 repos.id，先插占位 repo 行再写向量。
+        try await db.insertRepoFixture(id: 1)
+        try await db.insertRepoFixture(id: 2)
+        try await db.insertRepoFixture(id: 99)
         let current = RepoEmbedding(
             repoId: 1,
             model: "text-embedding-3-small",
