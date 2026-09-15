@@ -8,6 +8,20 @@
 
 import Foundation
 
+/// 状态面板一行对应一个会进 MLX 的模型槽，以及当前绑到它的业务。
+/// 生成槽只统计摘要 / 标签 / 对话 / 翻译；知识库问答和 Agent 不用本地对话模型。
+struct LocalAIStatusModel: Identifiable, Equatable, Sendable {
+    var entry: LocalAIModelCatalogEntry
+    var usages: [LocalAIStatusUsage]
+    var id: String { entry.id }
+}
+
+/// 行上业务标识。文案复用任务页与 Rerank 设置的现成 key，不另造一套。
+enum LocalAIStatusUsage: Equatable, Hashable, Sendable {
+    case task(AIModelTask)
+    case rerank
+}
+
 extension AppSettings {
     /// 每类只解析一个选中项；未下载的明确选择也必须保留，不能被其它已安装模型顶替。
     func selectedLocalAIModel(
@@ -61,18 +75,42 @@ extension AppSettings {
         localAIModelSelections[entry.type.rawValue] = entry.id
     }
 
-    /// 状态面板按设置页当前服务商门控，固定按向量化、重排序、生成各展示一项。
-    func localAIStatusModels(installedModels: [LocalAIInstalledModel]) -> [LocalAIModelCatalogEntry] {
-        let profile: AIProviderProfile?
-        if aiSettingsSelectedProfileID.isEmpty {
-            // 尚未打开设置页时，与 ensureSelection 的首启动默认服务商保持一致。
-            profile = aiProviderProfiles.first { $0.provider == .localAI } ?? aiProviderProfiles.first
-        } else {
-            profile = aiProviderProfiles.first { $0.id == aiSettingsSelectedProfileID }
+    /// 只用到的模型槽才出现：向量化任务、本地 Rerank、以及四个生成类任务。
+    /// 知识库工作台选中的对话模型不单独出生成行。设置页当前编辑的服务商不参与门控。
+    func localAIStatusModels(installedModels: [LocalAIInstalledModel]) -> [LocalAIStatusModel] {
+        LocalAIModelType.allCases.compactMap { type in
+            let usages = localAIStatusUsages(for: type)
+            guard !usages.isEmpty else { return nil }
+            return LocalAIStatusModel(
+                entry: selectedLocalAIModel(for: type, installedModels: installedModels),
+                usages: usages
+            )
         }
-        guard profile?.provider == .localAI else { return [] }
-        return LocalAIModelType.allCases.map {
-            selectedLocalAIModel(for: $0, installedModels: installedModels)
+    }
+
+    /// 生成类任务顺序与设置页一致，翻译跟在对话后面；embedding / rerank 各自独立。
+    private func localAIStatusUsages(for type: LocalAIModelType) -> [LocalAIStatusUsage] {
+        switch type {
+        case .embedding:
+            return isEmbeddingTaskResolvedToLocalAI ? [.task(.embedding)] : []
+        case .reranker:
+            return usesLocalAIRerank ? [.rerank] : []
+        case .llm:
+            let generationTasks: [AIModelTask] = [.summary, .tags, .chat, .translation]
+            return generationTasks.compactMap { task in
+                guard isTaskResolvedToLocalAI(localAITaskConfiguration(task)) else { return nil }
+                return LocalAIStatusUsage.task(task)
+            }
+        }
+    }
+
+    private func localAITaskConfiguration(_ task: AIModelTask) -> AIModelTaskConfiguration {
+        switch task {
+        case .summary: return aiSummaryTask
+        case .tags: return aiTagsTask
+        case .embedding: return aiEmbeddingTask
+        case .translation: return aiTranslationTask
+        case .chat: return aiChatTask
         }
     }
 }

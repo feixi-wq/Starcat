@@ -492,6 +492,22 @@ extension AppSettings {
     var isTagsTaskResolvedToLocalAI: Bool { isTaskResolvedToLocalAI(aiTagsTask) }
     var isEmbeddingTaskResolvedToLocalAI: Bool { isTaskResolvedToLocalAI(aiEmbeddingTask) }
 
+    /// 任一普通 AI 任务指向内置 Local AI。设置页下拉只表示「正在编辑哪家」，
+    /// 不能用来判断运行时会不会走 MLX。
+    var usesLocalAIForAnyTask: Bool {
+        isChatTaskResolvedToLocalAI
+            || isSummaryTaskResolvedToLocalAI
+            || isTagsTaskResolvedToLocalAI
+            || isEmbeddingTaskResolvedToLocalAI
+            || isTaskResolvedToLocalAI(aiTranslationTask)
+    }
+
+    /// 知识库 Rerank 已开启且走进程内 MLX。远程 TEI/Cohere 不占用本地重排序槽。
+    var usesLocalAIRerank: Bool {
+        let rerank = ragRerankConfiguration.normalized
+        return rerank.isEnabled && rerank.provider == .localMLX
+    }
+
     /// 摘要 + 标签任务都指向本地模型（批量 AI / 自动整理的免费判定口径）。
     var isGenerationTasksResolvedToLocalAI: Bool {
         isSummaryTaskResolvedToLocalAI && isTagsTaskResolvedToLocalAI

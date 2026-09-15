@@ -2,8 +2,9 @@
 //  LocalAISettingsSelectionTests.swift
 //  StarcatTests
 //
-//  回归验证 toolbar 按设置页选择显示模型，而非枚举下载清单。全部使用临时偏好域和
-//  安装元数据，不访问真实模型目录，也不触发 MLX 加载。
+//  回归验证 toolbar 只展示当前会进 MLX 的模型槽，并标出对应业务，而不是设置页
+//  当前服务商或固定三类目录。全部使用临时偏好域和安装元数据，不访问真实模型
+//  目录，也不触发 MLX 加载。
 //
 
 import Foundation
@@ -35,36 +36,144 @@ struct LocalAISettingsSelectionTests {
         }
     }
 
-    @Test("下载了多个模型时仍只展示三类选中项")
-    func onlyShowsSelectedModels() {
-        withSettings { settings, _ in
-            let selected = LocalAIModelType.allCases.map { LocalAIModelCatalog.entries(of: $0).last! }
-            settings.localAIModelSelections = Dictionary(uniqueKeysWithValues: selected.map { ($0.type.rawValue, $0.id) })
-            let installed = LocalAIModelCatalog.entries.map(installedModel)
-            #expect(installed.count > 3)
-            let displayed = settings.localAIStatusModels(installedModels: installed)
-            #expect(displayed.map(\.id) == selected.map(\.id))
-            #expect(displayed.map(\.type) == [.embedding, .reranker, .llm])
+    @Test("业务标识使用完整的本地化键而非插值格式键")
+    func usageUsesExactLocalizationKey() {
+        let keys: [(LocalAIStatusUsage, String)] = [
+            (.task(.summary), "ai.task.summary"),
+            (.task(.tags), "ai.task.tags"),
+            (.task(.chat), "ai.task.chat"),
+            (.task(.embedding), "ai.task.embedding"),
+            (.task(.translation), "ai.task.translation"),
+            (.rerank, "rag.workspace.rerank.title"),
+        ]
+        for (usage, key) in keys {
+            #expect(LocalAIStatusSection.usageLabelKey(usage) == LocalizedStringKey(key))
         }
     }
 
-    @Test("非本地服务商及失效选择不展示本地模型", arguments: ["api", "removed-profile"])
-    func hidesForOtherProviders(profileID: String) {
+    @Test("下载了多个生成模型时仍只展示当前选中项")
+    func onlyShowsSelectedModels() {
         withSettings { settings, _ in
-            settings.aiSettingsSelectedProfileID = profileID
-            #expect(settings.localAIStatusModels(installedModels: LocalAIModelCatalog.entries.map(installedModel)).isEmpty)
+            assignAllTasks(settings, to: "api")
+            settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.aiSettingsSelectedProfileID = "api"
+            let selected = LocalAIModelCatalog.entries(of: .llm).last!
+            settings.localAIModelSelections[LocalAIModelType.llm.rawValue] = selected.id
+            let installed = LocalAIModelCatalog.entries.map(installedModel)
+            #expect(installed.count > 3)
+            let displayed = settings.localAIStatusModels(installedModels: installed)
+            #expect(displayed.map(\.entry.id) == [selected.id])
+            #expect(displayed.map(\.entry.type) == [.llm])
+            #expect(displayed.first?.usages == [.task(.chat)])
+        }
+    }
+
+    @Test(
+        "设置页正在编辑远程服务商时，任一任务指向 Local AI 仍展示对应槽",
+        arguments: [AIModelTask.chat, .summary, .tags, .embedding, .translation]
+    )
+    func showsWhenAnyTaskUsesLocalAIDespiteRemotePicker(task: AIModelTask) {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            assignTask(settings, task, to: LocalAIModelCatalog.builtInProfileID)
+            settings.aiSettingsSelectedProfileID = "api"
+            let displayed = statusModels(settings)
+            #expect(displayed.count == 1)
+            if task == .embedding {
+                #expect(displayed[0].entry.type == .embedding)
+            } else {
+                #expect(displayed[0].entry.type == .llm)
+            }
+            #expect(displayed[0].usages == [.task(task)])
+        }
+    }
+
+    @Test("多个生成类任务共用一行，并列出实际业务")
+    func generationRowListsBoundTasks() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            settings.aiSummaryTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
+            let displayed = statusModels(settings)
+            #expect(displayed.map(\.entry.type) == [.llm])
+            #expect(displayed[0].usages == [.task(.summary), .task(.chat)])
+        }
+    }
+
+    @Test("所有任务都指向远程且未开启本地 Rerank 时不展示")
+    func hidesWhenNoTaskUsesLocalAI() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            settings.aiSettingsSelectedProfileID = LocalAIModelCatalog.builtInProfileID
+            #expect(statusModels(settings).isEmpty)
+        }
+    }
+
+    @Test("任务指向已删除的服务商时不展示")
+    func hidesWhenTaskProviderIsMissing() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "removed-profile")
+            settings.aiSettingsSelectedProfileID = LocalAIModelCatalog.builtInProfileID
+            #expect(statusModels(settings).isEmpty)
+        }
+    }
+
+    @Test("知识库工作台选中本地对话模型不会单独展示生成行")
+    func hidesGenerationWhenOnlyRAGWorkspaceSelectsLocalChat() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            configureInstalledModels(settings)
+            let chat = settings.aiProviderProfiles[0].models.first {
+                $0.capability != .embedding && $0.capability != .rerank
+            }
+            settings.ragWorkspaceSelectedModelID = chat?.id ?? ""
+            settings.aiSettingsSelectedProfileID = LocalAIModelCatalog.builtInProfileID
+            #expect(statusModels(settings).isEmpty)
+        }
+    }
+
+    @Test("仅开启本地 Rerank 时只展示重排序行")
+    func showsRerankerOnlyWhenLocalRerankEnabled() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            settings.ragRerankConfiguration = RAGRerankConfiguration(isEnabled: true, provider: .localMLX)
+            let displayed = statusModels(settings)
+            #expect(displayed.map(\.entry.type) == [.reranker])
+            #expect(displayed[0].usages == [.rerank])
+        }
+    }
+
+    @Test("远程 Rerank 即使开启也不展示重排序行")
+    func hidesRerankerForRemoteProvider() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            settings.ragRerankConfiguration = RAGRerankConfiguration(isEnabled: true, provider: .huggingFaceTEI)
+            #expect(statusModels(settings).isEmpty)
+        }
+    }
+
+    @Test("向量化、Rerank 与生成按槽位顺序排列")
+    func ordersConsumedSlots() {
+        withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            settings.aiEmbeddingTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
+            settings.ragRerankConfiguration = RAGRerankConfiguration(isEnabled: true, provider: .localMLX)
+            #expect(statusModels(settings).map(\.entry.type) == [.embedding, .reranker, .llm])
         }
     }
 
     @Test("未下载的选中项不会被其它已下载模型替代")
     func keepsUndownloadedSelection() {
         withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
             let selected = LocalAIModelCatalog.entries(of: .llm).last!
             let downloaded = LocalAIModelCatalog.entries(of: .llm)[0]
             settings.localAIModelSelections[LocalAIModelType.llm.rawValue] = selected.id
             let models = settings.localAIStatusModels(installedModels: [installedModel(downloaded)])
-            #expect(models.last?.id == selected.id)
-            #expect(models.count == 3)
+            #expect(models.last?.entry.id == selected.id)
+            #expect(models.count == 1)
         }
     }
 
@@ -88,13 +197,22 @@ struct LocalAISettingsSelectionTests {
     @Test("空选择使用设置页相同的默认模型", arguments: LocalAIModelType.allCases)
     func sharesDefaultSelection(type: LocalAIModelType) {
         withSettings { settings, _ in
+            assignAllTasks(settings, to: "api")
+            switch type {
+            case .llm:
+                settings.aiChatTask.providerID = LocalAIModelCatalog.builtInProfileID
+            case .embedding:
+                settings.aiEmbeddingTask.providerID = LocalAIModelCatalog.builtInProfileID
+            case .reranker:
+                settings.ragRerankConfiguration = RAGRerankConfiguration(isEnabled: true, provider: .localMLX)
+            }
             settings.aiSettingsSelectedProfileID = ""
             let downloaded = LocalAIModelCatalog.entries(of: type).last!
             let installed = [installedModel(downloaded)]
             let settingSelection = settings.selectedLocalAIModel(for: type, installedModels: installed)
-            let statusSelection = settings.localAIStatusModels(installedModels: installed).first { $0.type == type }
+            let statusSelection = settings.localAIStatusModels(installedModels: installed).first { $0.entry.type == type }
             #expect(settingSelection.id == downloaded.id)
-            #expect(statusSelection?.id == settingSelection.id)
+            #expect(statusSelection?.entry.id == settingSelection.id)
         }
     }
 
@@ -248,6 +366,27 @@ struct LocalAISettingsSelectionTests {
             settings.localAIModelSelections["llm"] = LocalAIModelCatalog.llmMiniCPM5.id
             #expect(throws: AgentLoopModelError.self) { try AgentLoopModelClientFactory.make(settings: settings) }
         }
+    }
+
+    /// 五类任务一次性改 provider，避免首启动 Local AI 默认覆盖掩盖门控。
+    private func assignAllTasks(_ settings: AppSettings, to providerID: String) {
+        for task in AIModelTask.allCases {
+            assignTask(settings, task, to: providerID)
+        }
+    }
+
+    private func assignTask(_ settings: AppSettings, _ task: AIModelTask, to providerID: String) {
+        switch task {
+        case .chat: settings.aiChatTask.providerID = providerID
+        case .summary: settings.aiSummaryTask.providerID = providerID
+        case .tags: settings.aiTagsTask.providerID = providerID
+        case .embedding: settings.aiEmbeddingTask.providerID = providerID
+        case .translation: settings.aiTranslationTask.providerID = providerID
+        }
+    }
+
+    private func statusModels(_ settings: AppSettings) -> [LocalAIStatusModel] {
+        settings.localAIStatusModels(installedModels: LocalAIModelCatalog.entries.map(installedModel))
     }
 
     /// 只提供已验证安装目录的描述；所有解析测试不执行磁盘扫描或模型加载。

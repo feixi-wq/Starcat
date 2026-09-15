@@ -2,8 +2,9 @@
 //  LocalAIStatusSection.swift
 //  Starcat
 //
-//  Toolbar 状态面板里的本地模型驻留与快捷操作。只在面板可见时采样，每秒刷新值快照；
-//  不把高频内存变化传到整个主窗口，也不因打开面板加载模型。
+//  Toolbar 状态面板里的本地模型驻留与快捷操作。只画出当前会进 MLX 的模型槽，
+//  并标出对应业务；知识库问答 / Agent 不用本地对话模型。只在面板可见时采样，
+//  每秒刷新值快照；不把高频内存变化传到整个主窗口，也不因打开面板加载模型。
 //
 
 import SwiftUI
@@ -36,7 +37,7 @@ struct LocalAIStatusSection: View {
         }
     }
 
-    private func statusContent(_ models: [LocalAIModelCatalogEntry]) -> some View {
+    private func statusContent(_ models: [LocalAIStatusModel]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             header
             metricRow
@@ -46,8 +47,8 @@ struct LocalAIStatusSection: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            ForEach(models) { model in
-                modelRow(model)
+            ForEach(models) { row in
+                modelRow(row)
             }
             Text("toolbar.localai.memoryHelp")
                 .font(interfaceScale.font(.captionSmall))
@@ -150,7 +151,8 @@ struct LocalAIStatusSection: View {
         )
     }
 
-    private func modelRow(_ model: LocalAIModelCatalogEntry) -> some View {
+    private func modelRow(_ row: LocalAIStatusModel) -> some View {
+        let model = row.entry
         let installed = manager.installedModel(id: model.id)
         let resident = snapshot.models[model.type].flatMap {
             $0.directory.lastPathComponent == installed?.idWithRevision ? $0 : nil
@@ -170,6 +172,7 @@ struct LocalAIStatusSection: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(model.displayName)
+                usageChips(row.usages)
                 HStack(spacing: 4) {
                     Circle()
                         .fill(phaseDotColor(phase, installed: installed != nil))
@@ -238,6 +241,22 @@ struct LocalAIStatusSection: View {
         }
     }
 
+    /// 业务标识复用任务页 / Rerank 标题的现成 key；完整字面量避免 LocalizedStringKey 插值丢翻译。
+    private func usageChips(_ usages: [LocalAIStatusUsage]) -> some View {
+        HStack(spacing: 4) {
+            ForEach(usages, id: \.self) { usage in
+                Text(Self.usageLabelKey(usage))
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(.quaternary, in: Capsule())
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+    }
+
     private var hasResidentModels: Bool {
         snapshot.models.values.contains { [.loading, .ready, .running].contains($0.phase) }
     }
@@ -278,6 +297,18 @@ struct LocalAIStatusSection: View {
         case .embedding: return "settings.localai.model.type.embedding"
         case .reranker: return "settings.localai.model.type.reranker"
         case .llm: return "settings.localai.model.type.llm"
+        }
+    }
+
+    /// 业务标识同样必须用完整字面量 key，不能用 `"ai.task.\(task.rawValue)"` 插值。
+    static func usageLabelKey(_ usage: LocalAIStatusUsage) -> LocalizedStringKey {
+        switch usage {
+        case .task(.summary): return "ai.task.summary"
+        case .task(.tags): return "ai.task.tags"
+        case .task(.chat): return "ai.task.chat"
+        case .task(.embedding): return "ai.task.embedding"
+        case .task(.translation): return "ai.task.translation"
+        case .rerank: return "rag.workspace.rerank.title"
         }
     }
 

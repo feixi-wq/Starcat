@@ -55,8 +55,8 @@ struct LocalAILogWindowView: View {
         .onChange(of: selection.revision, initial: true) { _, _ in
             if let id = selection.modelID { viewModel.selectModel(id) }
         }
-        .onChange(of: settings.localAIStatusModels(installedModels: manager.installedModels), initial: true) { _, entries in
-            viewModel.setSelectedModels(entries)
+        .onChange(of: settings.localAIStatusModels(installedModels: manager.installedModels), initial: true) { _, rows in
+            viewModel.setSelectedModels(rows.map(\.entry))
         }
         .alert("localai.logs.clearAll.title", isPresented: $confirmsClearAll) {
             Button("common.cancel", role: .cancel) {}
