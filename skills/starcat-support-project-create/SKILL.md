@@ -57,7 +57,7 @@ test ! -e supports/<project>
 3. 使用脚手架先 dry-run：
 
 ```bash
-python3 .claude/skills/starcat-support-project-create/scripts/scaffold.py \
+python3 skills/starcat-support-project-create/scripts/scaffold.py \
   --target supports/<project> \
   --name <project> \
   --title-en "<English title>" \

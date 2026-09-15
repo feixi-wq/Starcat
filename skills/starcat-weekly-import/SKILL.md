@@ -78,10 +78,10 @@ X-SC-Svc: weekly
 生成唯一且可复用的 `idempotency_key`，一次 POST 完整列表。输入未提供 key 时，脚本按规范化 payload 生成稳定内容指纹，因此 dry-run、正式提交和超时重放保持一致。可用脚本先做本地校验，再经 `--confirm` 真正提交：
 
 ```bash
-python3 .claude/skills/starcat-weekly-import/scripts/submit_import.py \
+python3 skills/starcat-weekly-import/scripts/submit_import.py \
   --input /tmp/starcat-weekly-import.json
 
-python3 .claude/skills/starcat-weekly-import/scripts/submit_import.py \
+python3 skills/starcat-weekly-import/scripts/submit_import.py \
   --input /tmp/starcat-weekly-import.json \
   --confirm --poll
 ```
@@ -93,7 +93,7 @@ python3 .claude/skills/starcat-weekly-import/scripts/submit_import.py \
 ```bash
 STARCAT_WEEKLY_BASE_URL="http://127.0.0.1:5003" \
 STARCAT_WEEKLY_ADMIN_KEY="test-key" \
-python3 .claude/skills/starcat-weekly-import/scripts/submit_import.py \
+python3 skills/starcat-weekly-import/scripts/submit_import.py \
   --test \
   --input /tmp/starcat-weekly-import.json \
   --confirm --poll
