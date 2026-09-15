@@ -234,7 +234,7 @@ curl -sS -X POST 'http://127.0.0.1:36677/upload' \
 
 | Skill | 关系 |
 |-------|------|
-| `update-changelog` | 从 git commit **生成**条目文案；本 skill **不**扫 commit |
+| `starcat-starcat-update-changelog` | 从 git commit **生成**条目文案；本 skill **不**扫 commit |
 | `starcat-release` / 官网 changelog | 本 skill **不**生成 HTML、不部署 |
 | 本 skill | 只做：本地图 → WebP → PicList CDN → 四份同步 → 清临时文件 |
 

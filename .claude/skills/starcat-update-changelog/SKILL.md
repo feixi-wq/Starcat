@@ -1,5 +1,5 @@
 ---
-name: update-changelog
+name: starcat-update-changelog
 description: >
   Update Starcat changelog documents in supports/starcat-pro/ by reading ALL git commits
   from the main Starcat project and generating categorized release notes in both English
