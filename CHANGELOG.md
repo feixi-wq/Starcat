@@ -2,7 +2,7 @@
 
 Release notes for the Mac App Store edition of Starcat.
 
-## 1.7.0-待发布
+## 1.7.0
 
 ### New
 
