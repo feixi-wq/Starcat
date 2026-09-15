@@ -266,6 +266,21 @@ struct LocalAIModelsSection: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
+                        // 已下载标识（dong4j 2026-09-15）：与行内 `.installed` 状态共用绿色
+                        // 实心对勾，让「本机已有」在下拉和行尾是同一套符号语言，复用同一个
+                        // 本地化 key。放在行尾而不是紧跟模型名：行首 checkmark 已经表示
+                        // 「当前选中」，名字两边各挂一个对勾会读成同一件事；行尾的实心
+                        // 圆形对勾与行首线性对勾形状、颜色都不同，且选中态只会命中一行、
+                        // 已下载可以命中多行，不会混淆。
+                        // 字号比行首 checkmark 小一档：实心 glyph 视觉重量大（同文件
+                        // rowIconFont 口径）。
+                        if isInstalled(entry) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                                .help(Text("settings.localai.model.status.installed"))
+                                .accessibilityLabel(Text("settings.localai.model.status.installed"))
+                        }
                         badgeCapsule(entry)
                     }
                     .padding(.horizontal, 10)
@@ -311,6 +326,13 @@ struct LocalAIModelsSection: View {
     /// 当前类别选中的模型：显式选择 > 已安装 > 推荐 > 首个。
     private func selectedEntry(for type: LocalAIModelType) -> LocalAIModelCatalogEntry {
         settings.selectedLocalAIModel(for: type, installedModels: manager.installedModels)
+    }
+
+    /// 该模型是否已下载到本机。以磁盘 manifest 为准，不走 `installState`：
+    /// `installState` 在容器加载失败时返回 `.loadFailed`，但权重文件确实已经落盘，
+    /// 对用户来说就是「已下载」，加载态不该把这个标识抹掉。
+    private func isInstalled(_ entry: LocalAIModelCatalogEntry) -> Bool {
+        manager.installedModel(id: entry.id) != nil
     }
 
     private func typeLabel(_ type: LocalAIModelType) -> String {
