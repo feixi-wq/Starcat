@@ -49,8 +49,33 @@ struct StarHistoryPoint: Codable, Equatable, Identifiable, Sendable {
     }
 
     var id: String {
-        "\(StarHistoryDateCodec.dayString(from: date))|\(source.rawValue)"
+        "\(dayOrdinal)|\(source.rawValue)"
     }
+
+    /// UTC 日序号（1970-01-01 为 0）。
+    ///
+    /// 为什么需要它：`id` 曾经每次都把 Date 经 UTC 日历格式化成 "YYYY-MM-DD"
+    /// （`Calendar.dateComponents` + `String(format:)`，实测单次 2.5–4 µs）。
+    /// 一旦对全量历史做集合或比较（README 卡片里有两处），上千个点就是毫秒级开销。
+    /// 日序号是纯算术，且与日历日边界严格一致 —— POSIX 时间戳每天恒为 86 400 秒，
+    /// 因此 `dayOrdinal` 与 `dayString(from:)` 是同一个等价类。
+    var dayOrdinal: Int {
+        Int((date.timeIntervalSince1970 / 86_400).rounded(.down))
+    }
+
+    /// 廉价身份键：与 `id` 同义，但不分配字符串，可直接用于 Set / 字典键。
+    var key: StarHistoryPointKey {
+        StarHistoryPointKey(day: dayOrdinal, source: source)
+    }
+}
+
+/// `StarHistoryPoint` 的身份键：日 + 来源。
+///
+/// 必须带上来源：同一天可能同时存在 GH Archive 与 GitHub 官方两个点（来源交接处），
+/// 只用日期会把它们当成同一个点。
+struct StarHistoryPointKey: Hashable, Sendable {
+    let day: Int
+    let source: StarHistorySource
 }
 
 protocol RepoStarHistoryRepositoryProtocol: Sendable {

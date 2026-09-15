@@ -288,7 +288,8 @@ struct ReadmeStarHistoryWebKitTests {
                                                                         generatedAt: end.addingTimeInterval(86_400)))
         let model = StarHistoryChartRenderModel(points: points, range: .all, repositoryCreatedAt: created, now: end)
         let card = try #require(ReadmeStarHistoryHTMLRenderer.render(snapshot: snapshot, model: model, repo: repo,
-                                                                   locale: Locale(identifier: "en"), now: end))
+                                                                   locale: Locale(identifier: "en"), now: end,
+                                                                   context: ReadmeStarHistoryHTMLRenderer.ReadmeStarHistoryRenderContext.prepare(language: repo.language)))
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
