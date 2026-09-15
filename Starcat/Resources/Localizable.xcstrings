@@ -274219,19 +274219,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sorted by commits · top 12"
+            "value" : "All time · Sorted by commits · top 12"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "按 commits 排序 · 前 12 人"
+            "value" : "全历史 · 按 commits 排序 · 前 12 人"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "依 commits 排序 · 前 12 人"
+            "value" : "全歷史 · 依 commits 排序 · 前 12 人"
           }
         }
       }
