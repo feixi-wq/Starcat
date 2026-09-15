@@ -168,6 +168,18 @@ struct HomeViewModelPaginationTests {
         #expect(vm.selectedRepo?.id == 99)
     }
 
+    @Test("打开搜索前加载覆盖率：无向量时底栏为未就绪")
+    func reloadSemanticIndexCoverageWithoutVectorsIsNotReady() async throws {
+        let (vm, db) = try makeSUT()
+        try await insertRepo(db, id: 1, fullName: "o/alpha", starredAt: starredAt(forID: 1))
+        try await insertRepo(db, id: 2, fullName: "o/beta", starredAt: starredAt(forID: 2))
+
+        #expect(vm.semanticIndexFooterPhase == .hidden)
+        await vm.reloadSemanticIndexCoverage()
+        #expect(vm.semanticIndexCoverage == SemanticIndexCoverage(indexed: 0, total: 2))
+        #expect(vm.semanticIndexFooterPhase == .notReady)
+    }
+
     @Test("DB Paging: 外部导航一次加载到深页目标")
     func externalNavigationLoadsTargetPage() async throws {
         let (vm, db) = try makeSUT()

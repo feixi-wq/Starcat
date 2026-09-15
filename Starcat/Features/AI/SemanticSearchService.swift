@@ -346,6 +346,18 @@ final class SemanticSearchService {
         )), selection.modelName)
     }
 
+    /// 当前 embedding 模型在候选仓里已有向量的条数。解析模型失败时返回 0，由 UI 显示「未就绪」。
+    func indexedCount(repoIDs: [Int64]) async throws -> Int {
+        let model: String
+        do {
+            model = try settings.resolveEmbeddingSelection().modelName
+        } catch {
+            return 0
+        }
+        guard !model.isEmpty else { return 0 }
+        return try await embeddingRepository.countEmbeddings(model: model, repoIDs: repoIDs)
+    }
+
     /// 核心：确保 `repos` 的向量索引存在且最新。
     ///
     /// force=false：先取本地 snapshot，用 `IndexedTextDiff.shouldRebuild` 判定是否真的要重建；

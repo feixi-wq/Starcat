@@ -23,6 +23,7 @@ struct SearchCenterView: View {
 
     @Environment(AppDependencies.self) private var dependencies
     @Environment(HomeViewModel.self) private var homeViewModel
+    @Environment(\.locale) private var locale
     @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     /// SEARCH-RICH 2026-06-14：从 `Repo?` 改为 `RepositoryCandidate?` —— 弹窗
@@ -305,26 +306,16 @@ struct SearchCenterView: View {
         viewModel.scope == .all || viewModel.scope == .local
     }
 
-    /// 复用项目统一刷新控件，并沿用旧 SmartSearchField 已有的进度文案。
+    /// 复用项目统一刷新控件。进度数字改走底栏向量 chip，避免和覆盖率抢同一串 30/2037。
     /// 索引状态继续由 HomeViewModel 单一持有，避免 Search Center 再造一套并发状态。
     private var semanticIndexControl: some View {
-        HStack(spacing: 6) {
-            if homeViewModel.isSemanticIndexing,
-               let progress = homeViewModel.semanticIndexProgress {
-                Text(verbatim: "\(progress.processed)/\(progress.total)")
-                    .font(interfaceScale.font(.captionSmall))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-
-            SyncIconButton(
-                isRefreshing: homeViewModel.isSemanticIndexing,
-                disabled: homeViewModel.isSemanticIndexing || viewModel.isSearching,
-                tooltip: semanticIndexTooltip,
-                action: refreshSemanticIndex
-            )
-            .accessibilityLabel(Text("search.semantic.refreshIndex"))
-        }
+        SyncIconButton(
+            isRefreshing: homeViewModel.isSemanticIndexing,
+            disabled: homeViewModel.isSemanticIndexing || viewModel.isSearching,
+            tooltip: semanticIndexTooltip,
+            action: refreshSemanticIndex
+        )
+        .accessibilityLabel(Text("search.semantic.refreshIndex"))
     }
 
     private var semanticIndexTooltip: String {
@@ -1137,27 +1128,37 @@ struct SearchCenterView: View {
     ///
     /// - **`.web`**（仅网页）：左侧"X 条 · Y.Ys"汇总 chip + 右侧错误 / rate limit
     /// - **`.all` / `.local`**：过程 chip「关键词 N · 语义搜索中… · GitHub M」
+    ///   + 右侧向量覆盖率 / 刷新进度
     /// - **`.github`**：默认不渲染；若有 provider 失败则仍渲染右侧错误
     ///
     /// 关键约束（不要回退）：
     /// - footer 渲染条件 = "至少有一个 chip 可显示"：
     ///   - 过程 chip 非空（搜索中也要露出「语义搜索中」），或
+    ///   - 向量 chip 非 hidden（历史页也要能看见覆盖率），或
     ///   - 至少一个 provider 已加载（resultCounts 非空，供 `.web`），或
     ///   - rate limit chip 可显示（webMetadata.rateLimit 非 nil），或
     ///   - 至少一个 provider 失败（footerErrors 非空）
-    /// - 右侧顺序固定：错误 chip → 限流 chip（限流贴最右，避免错误出现时跳位）
+    /// - 右侧顺序固定：向量 chip → 错误 chip → 限流 chip
     /// - rate limit 三字段缺一不全 → 限流 chip 不显示（左侧 metadata / 错误仍渲染）
     /// - remaining ≤ 0 时右侧限流 chip 切换到"额度用尽 · HH:mm 重置"
     @ViewBuilder
     private var webResultFooter: some View {
         let processChips = viewModel.processChips
         let counts = viewModel.resultCounts
+        let vectorPhase = shouldShowSemanticIndexControl ? homeViewModel.semanticIndexFooterPhase : .hidden
         let rateLimit = viewModel.webMetadata?.rateLimit
         let errors = viewModel.footerErrors
-        if !processChips.isEmpty || !counts.isEmpty || rateLimit != nil || !errors.isEmpty {
+        if !processChips.isEmpty
+            || vectorPhase != .hidden
+            || !counts.isEmpty
+            || rateLimit != nil
+            || !errors.isEmpty {
             HStack(spacing: 8) {
                 leadingSummaryContent(processChips: processChips, counts: counts)
                 Spacer(minLength: 8)
+                if vectorPhase != .hidden {
+                    vectorIndexChip(vectorPhase)
+                }
                 if !errors.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(errors) { error in
@@ -1173,6 +1174,114 @@ struct SearchCenterView: View {
             .padding(.vertical, 6)
             .background(Color.primary.opacity(0.025))
         }
+    }
+
+    /// 向量库存 / 刷新进度。不要和左侧「语义 1」合成一个数：那是本次查询命中，这是索引覆盖率。
+    private func vectorIndexChip(_ phase: SemanticIndexFooterPhase) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "sparkles")
+                .font(interfaceScale.font(.captionSmall, weight: .semibold))
+            Text(verbatim: vectorIndexChipText(phase))
+                .font(interfaceScale.font(.captionSmall, weight: .medium).monospacedDigit())
+                .lineLimit(1)
+        }
+        .foregroundStyle(vectorIndexChipForeground(phase))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(.primary.opacity(phase.isRefreshing ? 0.05 : 0.08), in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
+        .help(vectorIndexChipTooltip(phase))
+    }
+
+    private func vectorIndexChipText(_ phase: SemanticIndexFooterPhase) -> String {
+        switch phase {
+        case .hidden:
+            return ""
+        case .refreshing(let processed, let total):
+            return String(
+                format: String.l10n("search.footer.vector.refreshingFormat"),
+                processed,
+                total
+            )
+        case .coverage(let indexed, let total):
+            return String(
+                format: String.l10n("search.footer.vector.coverageFormat"),
+                indexed,
+                total
+            )
+        case .notReady:
+            return String.l10n("search.footer.vector.notReady")
+        }
+    }
+
+    private func vectorIndexChipForeground(_ phase: SemanticIndexFooterPhase) -> Color {
+        switch phase {
+        case .hidden:
+            return .secondary
+        case .refreshing:
+            return .secondary
+        case .coverage(let indexed, let total):
+            return indexed < total ? Color.secondary : Color.primary.opacity(0.75)
+        case .notReady:
+            return .secondary
+        }
+    }
+
+    private func vectorIndexChipTooltip(_ phase: SemanticIndexFooterPhase) -> String {
+        switch phase {
+        case .hidden:
+            return ""
+        case .refreshing(let processed, let total):
+            return String(
+                format: String.l10n("search.semantic.indexingProgressFormat"),
+                processed,
+                total
+            )
+        case .coverage(let indexed, let total):
+            return vectorCoverageTooltip(indexed: indexed, total: total)
+        case .notReady:
+            return vectorNotReadyTooltip()
+        }
+    }
+
+    private func vectorCoverageTooltip(indexed: Int, total: Int) -> String {
+        var lines = [
+            String(
+                format: String.l10n("search.footer.vector.coverageHelpFormat"),
+                indexed,
+                total
+            )
+        ]
+        lines.append(vectorLastPrefetchTooltipLine())
+        return lines.joined(separator: "\n")
+    }
+
+    private func vectorNotReadyTooltip() -> String {
+        [String.l10n("search.footer.vector.notReadyHelp"), vectorLastPrefetchTooltipLine()]
+            .joined(separator: "\n")
+    }
+
+    private func vectorLastPrefetchTooltipLine() -> String {
+        guard let last = AppSettings.shared.semanticIndexLastPrefetch else {
+            return String.l10n("settings.aiIndex.prefetch.neverRun")
+        }
+        let timeAgo = RelativeTimeText.pastEvent(last.finishedAt, locale: locale)
+        let record: String
+        switch last.outcome {
+        case .alreadyUpToDate:
+            record = String(format: String.l10n("settings.aiIndex.prefetch.alreadyUpToDateFmt"), last.total)
+        case .completed:
+            record = String(
+                format: String.l10n("settings.aiIndex.prefetch.progressFmt"),
+                last.processed, last.total, last.failures
+            )
+        case .failed:
+            record = String(
+                format: String.l10n("settings.aiIndex.prefetch.failedFmt"),
+                last.failureMessage ?? ""
+            )
+        }
+        return String(format: String.l10n("settings.aiIndex.prefetch.lastRunFormat"), timeAgo, record)
     }
 
     /// 右侧紧凑错误 chip：短标签可扫读，完整失败句只挂系统 tooltip。

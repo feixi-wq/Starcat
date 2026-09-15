@@ -551,4 +551,71 @@ struct SemanticIndexProgressSinkTests {
         #expect(last.processed == 5)
         #expect(last.total == 5)
     }
+
+    @Test("countEmbeddings 只统计当前模型与候选仓交集")
+    func countEmbeddingsIntersectsModelAndCandidates() async throws {
+        let db = try InMemoryDatabaseManager()
+        let repository = GRDBRepoEmbeddingRepository(database: db)
+        let current = RepoEmbedding(
+            repoId: 1,
+            model: "text-embedding-3-small",
+            vector: [0.1, 0.2],
+            snapshotJson: "{}",
+            updatedAt: "2026-01-01T00:00:00Z"
+        )
+        let otherModel = RepoEmbedding(
+            repoId: 2,
+            model: "other-model",
+            vector: [0.3, 0.4],
+            snapshotJson: "{}",
+            updatedAt: "2026-01-01T00:00:00Z"
+        )
+        let outsideCandidate = RepoEmbedding(
+            repoId: 99,
+            model: "text-embedding-3-small",
+            vector: [0.5, 0.6],
+            snapshotJson: "{}",
+            updatedAt: "2026-01-01T00:00:00Z"
+        )
+        try await repository.upsert([current, otherModel, outsideCandidate])
+
+        let count = try await repository.countEmbeddings(
+            model: "text-embedding-3-small",
+            repoIDs: [1, 2]
+        )
+        #expect(count == 1)
+        #expect(try await repository.countEmbeddings(model: "text-embedding-3-small", repoIDs: []) == 0)
+    }
+
+    @Test("底栏向量 chip：刷新中优先进度，空闲看覆盖率，0 条为未就绪")
+    func semanticIndexFooterPhaseResolve() {
+        #expect(
+            SemanticIndexFooterPhase.resolve(
+                isIndexing: false,
+                progress: nil,
+                coverage: nil
+            ) == .hidden
+        )
+        #expect(
+            SemanticIndexFooterPhase.resolve(
+                isIndexing: true,
+                progress: (processed: 30, total: 2037),
+                coverage: SemanticIndexCoverage(indexed: 1807, total: 2037)
+            ) == .refreshing(processed: 30, total: 2037)
+        )
+        #expect(
+            SemanticIndexFooterPhase.resolve(
+                isIndexing: false,
+                progress: nil,
+                coverage: SemanticIndexCoverage(indexed: 1807, total: 2037)
+            ) == .coverage(indexed: 1807, total: 2037)
+        )
+        #expect(
+            SemanticIndexFooterPhase.resolve(
+                isIndexing: false,
+                progress: nil,
+                coverage: SemanticIndexCoverage(indexed: 0, total: 2037)
+            ) == .notReady
+        )
+    }
 }

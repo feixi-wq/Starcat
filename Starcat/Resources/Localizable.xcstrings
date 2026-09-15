@@ -305397,6 +305397,91 @@
         }
       }
     },
+    "search.footer.vector.coverageFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vectors %d/%d"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向量 %d/%d"
+          }
+        }
+      }
+    },
+    "search.footer.vector.coverageHelpFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indexed %d of %d candidate repositories for the current model."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前模型已索引 %d 个仓库，候选 %d。"
+          }
+        }
+      }
+    },
+    "search.footer.vector.notReady" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vectors not ready"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向量 未就绪"
+          }
+        }
+      }
+    },
+    "search.footer.vector.notReadyHelp" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No vectors yet. Refresh the semantic index from the button above."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有向量。点右上角刷新语义索引。"
+          }
+        }
+      }
+    },
+    "search.footer.vector.refreshingFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refreshing %d/%d"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新 %d/%d"
+          }
+        }
+      }
+    },
     "search.footer.summaryFormat" : {
       "extractionState" : "manual",
       "localizations" : {

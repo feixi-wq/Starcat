@@ -353,6 +353,7 @@ struct HomeView: View {
         }
         .onChange(of: searchCenterViewModel.isPresented) { _, isPresented in
             if isPresented {
+                Task { await viewModel.reloadSemanticIndexCoverage() }
                 presentSearchCenterWindow()
             } else {
                 SearchCenterWindowController.dismiss()

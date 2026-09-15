@@ -496,8 +496,19 @@ final class HomeViewModel {
 
     /// 是否正在构建 / 刷新语义索引。
     private(set) var isSemanticIndexing: Bool = false
-    /// 工具栏进度环用：已写入向量的仓数 / 本轮总仓数。空闲时为 nil。
+    /// 刷新任务进度：已处理仓数 / 本轮总仓数。空闲时为 nil。
     private(set) var semanticIndexProgress: (processed: Int, total: Int)?
+    /// 当前模型在候选仓里的向量覆盖率。Search Center 打开或刷新结束后更新。
+    private(set) var semanticIndexCoverage: SemanticIndexCoverage?
+
+    /// Search Center 底栏向量 chip：刷新中看进度，空闲看覆盖率。
+    var semanticIndexFooterPhase: SemanticIndexFooterPhase {
+        SemanticIndexFooterPhase.resolve(
+            isIndexing: isSemanticIndexing,
+            progress: semanticIndexProgress,
+            coverage: semanticIndexCoverage
+        )
+    }
 
     /// 最近一次语义搜索结果的 repo id → 命中信息。
     /// UI 行只通过 `semanticHit(for:)` 读取，不直接操作字典，避免把语义搜索状态扩散到 View。
@@ -1780,6 +1791,7 @@ final class HomeViewModel {
         isRefreshing = false
         isSemanticIndexing = false
         semanticIndexProgress = nil
+        semanticIndexCoverage = nil
         isLoading = true
     }
 
@@ -3332,6 +3344,27 @@ final class HomeViewModel {
             loadError = friendly.message
             AppLog.database.error("refreshSemanticIndex failed: \(error.localizedDescription, privacy: .public)")
             friendly.record(category: "home", operation: "refreshSemanticIndex", service: "semantic-search")
+        }
+        await reloadSemanticIndexCoverage()
+    }
+
+    /// 刷新 Search Center 底栏用的向量覆盖率。
+    ///
+    /// 候选范围与补缺刷新一致（Star + 知识库）。打开搜索浮层和刷新结束时调用，
+    /// 不跟输入框走，避免每个字符打 COUNT。
+    func reloadSemanticIndexCoverage() async {
+        do {
+            let repos = try await fetchSearchCandidates(scope: .all)
+            let ids = repos.map(\.id)
+            let indexed: Int
+            if let semanticSearchService {
+                indexed = (try? await semanticSearchService.indexedCount(repoIDs: ids)) ?? 0
+            } else {
+                indexed = 0
+            }
+            semanticIndexCoverage = SemanticIndexCoverage(indexed: indexed, total: repos.count)
+        } catch {
+            AppLog.database.error("reloadSemanticIndexCoverage failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
