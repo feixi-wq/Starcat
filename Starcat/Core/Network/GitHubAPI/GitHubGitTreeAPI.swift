@@ -21,4 +21,41 @@ extension GitHubAPIClient {
         )
         return response.value
     }
+
+    /// 分页拉分支名。超过 20 页就停，避免异常仓库把 Sheet 卡在分支请求上。
+    func repositoryBranches(owner: String, repo: String) async throws -> [GitHubRepoBranchDTO] {
+        var page = 1
+        var result: [GitHubRepoBranchDTO] = []
+        while page <= 20 {
+            let response: APIResponse<[GitHubRepoBranchDTO]> = try await get(
+                path: AppEndpoints.GitHubREST.Paths.repoBranches(owner: owner, repo: repo),
+                queryItems: [
+                    URLQueryItem(name: "per_page", value: "100"),
+                    URLQueryItem(name: "page", value: String(page))
+                ]
+            )
+            result.append(contentsOf: response.value)
+            guard let nextPage = response.linkHeader.nextPage else { break }
+            page = nextPage
+        }
+        return result
+    }
+
+    /// 指定 path 在 ref 上的最近一次提交。没有历史时返回 nil，不把空列表当成错误。
+    func repositoryLatestCommit(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String
+    ) async throws -> GitHubCommitSummaryDTO? {
+        let response: APIResponse<[GitHubCommitSummaryDTO]> = try await get(
+            path: AppEndpoints.GitHubREST.Paths.repoCommits(owner: owner, repo: repo),
+            queryItems: [
+                URLQueryItem(name: "path", value: path),
+                URLQueryItem(name: "sha", value: ref),
+                URLQueryItem(name: "per_page", value: "1")
+            ]
+        )
+        return response.value.first
+    }
 }

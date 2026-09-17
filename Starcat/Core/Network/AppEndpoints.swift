@@ -481,6 +481,14 @@ enum AppEndpoints {
             static func repoGitBlob(owner: String, repo: String, sha: String) -> String {
                 "/repos/\(owner)/\(repo)/git/blobs/\(sha)"
             }
+            /// `GET /repos/{owner}/{repo}/branches` —— 分支名列表（切树用）。
+            static func repoBranches(owner: String, repo: String) -> String {
+                "/repos/\(owner)/\(repo)/branches"
+            }
+            /// `GET /repos/{owner}/{repo}/commits` —— 按 path 取最近一次提交。
+            static func repoCommits(owner: String, repo: String) -> String {
+                "/repos/\(owner)/\(repo)/commits"
+            }
             /// `GET /repos/{owner}/{repo}/releases` —— release 列表。
             static func repoReleases(owner: String, repo: String) -> String {
                 "/repos/\(owner)/\(repo)/releases"

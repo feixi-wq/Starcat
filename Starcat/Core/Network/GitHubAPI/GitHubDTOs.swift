@@ -424,6 +424,26 @@ struct GitHubGitTreeEntryDTO: Decodable, Equatable, Sendable {
     let url: String?
 }
 
+/// `GET /repos/{owner}/{repo}/branches` 的最小字段。切文件树只需要名字。
+struct GitHubRepoBranchDTO: Decodable, Equatable, Sendable {
+    let name: String
+}
+
+/// `GET /repos/{owner}/{repo}/commits?path=` 的最小字段，给预览侧栏「上次提交」。
+struct GitHubCommitSummaryDTO: Decodable, Equatable, Sendable {
+    let sha: String
+    let commit: GitHubCommitSummaryPayloadDTO
+}
+
+struct GitHubCommitSummaryPayloadDTO: Decodable, Equatable, Sendable {
+    let committer: GitHubCommitSummaryPersonDTO?
+    let author: GitHubCommitSummaryPersonDTO?
+}
+
+struct GitHubCommitSummaryPersonDTO: Decodable, Equatable, Sendable {
+    let date: String?
+}
+
 // MARK: - Release（HOM-47）
 
 /// `GET /repos/{owner}/{repo}/releases` 单条响应。

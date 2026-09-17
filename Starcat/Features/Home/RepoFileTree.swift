@@ -18,6 +18,25 @@ struct RepoFileBrowserTarget: Equatable, Sendable {
     let fullName: String
     /// git trees 的 ref：默认分支，缺失时用 `HEAD`。
     let ref: String
+    /// 顶栏仓库简介；Trending / 缓存缺字段时为 nil。
+    let summary: String?
+    let isPrivate: Bool
+
+    init(
+        owner: String,
+        name: String,
+        fullName: String,
+        ref: String,
+        summary: String? = nil,
+        isPrivate: Bool = false
+    ) {
+        self.owner = owner
+        self.name = name
+        self.fullName = fullName
+        self.ref = ref
+        self.summary = summary
+        self.isPrivate = isPrivate
+    }
 }
 
 /// 树上的一个可见节点。文件的 `children` 为 nil；目录即使为空也是 `[]`。
@@ -95,6 +114,59 @@ enum RepoFileTreeBuilder {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("/") else { return false }
         return !trimmed.split(separator: "/").contains { $0 == ".." || $0 == "." }
+    }
+
+    /// 路径或文件名包含 query 的子树。目录名命中时保留其下全部文件，方便按文件夹搜。
+    static func filtered(_ nodes: [RepoFileNode], matching query: String) -> [RepoFileNode] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nodes }
+        return nodes.compactMap { filter($0, matching: needle) }
+    }
+
+    private static func filter(_ node: RepoFileNode, matching query: String) -> RepoFileNode? {
+        let selfMatches = node.name.localizedCaseInsensitiveContains(query)
+            || node.path.localizedCaseInsensitiveContains(query)
+        if node.isDirectory {
+            if selfMatches {
+                return node
+            }
+            let children = (node.children ?? []).compactMap { filter($0, matching: query) }
+            guard !children.isEmpty else { return nil }
+            return RepoFileNode(
+                name: node.name,
+                path: node.path,
+                isDirectory: true,
+                blobSHA: nil,
+                size: nil,
+                children: children
+            )
+        }
+        return selfMatches ? node : nil
+    }
+
+    /// Folders 页只留目录，方便按目录浏览；空目录也保留。
+    static func foldersOnly(_ nodes: [RepoFileNode]) -> [RepoFileNode] {
+        nodes.compactMap { node in
+            guard node.isDirectory else { return nil }
+            return RepoFileNode(
+                name: node.name,
+                path: node.path,
+                isDirectory: true,
+                blobSHA: nil,
+                size: nil,
+                children: foldersOnly(node.children ?? [])
+            )
+        }
+    }
+
+    static func find(path: String, in nodes: [RepoFileNode]) -> RepoFileNode? {
+        for node in nodes {
+            if node.path == path { return node }
+            if let children = node.children, let found = find(path: path, in: children) {
+                return found
+            }
+        }
+        return nil
     }
 
     private static func isSkipped(_ entry: GitHubGitTreeEntryDTO) -> Bool {

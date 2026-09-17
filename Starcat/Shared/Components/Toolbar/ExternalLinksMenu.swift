@@ -266,7 +266,9 @@ private struct FileDownloadMenuSection: View {
                     owner: selection.owner,
                     name: selection.name,
                     fullName: selection.fullName,
-                    ref: selection.gitRef
+                    ref: selection.gitRef,
+                    summary: selection.summary,
+                    isPrivate: selection.isPrivate
                 )
             )
         } label: {
