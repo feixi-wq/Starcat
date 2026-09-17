@@ -141158,6 +141158,244 @@
         }
       }
     },
+    "launch.directImport.copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Data"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拷贝数据"
+          }
+        }
+      }
+    },
+    "launch.directImport.copying" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copying…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在拷贝…"
+          }
+        }
+      }
+    },
+    "launch.directImport.error.failedFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t copy App Store data: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法拷贝 App Store 数据：%@"
+          }
+        }
+      }
+    },
+    "launch.directImport.error.storeRunning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quit the App Store version of Starcat, then try copying again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先退出 App Store 版 Starcat，然后再拷贝。"
+          }
+        }
+      }
+    },
+    "launch.directImport.footnote.keepSource" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The App Store copy stays on this Mac. Direct only makes a duplicate."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App Store 版数据仍留在原处，只拷贝不删除。"
+          }
+        }
+      }
+    },
+    "launch.directImport.footnote.subscription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple subscriptions are not transferred. Direct uses a Direct License."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 订阅不会带到 Direct，需要另用 Direct License。"
+          }
+        }
+      }
+    },
+    "launch.directImport.scope.caches" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avatars, source ZIP files, translations, and other caches"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "头像、源码 ZIP、翻译和其他缓存"
+          }
+        }
+      }
+    },
+    "launch.directImport.scope.credentials" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub sign-in and API keys"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub 登录和 API Key"
+          }
+        }
+      }
+    },
+    "launch.directImport.scope.database" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local repository library, tags, notes, and status"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地仓库库、标签、笔记和状态"
+          }
+        }
+      }
+    },
+    "launch.directImport.scope.settings" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appearance and other preferences"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外观和偏好设置"
+          }
+        }
+      }
+    },
+    "launch.directImport.scope.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What will be copied"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将拷贝"
+          }
+        }
+      }
+    },
+    "launch.directImport.skip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Don’t Copy, Start Fresh"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不拷贝，从头开始"
+          }
+        }
+      }
+    },
+    "launch.directImport.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starcat found an App Store copy on this Mac. You can bring over sign-in, repositories, tags, notes, and caches instead of syncing again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机检测到已安装的 Starcat App Store 版。可以把登录、仓库、标签、笔记和缓存拷到 Direct，不必重新同步。"
+          }
+        }
+      }
+    },
+    "launch.directImport.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy data from the App Store version?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从 App Store 版导入数据？"
+          }
+        }
+      }
+    },
     "library.action.add" : {
       "extractionState" : "stale",
       "localizations" : {
