@@ -1167,8 +1167,28 @@ final class AppDependencies {
         // HOM-52：批量整理服务装在 AI insight + 标签 + 标签关联 + AI 摘要 Repo 之后。
         // 注：onTagsChanged 由 HomeView 在 environment 注入后挂接，刷新 Sidebar 计数。
         let aiOrganizationDraftRepository = GRDBAIOrganizationDraftRepository(database: db)
+
+        // Labs POC（2026-09-18）：TypeSafe Jev 决策引擎路由层。
+        // 两层路由都包裹既有 `aiInsight`：开关关闭 / Key 未配置 / 后台自动整理时
+        // 逐字节透传原路径；下线时删除本块并把下面两处注入改回 `aiInsight` 即可。
+        let typesafeDecisionService = TypeSafeDecisionService(
+            client: TypeSafeClient(),
+            settings: self.settings,
+            readmeRepository: readmeRepo
+        )
+        let typesafeBatchRouter = TypeSafeBatchAIInsightRouter(
+            base: aiInsight,
+            typesafeProvider: typesafeDecisionService,
+            settings: self.settings
+        )
+        let typesafeGroupingRouter = TypeSafeGitHubListSuggestionRouter(
+            llmProvider: aiInsight,
+            typesafeProvider: typesafeDecisionService,
+            settings: self.settings
+        )
+
         let batchSvc = BatchAIQueueService(
-            insightService: aiInsight,
+            insightService: typesafeBatchRouter,
             tagRepository: tagRepo,
             repoTagRepository: repoTagRepo,
             aiSummaryRepository: summaryRepo,
@@ -1181,10 +1201,13 @@ final class AppDependencies {
         self.githubStarListAIGroupingSession = GitHubStarListAIGroupingSession(
             repoRepository: repo,
             listService: self.githubStarListSyncService,
-            insightService: aiInsight,
+            insightService: typesafeGroupingRouter,
             entitlementGate: self.entitlementGate,
             draftRepository: aiOrganizationDraftRepository
         )
+        // 会话与路由器互持会造成引用循环，因此构造后回填 weak 探针，
+        // 让路由器能读到当前 mode（手动走 Jev / 自动走 LLM）。
+        typesafeGroupingRouter.attachSession(self.githubStarListAIGroupingSession)
 
         // HOM-126：自动后台 AI 整理调度器。
         // 装配顺序：必须晚于 settings / repoRepository / batchService / syncManager。

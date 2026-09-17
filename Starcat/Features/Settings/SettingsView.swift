@@ -136,6 +136,9 @@ struct SettingsView: View {
         case ragRetrieval
         case storage
         case diagnostics
+        /// 实验性功能(Labs):TypeSafe Jev 决策引擎 POC 等未定型能力的统一开关入口,
+        /// 与稳定功能隔离,便于后续整体下线。
+        case labs
 
         var id: String { rawValue }
 
@@ -160,6 +163,7 @@ struct SettingsView: View {
             case .ragRetrieval: return "rag.workspace.settings.section.retrieval"
             case .storage:      return "settings.navigation.item.dataStorage"
             case .diagnostics:  return "settings.navigation.item.diagnosticsSupport"
+            case .labs:         return "settings.navigation.item.labs"
             }
         }
 
@@ -188,6 +192,7 @@ struct SettingsView: View {
             case .ragRetrieval: return RAGSettingsSection.retrieval.systemImage
             case .storage:      return "internaldrive"
             case .diagnostics:  return "stethoscope"
+            case .labs:         return "flask"
             }
         }
 
@@ -446,6 +451,8 @@ struct SettingsView: View {
             StorageSettingsTab(readmeRepository: dependencies.readmeRepository)
         case .diagnostics:
             DiagnosticsSettingsTab()
+        case .labs:
+            LabsSettingsTab()
         }
     }
 
@@ -513,6 +520,8 @@ struct SettingsView: View {
                                keywords: ["浏览器", "chrome", "safari", "extension", "plugin"]),
             SettingsSearchItem("localTools", titleKey: "settings.navigation.item.localTools", tab: .localTools,
                                keywords: ["本地工具", "agent runtime", "codeflow", "codebase memory"]),
+            SettingsSearchItem("labs", titleKey: "settings.navigation.item.labs", tab: .labs,
+                               keywords: ["实验性", "实验室", "labs", "typesafe", "jev", "决策"]),
             SettingsSearchItem("integrations.codebaseMemory", titleKey: "settings.navigation.item.localTools",
                                tab: .localTools, target: "integrations.codebaseMemory",
                                keywords: ["codebase memory", "codebasememory", "代码索引"]),
@@ -594,6 +603,8 @@ struct SettingsView: View {
             return SettingsLocation(tab: .storage)
         case "diagnostics":
             return SettingsLocation(tab: .diagnostics)
+        case "labs":
+            return SettingsLocation(tab: .labs)
         default:
             return nil
         }

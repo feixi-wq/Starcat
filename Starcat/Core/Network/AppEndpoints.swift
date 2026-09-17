@@ -650,6 +650,28 @@ enum AppEndpoints {
         AppLog.network.info("endpoint.history  = \(History.baseURL.absoluteString, privacy: .public)")
     }
 
+    // MARK: - 外部公开 API：TypeSafe(Jev,实验性)
+
+    /// TypeSafe AI "System One" 决策端点集合(实验性功能 Labs,后续可能整体下线)。
+    ///
+    /// 与自建后端命名空间的差异:
+    /// - 官方固定域名,POC 阶段不提供自托管 URL 覆盖,因此没有 @MainActor baseURL getter;
+    /// - 鉴权走用户 BYOK Key(`service_api_key::typesafe-ai`,见 KeychainManager),
+    ///   不接入 `StarcatAPIKeyResolver` 的内置生产 Key 混合解析。
+    enum TypeSafe {
+        /// 生产环境固定域名。
+        static let productionURL = URL(string: "https://api.typesafe.ai")!
+
+        enum Paths {
+            /// `POST /v1/systemone` —— 唯一推理端点:state + questions → 类型化答案。
+            static let systemOne = "/v1/systemone"
+        }
+
+        static func url(_ path: String) -> URL {
+            appendPath(path, to: productionURL)
+        }
+    }
+
     // MARK: - Private
 
     /// 自建后端 baseURL 解析：用户设置过 → 用之；否则回退 production。

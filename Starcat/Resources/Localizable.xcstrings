@@ -1,6 +1,363 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "settings.labs.intro" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Experimental features live here. They are works in progress, off by default, and may be removed entirely in a future release."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验性功能集中在此。默认全部关闭、随时可能整体下线，开启前请知悉。"
+          }
+        }
+      }
+    },
+    "settings.navigation.item.labs" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Labs"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验性功能"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe Jev Decision Engine"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe Jev 决策引擎"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.enable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable Jev decision engine"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启用 Jev 决策引擎"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.enable.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routes manual repo-grouping and tag-suggestion generation to TypeSafe's Jev model — fast, calibrated typed decisions instead of LLM text generation. Falls back to your configured AI provider when off or unconfigured."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将手动触发的仓库分组与标签建议切换到 TypeSafe Jev 模型：快速、带校准概率的类型化决策，而非 LLM 文本生成。关闭或未配置时自动回退已配置的 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.noKey" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API key not configured — all Jev routing is currently falling back to your AI provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未配置 API Key，当前所有 Jev 路由仍回退到你的 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.apiKey" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API Key"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API Key"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.apiKey.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "tsk-…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "tsk-…"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.apiKey.get" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Get API Key"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取 API Key"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.apiKey.reveal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show API key"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示 API Key"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.apiKey.hide" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide API key"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏 API Key"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型 ID"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.model.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pinned model version. The jev-latest alias silently changes behavior across releases, so thresholds are tuned against a fixed version."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "固定模型版本。jev-latest 别名会随版本漂移、悄悄改变行为，因此阈值按固定版本调校。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.test" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test Connection"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试连接"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.test.successFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected · %1$@ ms · P(demo) = %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接成功 · %1$@ ms · P(demo) = %2$@"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.test.missingAnswer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected, but the response did not contain a usable answer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接，但响应中缺少可用答案。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.grouping" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Jev for manual repo grouping"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "手动仓库分组使用 Jev"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.grouping.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to manually started grouping (ungrouped cleanup and multi-select). Background auto-grouping always uses your configured AI provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅对手动发起的分组整理生效（未分组整理与多选批量）。后台自动分组始终使用已配置的 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.tags" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Jev for batch tag suggestions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "批量标签建议使用 Jev"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.tags.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to tag-only batch runs. Jev can only pick from your existing tag vocabulary and never invents new tag names; mixed summary+tag insight runs keep using your AI provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅对纯标签批量任务生效。Jev 只能从现有标签词表中选择、不会创造新标签名；摘要+标签混合任务仍走 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.scope.note" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scope: manual triggers only; suggestions still require your confirmation before anything is written. Jev results carry calibrated probabilities (shown as \"Jev P=…\" in the reason field)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边界：仅手动触发；所有建议仍需你确认后才会写入。Jev 结果携带校准概率（在理由栏显示为 \"Jev P=…\"）。"
+          }
+        }
+      }
+    },
     " · %@" : {
       "localizations" : {
         "en" : {
