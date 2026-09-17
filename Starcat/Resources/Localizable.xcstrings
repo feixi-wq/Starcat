@@ -144904,6 +144904,22 @@
         }
       }
     },
+    "list.externalStarInbox.helpFormat" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d new starred repositories. Click to sync."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 个新星标，点击同步"
+          }
+        }
+      }
+    },
     "list.lastSyncedFormat" : {
       "extractionState" : "stale",
       "localizations" : {

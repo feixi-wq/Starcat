@@ -443,6 +443,7 @@ struct RepoListView: View {
     /// 直接在源头 disable 比让用户点了报错友好。
     @Environment(AuthSession.self) private var authSession
     @Environment(SyncManager.self) private var syncManager
+    @Environment(ExternalStarInbox.self) private var externalStarInbox
     /// `RelativeDateTimeFormatter` 须显式注入 locale（对齐 ActivityView）。
     @Environment(\.locale) private var locale
     @Environment(\.starcatInterfaceScale) private var interfaceScale
@@ -1510,6 +1511,21 @@ struct RepoListView: View {
                     listWithOptionalBanner { unifiedListContent($bindableVM.selectedRepoID) }
                 }
             }
+            .overlay(alignment: .top) {
+                if selectedPage == .manage,
+                   viewModel.selection == .allStars,
+                   !externalStarInbox.pending.isEmpty {
+                    ExternalStarInboxCapsule(items: externalStarInbox.pending) {
+                        externalStarInbox.apply()
+                    }
+                    .padding(.top, 10)
+                    .transition(externalStarInboxTransition)
+                }
+            }
+            .animation(
+                viewModel.selection == .allStars ? externalStarInboxAnimation : nil,
+                value: externalStarInbox.pending.map(\.repoID)
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1522,6 +1538,18 @@ struct RepoListView: View {
         ) {
             refreshManageList()
         }
+    }
+
+    /// 切走「全部仓库」时整栏内容已替换，不依赖这个 transition；切回且队列仍在才走出现动画。
+    private var externalStarInboxTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
+        }
+        return .opacity.combined(with: .offset(y: -8))
+    }
+
+    private var externalStarInboxAnimation: Animation {
+        .easeOut(duration: reduceMotion ? 0.20 : 0.25)
     }
 
     /// 洞察下钻是一次临时筛选会话。横幅同时提供“回到来源”和“留在 Manage 并清除”
