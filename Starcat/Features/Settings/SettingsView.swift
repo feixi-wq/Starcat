@@ -368,6 +368,8 @@ struct SettingsView: View {
             Section("settings.navigation.group.support") {
                 settingsSidebarRow(.storage)
                 settingsSidebarRow(.diagnostics)
+                // Labs 放侧栏末尾:实验性入口不与稳定功能混排,下线时删除这一行即可。
+                settingsSidebarRow(.labs)
             }
         }
         .listStyle(.sidebar)
