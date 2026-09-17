@@ -1420,6 +1420,7 @@ struct HomeView: View {
             dependencies.openSSFScorePoller.start()
             dependencies.repoHealthPoller.start()
             dependencies.githubNotificationPoller.start()
+            dependencies.externalStarInbox.start()
             startReadmePrefetchIfNeeded()
             startInitialWarmupIfNeeded()
             if !TestEnvironment.isRunning, settings.aiIndexAutoPrefetchEnabled {
@@ -1430,6 +1431,8 @@ struct HomeView: View {
             dependencies.openSSFScorePoller.stop()
             dependencies.repoHealthPoller.stop()
             dependencies.githubNotificationPoller.stop()
+            dependencies.externalStarInbox.stop()
+            dependencies.externalStarInbox.resetForAccountChange()
             dependencies.userProjectSyncService.stopBackgroundRefresh()
             stopReadmePrefetch()
             dependencies.initialWarmupCoordinator.cancel()
@@ -1852,6 +1855,7 @@ struct HomeView: View {
             dependencies.openSSFScorePoller.start()
             dependencies.repoHealthPoller.start()
             dependencies.githubNotificationPoller.start()
+            dependencies.externalStarInbox.start()
         }
         startReadmePrefetchIfNeeded()
         startInitialWarmupIfNeeded()

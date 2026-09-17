@@ -254,6 +254,7 @@ struct StarcatApp: App {
                 .environment(dependencies)
                 .environment(dependencies.authSession)
                 .environment(dependencies.syncManager)
+                .environment(dependencies.externalStarInbox)
                 .environment(dependencies.settings)
                 .environment(dependencies.telemetryManager)
                 .environment(dependencies.subscriptionManager)

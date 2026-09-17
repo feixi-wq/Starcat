@@ -14,6 +14,7 @@
 //
 
 import AppIntents
+import AppKit
 import Foundation
 
 @MainActor
@@ -42,6 +43,8 @@ final class AppDependencies {
     let oauthService: any GithubOAuthServiceProtocol
     let authSession: AuthSession
     let syncManager: SyncManager
+    /// 前台探测外部新增 star，只提示不写库。点击后复用 `syncManager` 增量同步。
+    let externalStarInbox: ExternalStarInbox
     /// 主应用唯一的 Widget 快照发布器；负责账户隔离、去抖与 WidgetCenter 刷新。
     let widgetRefreshCoordinator: WidgetRefreshCoordinator
     /// Direct 屏保快照发布器。App Store 构建内部 isEnabled = false，保持 no-op。
@@ -984,6 +987,15 @@ final class AppDependencies {
                 session?.state.user?.login
             }
         )
+        self.externalStarInbox = ExternalStarInbox(
+            apiClient: api,
+            repository: repo,
+            syncManager: self.syncManager,
+            userIDProvider: { [weak session] in
+                session?.state.user?.id
+            },
+            isAppActive: { NSApp.isActive }
+        )
         let projectAccessSession = ProjectAccessSession()
         self.projectAccessSession = projectAccessSession
         let userProjectRepository = GRDBUserProjectRepository(database: db)
@@ -1716,7 +1728,7 @@ final class AppDependencies {
 
         // SyncManager 全量 / 增量同步成功完成 → bootstrapper.reload() 同步 registry 到 DB
         // 注：weak 不需要，bootstrapper 与 syncManager 都由 self 强持（生命周期一致）
-        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, screensaverRefreshCoordinator = self.screensaverRefreshCoordinator, repositorySpotlightService] in
+        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, screensaverRefreshCoordinator = self.screensaverRefreshCoordinator, repositorySpotlightService, externalStarInbox = self.externalStarInbox] in
             await bootstrapper.reload()
             if let login = session.state.user?.login {
                 await starListSyncService.sync(login: login)
@@ -1725,6 +1737,7 @@ final class AppDependencies {
             await widgetRefreshCoordinator.publishReady()
             await screensaverRefreshCoordinator.publishReady()
             repositorySpotlightService.scheduleRebuild()
+            await externalStarInbox.handleSyncCompleted()
         }
         self.syncManager.onFullSyncCompleted = { [dataContributionCoordinator] userID, capturedAt in
             // 不 await：快照和上传是严格旁路，SyncManager 的完成态不等待 Collection 服务。
@@ -1752,6 +1765,7 @@ final class AppDependencies {
         // 还能看到自己的数据，不会进入"无 DB 可用"的死状态。
         session.onUserSessionChanged = { [weak self] userId in
             guard let self else { return }
+            self.externalStarInbox.resetForAccountChange()
             // 自定义索引跨账号共用同一名称。真实登出/切号必须先清空；冷启动从
             // anonymous 占位库恢复同一账号时可保留到切库后的内容指纹核验。
             await self.repositorySpotlightService.prepareForAccountChange(to: userId)
