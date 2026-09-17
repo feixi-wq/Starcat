@@ -9,10 +9,7 @@
 import Kingfisher
 import SwiftUI
 
-/// Ambient 大图 URL 与稳定占位的纯函数集合。
-enum AmbientArtworkStyle {
-    static let paletteCount = 8
-
+extension AmbientArtworkStyle {
     static func imageURL(
         from urlString: String?,
         tilePointSize: Double,
@@ -25,26 +22,6 @@ enum AmbientArtworkStyle {
             minimumPixelSize: 64,
             maximumPixelSize: 1_024
         )
-    }
-
-    static func targetPixelSize(tilePointSize: Double, displayScale: Double) -> Int {
-        let requested = Int(ceil(max(1, tilePointSize) * max(1, displayScale)))
-        return min(max(requested, 64), 1_024)
-    }
-
-    static func monogram(from title: String) -> String? {
-        guard let character = title.first(where: { !$0.isWhitespace }) else { return nil }
-        return String(character).uppercased()
-    }
-
-    /// Swift 的 `hashValue` 每进程随机；FNV-1a 保证同一 card id 永远映射同一占位色。
-    static func paletteIndex(for cardID: String) -> Int {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in cardID.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        return Int(hash % UInt64(paletteCount))
     }
 }
 

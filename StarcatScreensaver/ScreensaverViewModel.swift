@@ -1,0 +1,170 @@
+//
+//  ScreensaverViewModel.swift
+//  StarcatScreensaver
+//
+//  屏保进程内的 Engine 调度。与 App AmbientViewModel 同构，但不预取网络图片、
+//  不写 AppLog。空快照保持 empty，由根视图画应用图标。
+//
+
+import Foundation
+import Observation
+
+enum ScreensaverLoadState: Equatable, Sendable {
+    case idle
+    case loading
+    case empty
+    case loaded([AmbientSlotSnapshot])
+}
+
+@MainActor
+@Observable
+final class ScreensaverViewModel {
+    private(set) var state: ScreensaverLoadState = .idle
+    private(set) var changedSlotIDs: Set<Int> = []
+    private(set) var isSchedulerRunning = false
+
+    @ObservationIgnored private let catalog: any AmbientCatalogProviding
+    @ObservationIgnored private let now: () -> TimeInterval
+    @ObservationIgnored private let sleep: (TimeInterval) async throws -> Void
+    @ObservationIgnored private let randomSeed: () -> UInt64
+
+    @ObservationIgnored private var engine: AmbientGridEngine?
+    @ObservationIgnored private var currentLayout: AmbientGridLayout?
+    @ObservationIgnored private var currentReduceMotion = false
+    @ObservationIgnored private var isActive = false
+    @ObservationIgnored private var generation: UInt64 = 0
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var schedulerTask: Task<Void, Never>?
+
+    init(
+        catalog: (any AmbientCatalogProviding)? = nil,
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        sleep: @escaping (TimeInterval) async throws -> Void = { seconds in
+            try await Task.sleep(for: .seconds(seconds))
+        },
+        randomSeed: @escaping () -> UInt64 = {
+            UInt64.random(in: UInt64.min...UInt64.max)
+        }
+    ) {
+        if let catalog {
+            self.catalog = catalog
+        } else {
+            self.catalog = ScreensaverViewModel.makeProductionCatalog()
+        }
+        self.now = now
+        self.sleep = sleep
+        self.randomSeed = randomSeed
+    }
+
+    func configure(layout: AmbientGridLayout, reduceMotion: Bool) {
+        let isSameLayout = currentLayout == layout
+        currentReduceMotion = reduceMotion
+        if isSameLayout, case .loaded = state {
+            restartSchedulerForCurrentPolicy()
+            return
+        }
+
+        generation &+= 1
+        let requestedGeneration = generation
+        currentLayout = layout
+        state = .loading
+        changedSlotIDs = []
+        engine = nil
+        loadTask?.cancel()
+        stopScheduler()
+
+        loadTask = Task { [weak self, catalog] in
+            do {
+                let cards = try await catalog.loadCards(scene: .owners)
+                try Task.checkCancellation()
+                guard let self, self.generation == requestedGeneration,
+                      self.currentLayout == layout else { return }
+                self.install(cards: cards, layout: layout)
+            } catch {
+                guard let self, self.generation == requestedGeneration else { return }
+                self.state = .empty
+                self.engine = nil
+                self.stopScheduler()
+            }
+        }
+    }
+
+    func updateReduceMotion(_ reduceMotion: Bool) {
+        guard currentReduceMotion != reduceMotion else { return }
+        currentReduceMotion = reduceMotion
+        restartSchedulerForCurrentPolicy()
+    }
+
+    func setActive(_ active: Bool) {
+        guard isActive != active else { return }
+        isActive = active
+        if active {
+            advanceAndPublish(at: now())
+            restartSchedulerForCurrentPolicy()
+        } else {
+            stopScheduler()
+        }
+    }
+
+    private func install(cards: [AmbientCardModel], layout: AmbientGridLayout) {
+        guard !cards.isEmpty, layout.config.slotCount > 0 else {
+            state = .empty
+            engine = nil
+            stopScheduler()
+            return
+        }
+
+        let engine = AmbientGridEngine(
+            cards: cards,
+            config: layout.config,
+            now: now(),
+            randomSeed: randomSeed()
+        )
+        self.engine = engine
+        changedSlotIDs = []
+        state = .loaded(engine.snapshots)
+        restartSchedulerForCurrentPolicy()
+    }
+
+    private func restartSchedulerForCurrentPolicy() {
+        stopScheduler()
+        guard !currentReduceMotion, isActive, engine?.nextDeadline != nil else { return }
+
+        isSchedulerRunning = true
+        schedulerTask = Task { [weak self] in
+            do {
+                while !Task.isCancelled {
+                    guard let self, let deadline = self.engine?.nextDeadline else { return }
+                    let delay = max(0, deadline - self.now())
+                    try await self.sleep(delay)
+                    try Task.checkCancellation()
+                    self.advanceAndPublish(at: self.now())
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func stopScheduler() {
+        schedulerTask?.cancel()
+        schedulerTask = nil
+        isSchedulerRunning = false
+    }
+
+    private func advanceAndPublish(at uptime: TimeInterval) {
+        guard var engine else { return }
+        let result = engine.advance(now: uptime)
+        self.engine = engine
+        changedSlotIDs = result.changedSlotIDs
+        state = .loaded(result.snapshots)
+    }
+
+    private static func makeProductionCatalog() -> any AmbientCatalogProviding {
+        ScreensaverSnapshotCatalog(
+            store: ScreensaverSnapshotStore(
+                containerURL: ScreensaverSharedConfiguration.productionContainerURL()
+            )
+        )
+    }
+}

@@ -44,6 +44,8 @@ final class AppDependencies {
     let syncManager: SyncManager
     /// 主应用唯一的 Widget 快照发布器；负责账户隔离、去抖与 WidgetCenter 刷新。
     let widgetRefreshCoordinator: WidgetRefreshCoordinator
+    /// Direct 屏保快照发布器。App Store 构建内部 isEnabled = false，保持 no-op。
+    let screensaverRefreshCoordinator: ScreensaverRefreshCoordinator
     /// “我的项目”独立 GitHub App 授权状态，不复用主 OAuth 登录状态。
     let projectAccessSession: ProjectAccessSession
     /// 当前用户项目关系与同步代际仓储。
@@ -936,6 +938,12 @@ final class AppDependencies {
         // D-01：构造时用具体类型 GRDBRepoRepository，字段类型是协议 any RepoRepositoryProtocol
         let repo = GRDBRepoRepository(database: db)
         self.repoRepository = repo
+        self.screensaverRefreshCoordinator = ScreensaverRefreshCoordinator(
+            repository: repo,
+            userIDProvider: { [weak session] in
+                session?.state.user?.id
+            }
+        )
         let dataContributionCoordinator = DataContributionCoordinator(
             repository: DataContributionRepository(database: db),
             repoRepository: repo,
@@ -1685,13 +1693,14 @@ final class AppDependencies {
 
         // SyncManager 全量 / 增量同步成功完成 → bootstrapper.reload() 同步 registry 到 DB
         // 注：weak 不需要，bootstrapper 与 syncManager 都由 self 强持（生命周期一致）
-        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, repositorySpotlightService] in
+        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, screensaverRefreshCoordinator = self.screensaverRefreshCoordinator, repositorySpotlightService] in
             await bootstrapper.reload()
             if let login = session.state.user?.login {
                 await starListSyncService.sync(login: login)
             }
             await ragIndexBuilder.refreshMetadataForKnowledgeRepos()
             await widgetRefreshCoordinator.publishReady()
+            await screensaverRefreshCoordinator.publishReady()
             repositorySpotlightService.scheduleRebuild()
         }
         self.syncManager.onFullSyncCompleted = { [dataContributionCoordinator] userID, capturedAt in
@@ -1727,6 +1736,7 @@ final class AppDependencies {
             self.widgetRefreshCoordinator.publishEmpty(
                 state: userId == nil ? .signedOut : .preparing
             )
+            self.screensaverRefreshCoordinator.clear()
             self.ragComposerDraftStore.removeAll()
             do { try DiskNotificationCommentDraftCache.shared.deleteEverything() }
             catch {
@@ -1784,6 +1794,7 @@ final class AppDependencies {
             if didSwitchDatabase, userId != nil {
                 self.repositorySpotlightService.scheduleRebuild()
                 await self.widgetRefreshCoordinator.publishReady()
+                await self.screensaverRefreshCoordinator.publishReady()
             }
         }
 
@@ -1791,6 +1802,7 @@ final class AppDependencies {
         if !TestEnvironment.isRunning {
             repositorySpotlightService.startObserving()
             self.widgetRefreshCoordinator.startObserving()
+            self.screensaverRefreshCoordinator.startObserving()
             Task { [bootstrapper] in
                 await bootstrapper.reload()
             }
@@ -1903,6 +1915,7 @@ final class AppDependencies {
         let cleaner = CacheCleaner(readmeRepository: readmeRepository)
         await cleaner.clearImageCache()
         cleaner.clearArchives()
+        screensaverRefreshCoordinator.clear()
 
         do { try await DiskReadmeTranslationCache.shared.deleteEverything() }
         catch { AppLog.general.warning("Factory reset: translation cache cleanup failed: \(error.localizedDescription, privacy: .public)") }

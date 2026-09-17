@@ -795,10 +795,6 @@ struct SettingsView: View {
                 )
             }
 
-            // 2026-09-14 重组：显示语言（上一分组）与内容语言过滤是同一「语言」主题，
-            // 相邻放置；不再夹在详情行为和 macOS 集成之间。
-            InterestedLanguagesSettingsSection(languages: $settings.interestedLanguages)
-
             Section {
                 Toggle(isOn: $settings.openFirstDetailOnCategoryChange) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -858,12 +854,27 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+
+                if DistributionChannel.current.isDirect {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("settings.general.screensaver.title")
+                        Text("settings.general.screensaver.help")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ScreensaverSettingsSection()
+                    }
+                }
             } header: {
                 SettingsSectionHeader(
                     "settings.general.macOSIntegration",
                     systemImage: "macwindow.on.rectangle"
                 )
             }
+
+            // 2026-09-17 重组：从「显示语言」后方移到「macOS 集成」之后（dong4j 要求），
+            // 仅调整分组顺序，配置内容不变。
+            InterestedLanguagesSettingsSection(languages: $settings.interestedLanguages)
 
             // 2026-06-15 dong4j 需求：无障碍 / 动画偏好。
             //

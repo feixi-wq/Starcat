@@ -1,16 +1,13 @@
 //
-//  AmbientGridView.swift
-//  Starcat
+//  ScreensaverGridView.swift
+//  StarcatScreensaver
 //
-//  五行 Ambient 网格的几何与渲染。方格按实际 content height 定边，横向使用
-//  ceil 列数超宽铺放并由 viewport 居中裁切，形成无边距、无缝隙的全屏图片墙。
+//  与 App Ambient 相同的无缝五行网格，格子只显示图片。
 //
 
-import Foundation
 import SwiftUI
 
-/// 已加载状态的固定五行无缝图片墙。
-struct AmbientGridView: View {
+struct ScreensaverGridView: View {
     let snapshots: [AmbientSlotSnapshot]
     let metrics: AmbientGridMetrics
     let changedSlotIDs: Set<Int>
@@ -20,7 +17,7 @@ struct AmbientGridView: View {
     var body: some View {
         LazyVGrid(columns: columns, alignment: .center, spacing: 0) {
             ForEach(snapshots) { snapshot in
-                AmbientCellView(
+                ScreensaverCellView(
                     snapshot: snapshot,
                     tilePointSize: metrics.tilePointSize,
                     flipDuration: flipDuration,
@@ -29,7 +26,6 @@ struct AmbientGridView: View {
             }
         }
         .frame(width: metrics.contentWidth, height: metrics.contentHeight)
-        // 外层 viewport 只负责裁掉左右超出的半格；不能缩放内层网格，否则 tile 不再是正方形。
         .frame(width: metrics.viewportWidth, height: metrics.viewportHeight)
         .clipped()
     }

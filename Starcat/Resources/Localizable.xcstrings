@@ -342872,6 +342872,210 @@
         }
       }
     },
+    "settings.general.screensaver.error.install" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t install the Starcat screensaver"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法安装 Starcat 屏保"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.error.remove" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t remove the Starcat screensaver"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法移除 Starcat 屏保"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copies Starcat.saver and opens macOS’s installer dialog. Confirm Install for this user, then System Settings → Wallpaper → Screen Saver → Custom → Other. Avatars keep downloading in the background."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会拷贝 Starcat.saver 并打开系统安装对话框。请选择「仅为当前用户安装」，再到系统设置 → 墙纸 → 屏幕保护程序 → 自定 → 其他 里选 Starcat。头像会在后台继续下载。"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.progressFmt" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparing avatars: %d / %d"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备头像：%d / %d"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.install" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install Screensaver"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安装屏保"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.openSystemInstaller" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open System Installer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用系统安装器打开"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.remove" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove Screensaver"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除屏保"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.status.installed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied. If Starcat is missing under Other, click Open System Installer, then System Settings → Wallpaper → Screen Saver → Custom → Other."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件已拷贝。若「其他」里还没有 Starcat，请点「用系统安装器打开」，再到系统设置 → 墙纸 → 屏幕保护程序 → 自定 → 其他。"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.status.needsUpdate" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A newer Starcat screensaver is bundled with this app."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 App 内嵌了更新的 Starcat 屏保。"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.status.notInstalled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not installed yet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未安装。"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Screensaver"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏保"
+          }
+        }
+      }
+    },
+    "settings.general.screensaver.update" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update Screensaver"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新屏保"
+          }
+        }
+      }
+    },
     "settings.general.title" : {
       "extractionState" : "stale",
       "localizations" : {

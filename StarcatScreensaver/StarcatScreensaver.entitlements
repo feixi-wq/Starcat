@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      系统 legacyScreenSaver 进程会沙箱加载 .saver。
+      Direct 主应用把快照写到 Application Support；屏保只申请该目录的只读例外，
+      不新增 App Group，避免改 Direct 描述文件。
+      disable-library-validation 是 Swift 运行时被系统宿主加载时的既有约束。
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+    <array>
+        <string>Library/Application Support/com.starcat.app/screensaver/</string>
+    </array>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
