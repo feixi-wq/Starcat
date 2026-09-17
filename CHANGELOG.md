@@ -2,6 +2,12 @@
 
 Release notes for the Mac App Store edition of Starcat.
 
+## 1.8.0-待发布
+
+### New
+
+- Repository file download: Browse the file tree from repository details, preview source and images, then download selected files including Git LFS.
+
 ## 1.7.0
 
 ### New
