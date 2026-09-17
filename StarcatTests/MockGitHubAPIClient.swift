@@ -69,6 +69,8 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
     /// 2026-06-12 向量索引改进：README 原始 Markdown 端点 handler。
     var readmeMarkdownHandler: ((_ owner: String, _ repo: String, _ ifNoneMatch: String?, _ ifModifiedSince: String?) async throws -> BytesResponse)?
     var repositoryFileHTMLHandler: ((_ owner: String, _ repo: String, _ path: String, _ ref: String, _ ifNoneMatch: String?) async throws -> BytesResponse)?
+    /// 详情页按文件勾选下载用的 recursive git tree mock。
+    var repositoryGitTreeHandler: ((_ owner: String, _ repo: String, _ ref: String) async throws -> GitHubGitTreeDTO)?
     /// HOM-47：Releases API mock handler。
     var releasesHandler: ((_ owner: String, _ repo: String, _ perPage: Int) async throws -> APIResponse<[GitHubReleaseDTO]>)?
     /// 2026-06-08：单仓库元数据 API mock handler（Weekly 详情页本地缓存未命中时调）。
@@ -275,6 +277,13 @@ final class MockGitHubAPIClient: GitHubAPIClientProtocol, @unchecked Sendable {
             fatalError("MockGitHubAPIClient.repositoryFileHTMLHandler 未设置")
         }
         return try await handler(owner, repo, path, ref, ifNoneMatch)
+    }
+
+    func repositoryGitTree(owner: String, repo: String, ref: String) async throws -> GitHubGitTreeDTO {
+        guard let handler = repositoryGitTreeHandler else {
+            fatalError("MockGitHubAPIClient.repositoryGitTreeHandler 未设置")
+        }
+        return try await handler(owner, repo, ref)
     }
 
     // MARK: - Subscription (Watch)

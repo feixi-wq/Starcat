@@ -505,6 +505,8 @@ struct RepoListView: View {
     /// 否则关闭 CodeFlow 时 presentation host 被替换，窗口会短暂再次出现。
     @State private var codeFlowSheetItem: CodeGraphSheetItem?
     @State private var codebaseMemorySheetItem: CodeGraphSheetItem?
+    /// 按文件勾选下载。与 CodeFlow 一样挂在页面根节点，避免 toolbar 重建把 sheet 闪回来。
+    @State private var fileBrowserSheetItem: RepoFileBrowserSheetItem?
     /// CodeFlow 为 Pro 功能；免费用户点入口时弹出统一付费墙，不打开执行面板。
     @State private var paywallContext: ProPaywallContext?
     /// GitHub 组织可限制第三方 OAuth App 访问仓库节点；这类错误需要结构化解释原因。
@@ -588,6 +590,14 @@ struct RepoListView: View {
             CodebaseMemoryPanel(repo: item.repo)
                 .id(item.id)
                 .appSheetRootEnvironment(dependencies)
+        }
+        .sheet(item: $fileBrowserSheetItem) { item in
+            RepoFileBrowserSheet(
+                target: item.target,
+                apiClient: dependencies.apiClient
+            )
+            .id(item.id)
+            .appSheetRootEnvironment(dependencies)
         }
         .onAppear {
             // Browser Plugin 请求可能先于主窗口恢复到达；窗口重新挂载时需要补消费
@@ -1353,6 +1363,10 @@ struct RepoListView: View {
             onOpenCodebaseMemory: openCodebaseMemory(for:),
             onCloneCopied: { toastKey in
                 RepoDetailToastRequest.post(repoID: repoID, messageKey: toastKey)
+            },
+            onOpenFileBrowser: { target in
+                AppLog.ui.info("Open file browser selection=\(target.fullName, privacy: .public) ref=\(target.ref, privacy: .public)")
+                fileBrowserSheetItem = RepoFileBrowserSheetItem(target: target)
             }
         )
         .id(actionIdentity)

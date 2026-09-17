@@ -102,6 +102,11 @@ protocol GitHubAPIClientProtocol: Sendable {
     /// 拉取单个仓库按字节统计的语言分布（详情 Hero 进入后按需加载）。
     func repositoryLanguages(owner: String, repo: String) async throws -> [String: Int]
 
+    /// 拉取仓库在指定 ref 上的递归 git tree（详情页按文件勾选下载）。
+    ///
+    /// `ref` 用默认分支或 `HEAD`。截断由 DTO 的 `truncated` 表达，不在这里抛错。
+    func repositoryGitTree(owner: String, repo: String, ref: String) async throws -> GitHubGitTreeDTO
+
     // MARK: - Readme
 
     /// 拉取 README（GitHub 服务端渲染的 HTML 片段）。
@@ -252,6 +257,14 @@ extension GitHubAPIClientProtocol {
         throw NetworkError.clientError(
             statusCode: 501,
             message: "Repository languages are not implemented by this client"
+        )
+    }
+
+    /// 旧 Mock 默认失败，避免测试在未 stub 时拿到空树当成「仓库没文件」。
+    func repositoryGitTree(owner: String, repo: String, ref: String) async throws -> GitHubGitTreeDTO {
+        throw NetworkError.clientError(
+            statusCode: 501,
+            message: "Repository git tree is not implemented by this client"
         )
     }
 

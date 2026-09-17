@@ -460,6 +460,27 @@ enum AppEndpoints {
                     .joined(separator: "/")
                 return "/repos/\(owner)/\(repo)/contents/\(encodedPath)"
             }
+            /// `GET /repos/{owner}/{repo}/git/trees/{ref}?recursive=1` —— 一次拿整棵文件树。
+            ///
+            /// `ref` 可以是 commit SHA、tag 或分支名。分支名可能含 `/`（如 `release/1.0`），
+            /// 必须按 path 分段编码，不能整段当一个 segment。
+            static func repoGitTree(owner: String, repo: String, ref: String) -> String {
+                let encodedRef = ref
+                    .split(separator: "/", omittingEmptySubsequences: false)
+                    .map { component in
+                        String(component).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+                            ?? String(component)
+                    }
+                    .joined(separator: "/")
+                return "/repos/\(owner)/\(repo)/git/trees/\(encodedRef)"
+            }
+            /// `GET /repos/{owner}/{repo}/git/blobs/{sha}` —— 按 blob SHA 拉文件字节。
+            ///
+            /// 勾选下载走这条而不是 Contents JSON：Contents 对 >1MB 文件会截断，
+            /// blob + `Accept: application/vnd.github.raw` 可以流式落盘。
+            static func repoGitBlob(owner: String, repo: String, sha: String) -> String {
+                "/repos/\(owner)/\(repo)/git/blobs/\(sha)"
+            }
             /// `GET /repos/{owner}/{repo}/releases` —— release 列表。
             static func repoReleases(owner: String, repo: String) -> String {
                 "/repos/\(owner)/\(repo)/releases"

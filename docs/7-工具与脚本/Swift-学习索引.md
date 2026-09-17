@@ -95,7 +95,7 @@
 | `Task<Void, Never>` | `private var currentTask: Task<Void, Never>?` | "Swift Task generic parameters" |
 | `AsyncThrowingStream` / `for try await` | `AIClientProtocol.chatStream` 生产事件，`RepoAIInsightService.generateText` 消费 delta / completed | "Swift AsyncThrowingStream for try await" |
 | `async let` | `HomeViewModel.refreshSidebar` 并行起 3 个查询 | "Swift async let concurrency" |
-| `withTaskGroup` | 项目里未用，未来批量场景会引入 | "Swift TaskGroup" |
+| `withTaskGroup` | `RepoFileBrowserViewModel` 勾选下载（并发上限 4）/ `BatchAIQueueService` / `SearchCoordinator` | "Swift TaskGroup" |
 | `@MainActor` | `ReadmeViewModel` / `HomeViewModel` / `AppDependencies` / `Coordinator` | "Swift MainActor" |
 | `actor` | `GitHubAPIClient` / `WikiAPI` | "Swift actors data race" |
 | `nonisolated` / `nonisolated(unsafe)` | `URLProtocolStub` 静态可变属性 | "Swift nonisolated keyword" |
@@ -179,6 +179,7 @@
 | `NSView` → `NSWindow` 桥接 | `MainWindowFrameModifier` 通过不可见 NSView 拿主窗口 | "SwiftUI access NSWindow from NSViewRepresentable" |
 | `NSHostingController` | `AboutWindowController` 把 `AboutView` 嵌进 AppKit `NSWindow` | "NSHostingController SwiftUI AppKit" |
 | `NSSearchField.focusRingType` | `RepoListView.ToolbarSearchFocusRingDisabler` 禁用系统搜索框外层蓝色 focus ring | "NSSearchField focusRingType NSFocusRingType" |
+| `NSOpenPanel` + `startAccessingSecurityScopedResource()` | `RepoFileBrowserViewModel` 选目录后下载文件；App Store 沙盒必须先拿到用户授权的安全作用域 | "NSOpenPanel canChooseDirectories startAccessingSecurityScopedResource" |
 
 ---
 
