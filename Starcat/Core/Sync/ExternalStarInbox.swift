@@ -10,8 +10,10 @@
 //    否则点胶囊时 SyncManager 会 304 早退，新仓库进不来。
 //  - 队列跨探测轮次累加，整批插到最前，避免逐条 prepend 把同一轮顺序反转。
 //  - TestEnvironment 只挡住 15 秒循环，不挡住 poll()，单测才能驱动探测。
+//  - 本地还没有 lastSyncAt 时不探测，避免首次同步前把整页当成新 star。
 //
 
+import AppKit
 import Foundation
 import Observation
 
@@ -59,4 +61,133 @@ final class ExternalStarInbox {
 
     /// 15 秒循环是否在跑。测试 host 必须保持 false。
     private(set) var isLoopRunning = false
+
+    @ObservationIgnored
+    private let apiClient: any GitHubAPIClientProtocol
+    @ObservationIgnored
+    private let repository: any RepoRepositoryProtocol
+    @ObservationIgnored
+    private let syncManager: SyncManager
+    @ObservationIgnored
+    private let userIDProvider: () -> Int64?
+    @ObservationIgnored
+    private let isAppActive: () -> Bool
+    /// 探测专用 ETag，禁止写进同步表。
+    @ObservationIgnored
+    private var probeETag: String?
+    @ObservationIgnored
+    private var loop: Task<Void, Never>?
+    @ObservationIgnored
+    private var becomeActiveObserver: NSObjectProtocol?
+
+    init(
+        apiClient: any GitHubAPIClientProtocol,
+        repository: any RepoRepositoryProtocol,
+        syncManager: SyncManager,
+        userIDProvider: @escaping () -> Int64?,
+        isAppActive: @escaping () -> Bool = { NSApp.isActive }
+    ) {
+        self.apiClient = apiClient
+        self.repository = repository
+        self.syncManager = syncManager
+        self.userIDProvider = userIDProvider
+        self.isAppActive = isAppActive
+    }
+
+    /// 立即探测一次。循环入口与单测都走这里。
+    func poll() async {
+        guard isAppActive() else { return }
+        guard let userID = userIDProvider() else { return }
+        guard !syncManager.isSyncing else { return }
+        if case .rateLimited = syncManager.state { return }
+
+        let lastSyncAt = (try? await repository.fetchLastSyncAt(userID: userID)) ?? nil
+        guard lastSyncAt != nil else { return }
+
+        let response: APIResponse<[StarredRepoDTO]>
+        do {
+            response = try await apiClient.starredRepos(
+                page: 1,
+                perPage: 100,
+                ifNoneMatch: probeETag
+            )
+        } catch NetworkError.notModified {
+            return
+        } catch {
+            AppLog.sync.error(
+                "External star probe failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return
+        }
+
+        if let etag = response.etag, !etag.isEmpty {
+            probeETag = etag
+        }
+
+        let localIDs = Set((try? await repository.fetchStarredRepoIDs()) ?? [])
+        let pendingIDs = Set(pending.map(\.repoID))
+        let newItems = response.value.compactMap { dto -> Item? in
+            let id = dto.repo.id
+            guard !localIDs.contains(id), !pendingIDs.contains(id) else { return nil }
+            return Item(
+                repoID: id,
+                ownerLogin: dto.repo.owner.login,
+                avatarURL: dto.repo.owner.avatarUrl,
+                starredAt: dto.starredAt
+            )
+        }
+        if !newItems.isEmpty {
+            pending = newItems + pending
+        }
+    }
+
+    /// 点胶囊：复用现有增量同步，不另写 upsert。
+    func apply() {
+        guard let userID = userIDProvider() else { return }
+        syncManager.performFullSync(userID: userID)
+    }
+
+    /// 同步成功后按本地 ID 清掉已经入库的队列项。失败态必须原样保留。
+    func handleSyncCompleted() async {
+        guard case .completed = syncManager.state else { return }
+        let local = Set((try? await repository.fetchStarredRepoIDs()) ?? [])
+        pending.removeAll { local.contains($0.repoID) }
+    }
+
+    func resetForAccountChange() {
+        pending = []
+        probeETag = nil
+    }
+
+    func start() {
+        guard !TestEnvironment.isRunning else { return }
+        guard loop == nil else { return }
+        isLoopRunning = true
+        loop = Task { [weak self] in
+            await self?.poll()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.pollInterval))
+                await self?.poll()
+            }
+        }
+        becomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.poll()
+            }
+        }
+    }
+
+    func stop() {
+        loop?.cancel()
+        loop = nil
+        isLoopRunning = false
+        if let becomeActiveObserver {
+            NotificationCenter.default.removeObserver(becomeActiveObserver)
+            self.becomeActiveObserver = nil
+        }
+    }
 }
