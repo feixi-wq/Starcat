@@ -1736,7 +1736,11 @@ final class AppDependencies {
             self.widgetRefreshCoordinator.publishEmpty(
                 state: userId == nil ? .signedOut : .preparing
             )
-            self.screensaverRefreshCoordinator.clear()
+            // 屏保空态是应用图标。冷启动 / 切库时先删快照会让预览先空很久；
+            // 已登录只覆盖发布，只有登出才清目录。
+            if userId == nil {
+                self.screensaverRefreshCoordinator.clear()
+            }
             self.ragComposerDraftStore.removeAll()
             do { try DiskNotificationCommentDraftCache.shared.deleteEverything() }
             catch {

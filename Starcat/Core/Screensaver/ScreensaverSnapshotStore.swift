@@ -29,6 +29,13 @@ enum ScreensaverSnapshotStoreError: Error, Equatable, LocalizedError {
     }
 }
 
+/// 屏保用 mtime + size 判断快照有没有变，避免每两秒解码整份 JSON。
+struct ScreensaverSnapshotRevision: Equatable, Sendable {
+    let exists: Bool
+    let fileSize: Int
+    let modifiedAt: TimeInterval?
+}
+
 /// 对单一 App Group 容器执行屏保快照读写。
 struct ScreensaverSnapshotStore: Sendable {
     let containerURL: URL
@@ -43,6 +50,17 @@ struct ScreensaverSnapshotStore: Sendable {
 
     init(containerURL: URL) {
         self.containerURL = containerURL
+    }
+
+    /// 只 stat 快照文件。屏保空转时走这条路径，不要 `load()`。
+    func revision() -> ScreensaverSnapshotRevision {
+        let values = try? snapshotURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let exists = FileManager.default.fileExists(atPath: snapshotURL.path)
+        return ScreensaverSnapshotRevision(
+            exists: exists,
+            fileSize: values?.fileSize ?? 0,
+            modifiedAt: values?.contentModificationDate?.timeIntervalSinceReferenceDate
+        )
     }
 
     /// 从磁盘读取并验证当前版本快照。

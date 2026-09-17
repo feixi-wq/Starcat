@@ -3,17 +3,11 @@
 <plist version="1.0">
 <dict>
     <!--
-      系统 legacyScreenSaver 进程会沙箱加载 .saver。
-      Direct 主应用把快照写到 Application Support；屏保只申请该目录的只读例外，
-      不新增 App Group，避免改 Direct 描述文件。
+      .saver 被加载进已经沙箱化的 legacyScreenSaver。宿主对 `/` 已有只读例外。
+      插件自己再开 app-sandbox 后，home-relative 例外相对的是容器家目录，
+      读不到 Direct 写到真实 `$HOME/Library/Application Support` 的快照。
       disable-library-validation 是 Swift 运行时被系统宿主加载时的既有约束。
     -->
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
-    <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
-    <array>
-        <string>Library/Application Support/com.starcat.app/screensaver/</string>
-    </array>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
 </dict>

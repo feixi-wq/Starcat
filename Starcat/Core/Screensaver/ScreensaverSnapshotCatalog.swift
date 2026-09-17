@@ -23,6 +23,7 @@ struct ScreensaverSnapshotCatalog: AmbientCatalogProviding {
         return snapshot.cards.map { card in
             let artworkURLString = resolvedArtworkURLString(
                 imageFileName: card.imageFileName,
+                visualKey: card.visualKey,
                 avatarsDirectory: avatars
             )
             return AmbientCardModel(
@@ -38,16 +39,37 @@ struct ScreensaverSnapshotCatalog: AmbientCatalogProviding {
 
     private func resolvedArtworkURLString(
         imageFileName: String?,
+        visualKey: String,
         avatarsDirectory: URL
     ) -> String? {
-        guard let imageFileName,
-              !imageFileName.isEmpty,
-              !imageFileName.contains("/"),
-              !imageFileName.contains("..") else {
-            return nil
+        let candidates = [
+            imageFileName,
+            ScreensaverSharedConfiguration.avatarFileName(visualKey: visualKey)
+        ]
+        for candidate in candidates {
+            guard let candidate,
+                  !candidate.isEmpty,
+                  !candidate.contains("/"),
+                  !candidate.contains("..") else {
+                continue
+            }
+            let url = avatarsDirectory.appendingPathComponent(candidate, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            return url.absoluteString
         }
-        let url = avatarsDirectory.appendingPathComponent(imageFileName, isDirectory: false)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return url.absoluteString
+        return nil
+    }
+}
+
+/// 屏保只关心格子上的图。title 变化不应触发整墙重绘。
+enum ScreensaverArtworkSignature {
+    static func make(_ cards: [AmbientCardModel]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(cards.count)
+        for card in cards {
+            hasher.combine(card.id)
+            hasher.combine(card.artworkURLString)
+        }
+        return hasher.finalize()
     }
 }

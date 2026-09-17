@@ -19,7 +19,7 @@ struct ScreensaverRootView: View {
         GeometryReader { proxy in
             let candidateMetrics = AmbientGridMetrics(size: proxy.size)
             let displayedMetrics = stableMetrics ?? candidateMetrics
-            let candidateLayout = candidateMetrics.isUsable
+            let candidateLayout = candidateMetrics.canConfigureScreensaver
                 ? candidateMetrics.layout(displayScale: displayScale)
                 : nil
 

@@ -122,10 +122,74 @@ struct ScreensaverSnapshotStoreTests {
     func productionContainerUsesApplicationSupport() {
         let url = ScreensaverSharedConfiguration.productionContainerURL()
         #expect(url.path.contains("/Library/Application Support/com.starcat.app/screensaver"))
+        #expect(!url.path.contains("/Library/Containers/"))
         #expect(
             ScreensaverSharedConfiguration.snapshotURL(containerURL: url).lastPathComponent
                 == ScreensaverSharedConfiguration.snapshotFileName
         )
+    }
+
+    @Test("生产容器路径使用注入的家目录，而不是 FileManager 的沙箱家目录")
+    func productionContainerUsesInjectedHomeDirectory() {
+        let home = URL(fileURLWithPath: "/tmp/starcat-fake-home", isDirectory: true)
+        let url = ScreensaverSharedConfiguration.productionContainerURL(homeDirectory: home)
+        #expect(
+            url.path
+                == "/tmp/starcat-fake-home/Library/Application Support/com.starcat.app/screensaver"
+        )
+    }
+
+    @Test("缺文件时 revision 稳定，写入后才会变化")
+    func revisionChangesOnlyAfterSave() throws {
+        try withTemporaryDirectory { directory in
+            let store = ScreensaverSnapshotStore(containerURL: directory)
+            let missing = store.revision()
+            #expect(missing.exists == false)
+            #expect(store.revision() == missing)
+
+            try store.save(ScreensaverSnapshot(userID: 1, cards: []))
+            let first = store.revision()
+            #expect(first.exists)
+            #expect(first.fileSize > 0)
+            #expect(first != missing)
+            #expect(store.revision() == first)
+
+            try store.save(ScreensaverSnapshot(userID: 2, cards: []))
+            let second = store.revision()
+            #expect(second.exists)
+            #expect(second != first)
+        }
+    }
+
+    @Test("artwork signature 只在 id 或图片 URL 变化时改变")
+    func artworkSignatureIgnoresUnrelatedIdentity() {
+        let first = AmbientCardModel(
+            id: "owner:a",
+            visualKey: "owner:a",
+            title: "A",
+            artworkURLString: "file:///tmp/a.png",
+            subtitle: nil,
+            metadata: [:]
+        )
+        let renamed = AmbientCardModel(
+            id: "owner:a",
+            visualKey: "owner:a",
+            title: "Alpha",
+            artworkURLString: "file:///tmp/a.png",
+            subtitle: nil,
+            metadata: [:]
+        )
+        let newImage = AmbientCardModel(
+            id: "owner:a",
+            visualKey: "owner:a",
+            title: "A",
+            artworkURLString: "file:///tmp/b.png",
+            subtitle: nil,
+            metadata: [:]
+        )
+
+        #expect(ScreensaverArtworkSignature.make([first]) == ScreensaverArtworkSignature.make([renamed]))
+        #expect(ScreensaverArtworkSignature.make([first]) != ScreensaverArtworkSignature.make([newImage]))
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {

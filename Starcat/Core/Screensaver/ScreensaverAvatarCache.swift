@@ -6,23 +6,25 @@
 //
 
 import AppKit
-import CryptoKit
 import Foundation
 
 /// 为屏保快照准备本地头像文件，并按当前卡片集合 GC。
 ///
 /// 关键约束：
-/// - 列表 / Widget 常见 32…80px 头像不能拿来放大铺满屏保格子；
-/// - GitHub 头像原图经常停在约 460px，所以复用门槛用 460 而不是死卡 512，避免下完再丢；
+/// - GitHub `s=512` 只缩小不放大，很多 Owner 原图只有几十到一百多 px；
+/// - 能解码的图都留下，避免屏保格子永远停在字母；
+/// - 已有短边 ≥ 200 的文件才跳过网络，不够大再尝试换更大的；
 /// - 下载并发上限对齐 `AvatarCacheLoader`，避免上千 Owner 打爆 CDN。
 struct ScreensaverAvatarCache: Sendable {
     typealias Downloader = @Sendable (URL) async -> Data?
     typealias LocalImageSource = @Sendable (URL) async -> Data?
     typealias ProgressHandler = @Sendable (Int, Int) -> Void
+    typealias CheckpointHandler = @Sendable ([ScreensaverSnapshotCard]) -> Void
 
     private static let maximumResponseBytes = 2 * 1_024 * 1_024
     static let requestedPixelSize = 512
-    static let minimumReusablePixelSize = 460
+    /// 短边达到这个值就视为够用，不再为同一 Owner 打 GitHub。
+    static let minimumReusablePixelSize = 200
     /// 上千 Owner 必须并行；8 路与导出头像加载器同一档。
     private static let downloadConcurrency = 8
 
@@ -38,15 +40,15 @@ struct ScreensaverAvatarCache: Sendable {
 
     /// visualKey 映射为不可注入路径的稳定 PNG 文件名。
     static func fileName(visualKey: String) -> String {
-        let digest = SHA256.hash(data: Data(visualKey.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined() + ".png"
+        ScreensaverSharedConfiguration.avatarFileName(visualKey: visualKey)
     }
 
     func enrich(
         cards: [AmbientCardModel],
         downloader: @escaping Downloader,
         localImageSource: LocalImageSource? = nil,
-        onProgress: ProgressHandler? = nil
+        onProgress: ProgressHandler? = nil,
+        onCheckpoint: CheckpointHandler? = nil
     ) async -> [ScreensaverSnapshotCard] {
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         onProgress?(0, cards.count)
@@ -84,6 +86,9 @@ struct ScreensaverAvatarCache: Sendable {
                 results[index] = snapshot
                 completed += 1
                 onProgress?(completed, cards.count)
+                if shouldCheckpoint(completed: completed, total: cards.count) {
+                    onCheckpoint?(mergedCards(cards: cards, results: results))
+                }
                 running -= 1
                 enqueue()
             }
@@ -94,6 +99,25 @@ struct ScreensaverAvatarCache: Sendable {
         return materialized
     }
 
+    /// 第一张、每 32 张、以及全部完成时写回 JSON，屏保不用干等到下载结束。
+    private func shouldCheckpoint(completed: Int, total: Int) -> Bool {
+        completed == 1 || completed == total || completed.isMultiple(of: 32)
+    }
+
+    private func mergedCards(
+        cards: [AmbientCardModel],
+        results: [ScreensaverSnapshotCard?]
+    ) -> [ScreensaverSnapshotCard] {
+        cards.enumerated().map { index, card in
+            results[index] ?? ScreensaverSnapshotCard(
+                id: card.id,
+                visualKey: card.visualKey,
+                title: card.title,
+                imageFileName: nil
+            )
+        }
+    }
+
     private func materialize(
         _ card: AmbientCardModel,
         downloader: @escaping Downloader,
@@ -101,17 +125,20 @@ struct ScreensaverAvatarCache: Sendable {
     ) async -> ScreensaverSnapshotCard {
         let fileName = Self.fileName(visualKey: card.visualKey)
         let destinationURL = directoryURL.appendingPathComponent(fileName, isDirectory: false)
-        var storedFileName: String?
+        let existing = try? Data(contentsOf: destinationURL)
+        var bestEdge = existing.flatMap(pixelEdge(of:)) ?? 0
+        var storedFileName: String? = bestEdge > 0 ? fileName : nil
 
-        if let existing = try? Data(contentsOf: destinationURL), isReusable(existing) {
-            storedFileName = fileName
-        } else if let remoteURL = allowedDownloadURL(from: card.artworkURLString) {
-            if let local = await localImageSource?(remoteURL),
-               let png = reusablePNGData(from: local) {
-                storedFileName = writeReusablePNG(png, to: destinationURL, fileName: fileName)
-            } else if let data = await downloader(remoteURL),
-                      let png = reusablePNGData(from: data) {
-                storedFileName = writeReusablePNG(png, to: destinationURL, fileName: fileName)
+        // GitHub 的 s=512 只缩小、不放大。很多 Owner 原图只有 80…199px，
+        // 丢掉它们屏保就会一直停在字母。已有能解码的图先留着，不够大再尝试换更大的。
+        if bestEdge < Self.minimumReusablePixelSize,
+           let remoteURL = allowedDownloadURL(from: card.artworkURLString) {
+            if let local = await localImageSource?(remoteURL) {
+                consider(local, destinationURL: destinationURL, fileName: fileName, bestEdge: &bestEdge, storedFileName: &storedFileName)
+            }
+            if bestEdge < Self.minimumReusablePixelSize,
+               let data = await downloader(remoteURL) {
+                consider(data, destinationURL: destinationURL, fileName: fileName, bestEdge: &bestEdge, storedFileName: &storedFileName)
             }
         }
 
@@ -121,6 +148,24 @@ struct ScreensaverAvatarCache: Sendable {
             title: card.title,
             imageFileName: storedFileName
         )
+    }
+
+    private func consider(
+        _ data: Data,
+        destinationURL: URL,
+        fileName: String,
+        bestEdge: inout Int,
+        storedFileName: inout String?
+    ) {
+        guard data.count <= Self.maximumResponseBytes,
+              let png = pngData(from: data),
+              let edge = pixelEdge(of: png),
+              edge > bestEdge else {
+            return
+        }
+        guard writeReusablePNG(png, to: destinationURL, fileName: fileName) != nil else { return }
+        bestEdge = edge
+        storedFileName = fileName
     }
 
     func clear() {
@@ -146,16 +191,6 @@ struct ScreensaverAvatarCache: Sendable {
             minimumPixelSize: Self.requestedPixelSize,
             maximumPixelSize: Self.requestedPixelSize
         ) ?? url
-    }
-
-    private func reusablePNGData(from data: Data) -> Data? {
-        guard data.count <= Self.maximumResponseBytes, isReusable(data) else { return nil }
-        return pngData(from: data)
-    }
-
-    private func isReusable(_ data: Data) -> Bool {
-        guard let edge = pixelEdge(of: data) else { return false }
-        return edge >= Self.minimumReusablePixelSize
     }
 
     private func pixelEdge(of data: Data) -> Int? {

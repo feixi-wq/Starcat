@@ -33,7 +33,7 @@ struct ScreensaverArtworkView: View {
               url.isFileURL else {
             return nil
         }
-        return NSImage(contentsOf: url)
+        return ScreensaverLocalImageLoader.image(at: url)
     }
 }
 

@@ -35,6 +35,9 @@ final class ScreensaverViewModel {
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var schedulerTask: Task<Void, Never>?
+    @ObservationIgnored private var snapshotRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var lastSnapshotRevision: ScreensaverSnapshotRevision?
+    @ObservationIgnored private var lastArtworkSignature: Int?
 
     init(
         catalog: (any AmbientCatalogProviding)? = nil,
@@ -61,6 +64,7 @@ final class ScreensaverViewModel {
         currentReduceMotion = reduceMotion
         if isSameLayout, case .loaded = state {
             restartSchedulerForCurrentPolicy()
+            startSnapshotRefreshLoop()
             return
         }
 
@@ -70,8 +74,11 @@ final class ScreensaverViewModel {
         state = .loading
         changedSlotIDs = []
         engine = nil
+        lastSnapshotRevision = nil
+        lastArtworkSignature = nil
         loadTask?.cancel()
         stopScheduler()
+        startSnapshotRefreshLoop()
 
         loadTask = Task { [weak self, catalog] in
             do {
@@ -101,6 +108,7 @@ final class ScreensaverViewModel {
         if active {
             advanceAndPublish(at: now())
             restartSchedulerForCurrentPolicy()
+            startSnapshotRefreshLoop()
         } else {
             stopScheduler()
         }
@@ -122,8 +130,64 @@ final class ScreensaverViewModel {
         )
         self.engine = engine
         changedSlotIDs = []
+        lastArtworkSignature = ScreensaverArtworkSignature.make(cards)
+        lastSnapshotRevision = snapshotRevision()
         state = .loaded(engine.snapshots)
         restartSchedulerForCurrentPolicy()
+    }
+
+    /// 头像后台落盘时需要补进格子，但不能每两秒解码 JSON、重绘整墙。
+    /// 闲置路径只 stat 快照文件；mtime/size 变了才 load，图片集合没变就不写 `state`。
+    private func startSnapshotRefreshLoop() {
+        guard snapshotRefreshTask == nil else { return }
+        snapshotRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    try await self.sleep(2)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await self.refreshCardsFromCatalog()
+            }
+        }
+    }
+
+    private func refreshCardsFromCatalog() async {
+        guard let layout = currentLayout else { return }
+        let revision = snapshotRevision()
+        if let revision, revision == lastSnapshotRevision {
+            return
+        }
+        do {
+            let cards = try await catalog.loadCards(scene: .owners)
+            try Task.checkCancellation()
+            lastSnapshotRevision = revision
+            guard !cards.isEmpty else { return }
+            let signature = ScreensaverArtworkSignature.make(cards)
+            if signature == lastArtworkSignature {
+                return
+            }
+            lastArtworkSignature = signature
+            if var engine {
+                let before = engine.snapshots
+                engine.refreshCards(cards)
+                self.engine = engine
+                if engine.snapshots != before {
+                    state = .loaded(engine.snapshots)
+                }
+            } else {
+                install(cards: cards, layout: layout)
+            }
+        } catch {
+            lastSnapshotRevision = revision
+            return
+        }
+    }
+
+    private func snapshotRevision() -> ScreensaverSnapshotRevision? {
+        (catalog as? ScreensaverSnapshotCatalog)?.store.revision()
     }
 
     private func restartSchedulerForCurrentPolicy() {

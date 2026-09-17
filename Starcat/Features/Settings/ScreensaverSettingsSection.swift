@@ -3,6 +3,7 @@
 //  Starcat
 //
 //  Direct「macOS 集成」里的屏保安装 / 更新 / 移除。App Store 构建不编译进可见 UI。
+//  安装只拷 .saver；头像快照由 App 启动 / Stars 同步发布，重装不得重下。
 //
 
 import AppKit
@@ -130,9 +131,7 @@ struct ScreensaverSettingsSection: View {
         isBusy = true
         errorMessage = nil
         do {
-            try installer.installThenPublishInBackground {
-                await dependencies.screensaverRefreshCoordinator.publishReady()
-            }
+            try installer.install()
             refreshStatus()
             openWithSystemInstaller()
         } catch {

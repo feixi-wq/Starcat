@@ -37,6 +37,12 @@ struct AmbientGridMetrics: Equatable, Sendable {
         isUsable = size.width >= 100 && size.height >= 200
     }
 
+    /// 系统设置屏保缩略图经常只有一百多 pt 高。App Ambient 的 200pt 门槛不能套过来，
+    /// 否则预览会永远停在空态图标。
+    var canConfigureScreensaver: Bool {
+        viewportWidth >= 40 && viewportHeight >= 40
+    }
+
     func layout(displayScale: Double) -> AmbientGridLayout {
         AmbientGridLayout(
             config: AmbientGridConfig(rowCount: Self.rowCount, columnCount: columnCount),

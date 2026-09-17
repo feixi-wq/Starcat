@@ -106,6 +106,47 @@ struct ScreensaverSnapshotPublisherTests {
         }
     }
 
+    @Test("GitHub 不放大原图时仍保留能解码的头像，不要改画字母")
+    func keepsDecodableAvatarWhenCDNDoesNotUpscale() async throws {
+        try await withTemporaryDirectory { directory in
+            let cache = ScreensaverAvatarCache(containerURL: directory)
+            let visualKey = "owner:small"
+            let fileName = ScreensaverAvatarCache.fileName(visualKey: visualKey)
+            let cards = await cache.enrich(
+                cards: [makeCard(id: "owner:small", visualKey: visualKey, title: "small")],
+                downloader: { _ in pngData(dimension: 80) }
+            )
+
+            #expect(cards.first?.imageFileName == fileName)
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: ScreensaverSharedConfiguration.avatarsDirectoryURL(containerURL: directory)
+                        .appendingPathComponent(fileName).path
+                )
+            )
+        }
+    }
+
+    @Test("下载失败时保留已经能显示的小头像，不要 prune 掉")
+    func keepsExistingDecodableAvatarWhenDownloadFails() async throws {
+        try await withTemporaryDirectory { directory in
+            let cache = ScreensaverAvatarCache(containerURL: directory)
+            let visualKey = "owner:small"
+            let fileName = ScreensaverAvatarCache.fileName(visualKey: visualKey)
+            let avatars = ScreensaverSharedConfiguration.avatarsDirectoryURL(containerURL: directory)
+            try FileManager.default.createDirectory(at: avatars, withIntermediateDirectories: true)
+            try pngData(dimension: 80).write(to: avatars.appendingPathComponent(fileName))
+
+            let cards = await cache.enrich(
+                cards: [makeCard(id: "owner:small", visualKey: visualKey, title: "small")],
+                downloader: { _ in nil }
+            )
+
+            #expect(cards.first?.imageFileName == fileName)
+            #expect(FileManager.default.fileExists(atPath: avatars.appendingPathComponent(fileName).path))
+        }
+    }
+
     @Test("高分辨率旁路缓存命中时不走网络")
     func reusesHighResolutionLocalLookup() async throws {
         try await withTemporaryDirectory { directory in
@@ -236,6 +277,36 @@ struct ScreensaverSnapshotPublisherTests {
         }
     }
 
+    @Test("JSON 还没记下文件名时，Catalog 仍按 visualKey 认磁盘头像")
+    func catalogResolvesExistingFileWhenImageFileNameMissing() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = ScreensaverSnapshotStore(containerURL: directory)
+            let visualKey = "owner:apple"
+            let fileName = ScreensaverAvatarCache.fileName(visualKey: visualKey)
+            let avatars = ScreensaverSharedConfiguration.avatarsDirectoryURL(containerURL: directory)
+            try FileManager.default.createDirectory(at: avatars, withIntermediateDirectories: true)
+            try pngData(dimension: 256).write(to: avatars.appendingPathComponent(fileName))
+            try store.save(
+                ScreensaverSnapshot(
+                    userID: 1,
+                    cards: [
+                        ScreensaverSnapshotCard(
+                            id: "owner:apple",
+                            visualKey: visualKey,
+                            title: "apple",
+                            imageFileName: nil
+                        )
+                    ]
+                )
+            )
+
+            let cards = try await ScreensaverSnapshotCatalog(store: store).loadCards(scene: .owners)
+            let card = try #require(cards.first)
+            #expect(card.artworkURLString?.hasPrefix("file:") == true)
+            #expect(card.artworkURLString?.hasSuffix(fileName) == true)
+        }
+    }
+
     @Test("Catalog 忽略含路径的文件名，缺图卡片仍保留 title")
     func catalogIgnoresUnsafeFileNames() async throws {
         try await withTemporaryDirectory { directory in
@@ -259,6 +330,175 @@ struct ScreensaverSnapshotPublisherTests {
         }
     }
 
+    @Test("头像下载完成前先写入占位快照，避免屏保一直停在空态")
+    func writesPlaceholderSnapshotBeforeDownloadsFinish() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = ScreensaverSnapshotStore(containerURL: directory)
+            let cache = ScreensaverAvatarCache(containerURL: directory)
+            let gate = DownloadGate()
+            let publisher = ScreensaverSnapshotPublisher(
+                loadCards: {
+                    [makeCard(id: "owner:apple", visualKey: "owner:apple", title: "apple")]
+                },
+                store: store,
+                cache: cache,
+                downloader: { _ in
+                    await gate.wait()
+                    return pngData(dimension: 512)
+                }
+            )
+
+            let task = Task {
+                try await publisher.publish(userID: 7)
+            }
+            var snapshot: ScreensaverSnapshot?
+            for _ in 0..<50 {
+                if let loaded = try? store.load() {
+                    snapshot = loaded
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let loaded = try #require(snapshot)
+            #expect(loaded.userID == 7)
+            #expect(loaded.cards.count == 1)
+            #expect(loaded.cards.first?.title == "apple")
+
+            await gate.release()
+            try await task.value
+            #expect(try store.load().cards.first?.imageFileName != nil)
+        }
+    }
+
+    @Test("部分头像就绪时就会写回 JSON，不用等全部下完")
+    func checkpointsSnapshotBeforeAllDownloadsFinish() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = ScreensaverSnapshotStore(containerURL: directory)
+            let cache = ScreensaverAvatarCache(containerURL: directory)
+            let gate = DownloadGate()
+            let publisher = ScreensaverSnapshotPublisher(
+                loadCards: {
+                    [
+                        makeCard(
+                            id: "owner:ready",
+                            visualKey: "owner:ready",
+                            title: "ready",
+                            artworkURLString: "https://github.com/ready.png"
+                        ),
+                        makeCard(
+                            id: "owner:late",
+                            visualKey: "owner:late",
+                            title: "late",
+                            artworkURLString: "https://github.com/late.png"
+                        )
+                    ]
+                },
+                store: store,
+                cache: cache,
+                downloader: { url in
+                    if url.absoluteString.contains("late") {
+                        await gate.wait()
+                    }
+                    return pngData(dimension: 256)
+                }
+            )
+
+            let task = Task {
+                try await publisher.publish(userID: 8)
+            }
+            var namedCount = 0
+            for _ in 0..<50 {
+                namedCount = (try? store.load().cards.filter { $0.imageFileName != nil }.count) ?? 0
+                if namedCount == 1 { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(namedCount == 1)
+
+            await gate.release()
+            try await task.value
+            #expect(try store.load().cards.filter { $0.imageFileName != nil }.count == 2)
+        }
+    }
+
+    @Test("增量 checkpoint 不得把已有头像文件名抹成 nil")
+    func checkpointKeepsPreviousImageFileNames() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = ScreensaverSnapshotStore(containerURL: directory)
+            let cache = ScreensaverAvatarCache(containerURL: directory)
+            let gate = DownloadGate()
+            let lateKey = "owner:late"
+            let lateName = ScreensaverAvatarCache.fileName(visualKey: lateKey)
+            let avatars = ScreensaverSharedConfiguration.avatarsDirectoryURL(containerURL: directory)
+            try FileManager.default.createDirectory(at: avatars, withIntermediateDirectories: true)
+            try pngData(dimension: 80).write(to: avatars.appendingPathComponent(lateName))
+            try store.save(
+                ScreensaverSnapshot(
+                    userID: 8,
+                    cards: [
+                        ScreensaverSnapshotCard(
+                            id: "owner:ready",
+                            visualKey: "owner:ready",
+                            title: "ready",
+                            imageFileName: nil
+                        ),
+                        ScreensaverSnapshotCard(
+                            id: "owner:late",
+                            visualKey: lateKey,
+                            title: "late",
+                            imageFileName: lateName
+                        )
+                    ]
+                )
+            )
+
+            let publisher = ScreensaverSnapshotPublisher(
+                loadCards: {
+                    [
+                        makeCard(
+                            id: "owner:ready",
+                            visualKey: "owner:ready",
+                            title: "ready",
+                            artworkURLString: "https://github.com/ready.png"
+                        ),
+                        makeCard(
+                            id: "owner:late",
+                            visualKey: lateKey,
+                            title: "late",
+                            artworkURLString: "https://github.com/late.png"
+                        )
+                    ]
+                },
+                store: store,
+                cache: cache,
+                downloader: { url in
+                    if url.absoluteString.contains("late") {
+                        await gate.wait()
+                    }
+                    return pngData(dimension: 512)
+                }
+            )
+
+            let task = Task {
+                try await publisher.publish(userID: 8)
+            }
+            var lateNameStillPresent = false
+            for _ in 0..<50 {
+                let cards = (try? store.load().cards) ?? []
+                let readyNamed = cards.contains { $0.id == "owner:ready" && $0.imageFileName != nil }
+                let lateNamed = cards.contains { $0.id == "owner:late" && $0.imageFileName == lateName }
+                if readyNamed && lateNamed {
+                    lateNameStillPresent = true
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(lateNameStillPresent)
+
+            await gate.release()
+            try await task.value
+        }
+    }
+
     @Test("clear 删除快照后 Catalog 映射为缺文件")
     func clearRemovesSnapshot() async throws {
         try await withTemporaryDirectory { directory in
@@ -274,6 +514,25 @@ struct ScreensaverSnapshotPublisherTests {
             #expect(throws: ScreensaverSnapshotStoreError.snapshotMissing) {
                 try store.load()
             }
+        }
+    }
+
+    /// 卡住下载器，用来断言 enrich 完成前 JSON 已经落盘。
+    private actor DownloadGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var released = false
+
+        func wait() async {
+            if released { return }
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+
+        func release() {
+            released = true
+            continuation?.resume()
+            continuation = nil
         }
     }
 
@@ -326,12 +585,17 @@ struct ScreensaverSnapshotPublisherTests {
         }
     }
 
-    private func makeCard(id: String, visualKey: String, title: String) -> AmbientCardModel {
+    private func makeCard(
+        id: String,
+        visualKey: String,
+        title: String,
+        artworkURLString: String = "https://github.com/apple.png"
+    ) -> AmbientCardModel {
         AmbientCardModel(
             id: id,
             visualKey: visualKey,
             title: title,
-            artworkURLString: "https://github.com/apple.png",
+            artworkURLString: artworkURLString,
             subtitle: nil,
             metadata: [:]
         )

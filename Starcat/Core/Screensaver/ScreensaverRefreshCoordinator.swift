@@ -24,8 +24,10 @@ final class ScreensaverRefreshCoordinator {
     private let userIDProvider: @MainActor () -> Int64?
     private let isEnabled: Bool
     private let makePublisher: () throws -> ScreensaverSnapshotPublisher
+    private let bypassTestHostGate: Bool
     private var observers: [NSObjectProtocol] = []
     private var pendingRefreshTask: Task<Void, Never>?
+    private var publishTask: Task<Void, Never>?
     private var publishGeneration: UInt64 = 0
 
     init(
@@ -50,6 +52,7 @@ final class ScreensaverRefreshCoordinator {
                 localImageSource: ScreensaverSnapshotPublisher.makeLocalImageSource()
             )
         }
+        self.bypassTestHostGate = false
     }
 
     /// 测试可替换发布器构造，避免访问真实快照目录。
@@ -57,12 +60,14 @@ final class ScreensaverRefreshCoordinator {
         loadCards: @escaping @MainActor () async throws -> [AmbientCardModel],
         userIDProvider: @escaping @MainActor () -> Int64?,
         isEnabled: Bool,
-        makePublisher: @escaping () throws -> ScreensaverSnapshotPublisher
+        makePublisher: @escaping () throws -> ScreensaverSnapshotPublisher,
+        bypassTestHostGate: Bool = true
     ) {
         self.loadCards = loadCards
         self.userIDProvider = userIDProvider
         self.isEnabled = isEnabled
         self.makePublisher = makePublisher
+        self.bypassTestHostGate = bypassTestHostGate
     }
 
     func startObserving() {
@@ -95,7 +100,23 @@ final class ScreensaverRefreshCoordinator {
     }
 
     func publishReady() async {
-        guard isEnabled, !TestEnvironment.isRunning else { return }
+        guard isEnabled else { return }
+        guard bypassTestHostGate || !TestEnvironment.isRunning else { return }
+        guard userIDProvider() != nil else { return }
+        if let publishTask {
+            await publishTask.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performPublish()
+        }
+        publishTask = task
+        await task.value
+        publishTask = nil
+    }
+
+    private func performPublish() async {
         guard let userID = userIDProvider() else { return }
         publishGeneration &+= 1
         let generation = publishGeneration
@@ -124,9 +145,12 @@ final class ScreensaverRefreshCoordinator {
     }
 
     func clear() {
-        guard isEnabled, !TestEnvironment.isRunning else { return }
+        guard isEnabled else { return }
+        guard bypassTestHostGate || !TestEnvironment.isRunning else { return }
         publishGeneration &+= 1
         pendingRefreshTask?.cancel()
+        publishTask?.cancel()
+        publishTask = nil
         do {
             try makePublisher().clear()
         } catch {

@@ -83,6 +83,16 @@ struct AmbientArtworkTests {
         #expect(narrow.contentWidth == narrow.viewportWidth)
         #expect(narrow.contentHeight == narrow.viewportHeight)
         #expect(!transient.isUsable)
+        #expect(!transient.canConfigureScreensaver)
+    }
+
+    @Test("系统设置屏保缩略图高度经常不足 200pt，仍要能配置网格")
+    func screensaverPreviewAcceptsSettingsThumbnail() {
+        let thumbnail = AmbientGridMetrics(size: CGSize(width: 280, height: 160))
+        #expect(!thumbnail.isUsable)
+        #expect(thumbnail.canConfigureScreensaver)
+        #expect(thumbnail.columnCount >= 1)
+        #expect(thumbnail.tilePointSize == 32)
     }
 
     private func queryValue(_ name: String, in url: URL) -> String? {
