@@ -616,6 +616,9 @@ struct HomeView: View {
         // 分支，造成"切窗口/重进 HomeView 触发 N 次自动整理"。.onChange 只在
         // syncManager.state 真正变化的边沿触发。
         .onChange(of: syncManager.state) { _, newState in
+            if case .syncing = newState {
+                dependencies.externalStarInbox.handleSyncStarted()
+            }
             dependencies.autoTidyScheduler.notifySyncStateChanged(newState)
         }
         // HOM-126：用户在 Settings 切换「定时」/触发开关后，让 scheduler 重新装载

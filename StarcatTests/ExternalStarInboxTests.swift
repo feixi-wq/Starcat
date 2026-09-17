@@ -155,8 +155,8 @@ struct ExternalStarInboxTests {
         #expect(env.inbox.isLoopRunning == false)
     }
 
-    @Test("successful incremental sync clears pending that now exist locally")
-    func syncSuccessClearsPending() async throws {
+    @Test("apply dismisses pending immediately, before sync finishes")
+    func applyClearsPendingImmediately() async throws {
         let env = try makeEnv()
         try await seedLastSync(env, userID: 1)
         env.api.starredReposHandler = { _, _, _ in
@@ -169,6 +169,7 @@ struct ExternalStarInboxTests {
             env.onePage([env.makeDTO(id: 10, login: "a")], etag: "\"e2\"")
         }
         env.inbox.apply()
+        #expect(env.inbox.pending.isEmpty)
         try await waitUntil(env.sync) { state in
             if case .completed = state { return true }
             return false
@@ -177,8 +178,8 @@ struct ExternalStarInboxTests {
         #expect(env.inbox.pending.isEmpty)
     }
 
-    @Test("failed sync keeps pending")
-    func failedSyncKeepsPending() async throws {
+    @Test("apply still dismisses pending if the following sync fails")
+    func applyClearsPendingEvenIfSyncFails() async throws {
         let env = try makeEnv()
         try await seedLastSync(env, userID: 1)
         env.api.starredReposHandler = { _, _, _ in
@@ -189,12 +190,25 @@ struct ExternalStarInboxTests {
             throw NetworkError.unauthorized
         }
         env.inbox.apply()
+        #expect(env.inbox.pending.isEmpty)
         try await waitUntil(env.sync) { state in
             if case .failed = state { return true }
             return false
         }
         await env.inbox.handleSyncCompleted()
-        #expect(env.inbox.pending.map(\.repoID) == [10])
+        #expect(env.inbox.pending.isEmpty)
+    }
+
+    @Test("sync start from another entry also dismisses pending")
+    func handleSyncStartedClearsPending() async throws {
+        let env = try makeEnv()
+        try await seedLastSync(env, userID: 1)
+        env.api.starredReposHandler = { _, _, _ in
+            env.onePage([env.makeDTO(id: 10, login: "a")], etag: "\"e\"")
+        }
+        await env.inbox.poll()
+        env.inbox.handleSyncStarted()
+        #expect(env.inbox.pending.isEmpty)
     }
 
     @Test("account change drops pending and probe ETag")

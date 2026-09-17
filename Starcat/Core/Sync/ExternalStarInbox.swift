@@ -75,6 +75,9 @@ final class ExternalStarInbox {
     /// 探测专用 ETag，禁止写进同步表。
     @ObservationIgnored
     private var probeETag: String?
+    /// 点击收起后作废仍在途的探测结果，避免胶囊被旧响应重新填回来。
+    @ObservationIgnored
+    private var dismissGeneration: UInt64 = 0
     @ObservationIgnored
     private var loop: Task<Void, Never>?
     @ObservationIgnored
@@ -103,6 +106,7 @@ final class ExternalStarInbox {
 
         let lastSyncAt = (try? await repository.fetchLastSyncAt(userID: userID)) ?? nil
         guard lastSyncAt != nil else { return }
+        let generation = dismissGeneration
 
         let response: APIResponse<[StarredRepoDTO]>
         do {
@@ -119,6 +123,8 @@ final class ExternalStarInbox {
             )
             return
         }
+
+        guard generation == dismissGeneration else { return }
 
         if let etag = response.etag, !etag.isEmpty {
             probeETag = etag
@@ -141,13 +147,28 @@ final class ExternalStarInbox {
         }
     }
 
-    /// 点胶囊：复用现有增量同步，不另写 upsert。
+    /// 点胶囊：立刻收起提示，再走现有增量同步。
+    ///
+    /// 产品要求点击后马上消失，不能等同步成功。探测 ETag 一并丢掉，
+    /// 这样同步失败时下一轮 poll 还能重新发现仍未入库的仓库。
     func apply() {
+        dismissPending()
         guard let userID = userIDProvider() else { return }
         syncManager.performFullSync(userID: userID)
     }
 
-    /// 同步成功后按本地 ID 清掉已经入库的队列项。失败态必须原样保留。
+    func dismissPending() {
+        pending = []
+        probeETag = nil
+        dismissGeneration &+= 1
+    }
+
+    /// 顶栏刷新等其它同步入口：同步一开始就把胶囊收掉。
+    func handleSyncStarted() {
+        dismissPending()
+    }
+
+    /// 同步成功后再按本地 ID 清一次，防止其它入口漏掉 dismiss。
     func handleSyncCompleted() async {
         guard case .completed = syncManager.state else { return }
         let local = Set((try? await repository.fetchStarredRepoIDs()) ?? [])
@@ -157,6 +178,7 @@ final class ExternalStarInbox {
     func resetForAccountChange() {
         pending = []
         probeETag = nil
+        dismissGeneration &+= 1
     }
 
     func start() {
