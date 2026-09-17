@@ -819,6 +819,13 @@ struct DebugMenuCommands: Commands {
             }
             .disabled(!FirstRunOnboardingPreferences.canReplayManually)
 
+            Button("Replay App Store Import Prompt") {
+                NotificationCenter.default.post(
+                    name: AppStoreToDirectImportIdentity.debugReplayNotification,
+                    object: nil
+                )
+            }
+
             Toggle(
                 "Activate Pro",
                 isOn: Binding(

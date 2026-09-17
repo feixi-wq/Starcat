@@ -12,12 +12,15 @@ import Foundation
 
 enum AppStoreToDirectImportError: Error, Equatable, LocalizedError {
     case storeAppRunning
+    case storeDataUnreadable
     case copyFailed(message: String)
 
     var errorDescription: String? {
         switch self {
         case .storeAppRunning:
             return String.l10n("launch.directImport.error.storeRunning")
+        case .storeDataUnreadable:
+            return String.l10n("launch.directImport.error.storeUnreadable")
         case .copyFailed(let message):
             return String(format: String.l10n("launch.directImport.error.failedFormat"), message)
         }
@@ -68,7 +71,22 @@ struct AppStoreToDirectImportCopyService {
         try stageExistingDirectory(layout.storeStarcatAppSupport, as: "app-support", under: stagingRoot)
         try stageExistingDirectory(layout.storeProductSupport, as: "product-support", under: stagingRoot)
         try stageExistingDirectory(layout.storeKingfisherCache, as: "kingfisher", under: stagingRoot)
-        try stageExistingDirectory(layout.storeWidgetGroup, as: "widgets", under: stagingRoot)
+        // Direct 没有 `group.com.starcat.app.store.widgets` entitlement。
+        // 组容器目录看得见，但一打开就 TCC 拒绝；Widget 快照丢了可以接受，不能阻断主库。
+        try stageExistingDirectory(
+            layout.storeWidgetGroup,
+            as: "widgets",
+            under: stagingRoot,
+            isOptional: true
+        )
+
+        let stagedAppSupport = stagingRoot.appendingPathComponent("app-support", isDirectory: true)
+        guard AppStoreToDirectImportEvaluator.containsReadableStoreUserData(
+            at: stagedAppSupport,
+            fileManager: fileManager
+        ) else {
+            throw AppStoreToDirectImportError.storeDataUnreadable
+        }
 
         try commitStagedDirectory("app-support", under: stagingRoot, to: layout.directStarcatAppSupport)
         try commitStagedDirectory("product-support", under: stagingRoot, to: layout.directProductSupport)
@@ -85,6 +103,8 @@ struct AppStoreToDirectImportCopyService {
                 processInspector: IdleAppStoreProcessInspector(),
                 destinationDefaults: UserDefaults(suiteName: "starcat.direct-import.background") ?? .standard
             ).copyStagedFiles()
+        } catch let error as AppStoreToDirectImportError {
+            throw error
         } catch {
             throw AppStoreToDirectImportError.copyFailed(message: error.localizedDescription)
         }
@@ -101,10 +121,25 @@ struct AppStoreToDirectImportCopyService {
         return true
     }
 
-    private func stageExistingDirectory(_ source: URL, as name: String, under stagingRoot: URL) throws {
+    private func stageExistingDirectory(
+        _ source: URL,
+        as name: String,
+        under stagingRoot: URL,
+        isOptional: Bool = false
+    ) throws {
         guard fileManager.fileExists(atPath: source.path) else { return }
-        let destination = stagingRoot.appendingPathComponent(name, isDirectory: true)
-        try copyTreeSkippingTemporaryFiles(from: source, to: destination)
+        do {
+            let destination = stagingRoot.appendingPathComponent(name, isDirectory: true)
+            try copyTreeSkippingTemporaryFiles(from: source, to: destination)
+        } catch {
+            if isOptional {
+                AppLog.general.warning(
+                    "Skip optional App Store import source \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                return
+            }
+            throw error
+        }
     }
 
     private func commitStagedDirectory(_ name: String, under stagingRoot: URL, to destination: URL) throws {

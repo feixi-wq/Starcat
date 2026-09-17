@@ -141209,6 +141209,23 @@
         }
       }
     },
+    "launch.directImport.error.storeUnreadable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS blocked access to the App Store Starcat folder. Grant Starcat Full Disk Access, then try copying again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS 拦住了 App Store 版 Starcat 的数据目录。请给 Direct 打开「完全磁盘访问权限」，然后再拷贝。"
+          }
+        }
+      }
+    },
     "launch.directImport.error.storeRunning" : {
       "extractionState" : "manual",
       "localizations" : {

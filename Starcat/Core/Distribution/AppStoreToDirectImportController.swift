@@ -46,21 +46,29 @@ final class AppStoreToDirectImportController {
     /// 是否应在 splash 之后弹出确认层。测试 host 永远跳过。
     func shouldPromptOnLaunch() -> Bool {
         guard !TestEnvironment.isRunning else { return false }
-        return AppStoreToDirectImportEvaluator.shouldPrompt(
-            isOfficialDirectBuild: AppStoreToDirectImportEvaluator.isOfficialDirectBuild(
-                bundleIdentifier: bundleIdentifier,
-                channel: channel
-            ),
-            hasRecordedDecision: decisionStore.decision != nil,
-            storeHasImportableData: AppStoreToDirectImportEvaluator.storeHasImportableData(
-                layout: layout,
-                fileManager: fileManager
-            ),
-            destinationIsEmpty: AppStoreToDirectImportEvaluator.destinationIsEmpty(
-                layout: layout,
-                fileManager: fileManager
-            )
+        let isEligible = AppStoreToDirectImportEvaluator.isEligibleDirectBuild(
+            bundleIdentifier: bundleIdentifier,
+            channel: channel
         )
+        let hasRecordedDecision = decisionStore.decision != nil
+        let storeHasImportableData = AppStoreToDirectImportEvaluator.storeHasImportableData(
+            layout: layout,
+            fileManager: fileManager
+        )
+        let destinationIsEmpty = AppStoreToDirectImportEvaluator.destinationIsEmpty(
+            layout: layout,
+            fileManager: fileManager
+        )
+        let shouldPrompt = AppStoreToDirectImportEvaluator.shouldPrompt(
+            isEligibleDirectBuild: isEligible,
+            hasRecordedDecision: hasRecordedDecision,
+            storeHasImportableData: storeHasImportableData,
+            destinationIsEmpty: destinationIsEmpty
+        )
+        AppLog.general.info(
+            "Direct import prompt eligible=\(isEligible, privacy: .public) decision=\(hasRecordedDecision, privacy: .public) store=\(storeHasImportableData, privacy: .public) empty=\(destinationIsEmpty, privacy: .public) show=\(shouldPrompt, privacy: .public) bundle=\(self.bundleIdentifier ?? "nil", privacy: .public) channel=\(self.channel.rawValue, privacy: .public)"
+        )
+        return shouldPrompt
     }
 
     func skipImport() {

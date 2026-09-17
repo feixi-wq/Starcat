@@ -184,6 +184,9 @@ struct LaunchSplashContainer<Content: View>: View {
                 showFirstRunOnboarding = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: AppStoreToDirectImportIdentity.debugReplayNotification)) { _ in
+            presentAppStoreImportPrompt()
+        }
     }
 
     /// 主窗口 content：仅首次引导收束时做 blur / 透明度渐显；冷启动不做 scale，

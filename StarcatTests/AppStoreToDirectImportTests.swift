@@ -12,11 +12,11 @@ import Testing
 @Suite("AppStoreToDirectImport")
 struct AppStoreToDirectImportTests {
 
-    @Test("只在正式 Direct、尚未问过、商店有数据且 Direct 为空时弹出")
+    @Test("只在 Direct、尚未问过、商店有数据且 Direct 为空时弹出")
     func promptsOnlyForOfficialEmptyDirect() {
         #expect(
             AppStoreToDirectImportEvaluator.shouldPrompt(
-                isOfficialDirectBuild: true,
+                isEligibleDirectBuild: true,
                 hasRecordedDecision: false,
                 storeHasImportableData: true,
                 destinationIsEmpty: true
@@ -24,7 +24,7 @@ struct AppStoreToDirectImportTests {
         )
         #expect(
             AppStoreToDirectImportEvaluator.shouldPrompt(
-                isOfficialDirectBuild: false,
+                isEligibleDirectBuild: false,
                 hasRecordedDecision: false,
                 storeHasImportableData: true,
                 destinationIsEmpty: true
@@ -32,7 +32,7 @@ struct AppStoreToDirectImportTests {
         )
         #expect(
             AppStoreToDirectImportEvaluator.shouldPrompt(
-                isOfficialDirectBuild: true,
+                isEligibleDirectBuild: true,
                 hasRecordedDecision: true,
                 storeHasImportableData: true,
                 destinationIsEmpty: true
@@ -40,7 +40,7 @@ struct AppStoreToDirectImportTests {
         )
         #expect(
             AppStoreToDirectImportEvaluator.shouldPrompt(
-                isOfficialDirectBuild: true,
+                isEligibleDirectBuild: true,
                 hasRecordedDecision: false,
                 storeHasImportableData: true,
                 destinationIsEmpty: false
@@ -48,25 +48,31 @@ struct AppStoreToDirectImportTests {
         )
     }
 
-    @Test("Debug Direct 和 App Store 渠道都不算正式 Direct")
-    func rejectsNonOfficialBundles() {
+    @Test("正式 Direct 和 Debug Direct 都可以弹出，App Store 渠道不弹")
+    func acceptsOfficialAndDebugDirect() {
         #expect(
-            AppStoreToDirectImportEvaluator.isOfficialDirectBuild(
+            AppStoreToDirectImportEvaluator.isEligibleDirectBuild(
                 bundleIdentifier: "com.starcat.app.direct.debug",
                 channel: .direct
-            ) == false
+            )
         )
         #expect(
-            AppStoreToDirectImportEvaluator.isOfficialDirectBuild(
+            AppStoreToDirectImportEvaluator.isEligibleDirectBuild(
+                bundleIdentifier: "com.starcat.app.direct",
+                channel: .direct
+            )
+        )
+        #expect(
+            AppStoreToDirectImportEvaluator.isEligibleDirectBuild(
                 bundleIdentifier: "com.starcat.app.direct",
                 channel: .appStore
             ) == false
         )
         #expect(
-            AppStoreToDirectImportEvaluator.isOfficialDirectBuild(
-                bundleIdentifier: "com.starcat.app.direct",
-                channel: .direct
-            )
+            AppStoreToDirectImportEvaluator.isEligibleDirectBuild(
+                bundleIdentifier: "com.starcat.app.store.debug",
+                channel: .appStore
+            ) == false
         )
     }
 
@@ -83,7 +89,39 @@ struct AppStoreToDirectImportTests {
             try Data("debug".utf8).write(to: debugContainer.appendingPathComponent("starcat.sqlite"))
 
             try fileManager.removeItem(at: layout.storeStarcatAppSupport)
+            #expect(AppStoreToDirectImportEvaluator.storeHasImportableData(layout: layout, fileManager: fileManager))
+
+            try fileManager.removeItem(at: layout.storeContainerURL)
             #expect(AppStoreToDirectImportEvaluator.storeHasImportableData(layout: layout, fileManager: fileManager) == false)
+        }
+    }
+
+    @Test("正式商店容器目录存在即可弹出，不要求当前进程能读到 sqlite")
+    func treatsOfficialStoreContainerAsImportable() throws {
+        try withImportHome { _, layout, fileManager in
+            try fileManager.createDirectory(at: layout.storeContainerURL, withIntermediateDirectories: true)
+            #expect(AppStoreToDirectImportEvaluator.storeHasImportableData(layout: layout, fileManager: fileManager))
+            #expect(AppStoreToDirectImportEvaluator.destinationIsEmpty(layout: layout, fileManager: fileManager))
+        }
+    }
+
+    @Test("启动期自动建的 _anonymous 库和空凭据文件不算 Direct 已经用过")
+    func ignoresBootstrapAnonymousDatabaseWhenCheckingDestination() throws {
+        try withImportHome { _, layout, fileManager in
+            let anonymous = layout.directStarcatAppSupport
+                .appendingPathComponent("users/_anonymous", isDirectory: true)
+            try fileManager.createDirectory(at: anonymous, withIntermediateDirectories: true)
+            try Data("anon".utf8).write(to: anonymous.appendingPathComponent("starcat.sqlite"))
+            try Data("{}".utf8).write(
+                to: layout.directStarcatAppSupport.appendingPathComponent("credentials.json")
+            )
+            #expect(AppStoreToDirectImportEvaluator.destinationIsEmpty(layout: layout, fileManager: fileManager))
+
+            let realUser = layout.directStarcatAppSupport
+                .appendingPathComponent("users/20341123", isDirectory: true)
+            try fileManager.createDirectory(at: realUser, withIntermediateDirectories: true)
+            try Data("user".utf8).write(to: realUser.appendingPathComponent("starcat.sqlite"))
+            #expect(AppStoreToDirectImportEvaluator.destinationIsEmpty(layout: layout, fileManager: fileManager) == false)
         }
     }
 
@@ -134,6 +172,54 @@ struct AppStoreToDirectImportTests {
             #expect(fileManager.fileExists(atPath: layout.storeStarcatAppSupport.appendingPathComponent("users/42/starcat.sqlite").path))
             #expect(defaults.string(forKey: "settings.appearanceMode") == "dark")
             #expect(defaults.object(forKey: AppSettings.Keys.isProUser) == nil)
+        }
+    }
+
+    @Test("读不到商店 Widget App Group 时仍拷主库，不把整次导入判失败")
+    func skipsUnreadableStoreWidgetGroup() throws {
+        try withImportHome { _, layout, fileManager in
+            try writeStoreDatabase(layout: layout, fileManager: fileManager, userID: "42")
+            try Data("token".utf8).write(
+                to: layout.storeStarcatAppSupport.appendingPathComponent("credentials.json")
+            )
+            try fileManager.createDirectory(at: layout.storeWidgetGroup, withIntermediateDirectories: true)
+            try Data("widget".utf8).write(
+                to: layout.storeWidgetGroup.appendingPathComponent("widget-snapshot-v1.json")
+            )
+
+            let denying = PermissionDenyingFileManager(deniedPath: layout.storeWidgetGroup.path)
+            let service = AppStoreToDirectImportCopyService(
+                layout: layout,
+                fileManager: denying,
+                processInspector: FixedProcessInspector(isRunning: false),
+                destinationDefaults: try isolatedDefaults()
+            )
+            try service.copyConfirmedData()
+
+            #expect(fileManager.fileExists(atPath: layout.directStarcatAppSupport.appendingPathComponent("users/42/starcat.sqlite").path))
+            #expect(
+                fileManager.fileExists(
+                    atPath: layout.directWidgetGroup.appendingPathComponent("widget-snapshot-v1.json").path
+                ) == false
+            )
+        }
+    }
+
+    @Test("商店容器在但读不到库时拒绝空拷贝，避免记下 imported")
+    func refusesEmptyCopyWhenStoreDataUnreadable() throws {
+        try withImportHome { _, layout, fileManager in
+            try fileManager.createDirectory(at: layout.storeContainerURL, withIntermediateDirectories: true)
+            let service = AppStoreToDirectImportCopyService(
+                layout: layout,
+                fileManager: fileManager,
+                processInspector: FixedProcessInspector(isRunning: false),
+                destinationDefaults: try isolatedDefaults()
+            )
+
+            #expect(throws: AppStoreToDirectImportError.self) {
+                try service.copyConfirmedData()
+            }
+            #expect(AppStoreToDirectImportEvaluator.destinationIsEmpty(layout: layout, fileManager: fileManager))
         }
     }
 
@@ -218,5 +304,32 @@ private struct FixedProcessInspector: AppStoreToDirectImportProcessInspecting {
 
     func isAppStoreStarcatRunning() -> Bool {
         isRunning
+    }
+}
+
+/// 模拟 Direct 没有商店 Widget App Group entitlement：目录存在，一列内容就 TCC 拒绝。
+private final class PermissionDenyingFileManager: FileManager, @unchecked Sendable {
+    let deniedPath: String
+
+    init(deniedPath: String) {
+        self.deniedPath = deniedPath
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        if url.path == deniedPath || url.path.hasPrefix(deniedPath + "/") {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: CocoaError.fileReadNoPermission.rawValue,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "未能打开文件 “group.com.starcat.app.store.widgets”，因为你没有查看它的权限。"
+                ]
+            )
+        }
+        return try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
     }
 }
