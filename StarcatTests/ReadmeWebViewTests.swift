@@ -234,7 +234,9 @@ struct ReadmeWebViewTests {
 
         #expect(script.contains("Math.max(0, overflow - y) <="))
         #expect(script.contains("isNearBottom:"))
-        #expect(script.contains("window.starcatReplaceReadmeStarHistory = function(html)"))
+        #expect(script.contains("window.starcatReplaceReadmeStarHistory = function(html, animate)"))
+        // 入场动画开关必须经参数传入受控函数，而不是让页面脚本自行判断。
+        #expect(script.contains("configureStarHistory(host, animate === true);"))
         #expect(script.contains("host.innerHTML = html;"))
         #expect(script.contains(".starcat-star-history-avatar img"))
         #expect(script.contains("image.remove();"))

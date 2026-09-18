@@ -371,7 +371,10 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             reduceMotion: reduceMotion
         )
         loadIfNeeded(into: webView, context: context)
-        context.coordinator.updateStarHistoryRenderState(starHistoryRenderState)
+        context.coordinator.updateStarHistoryRenderState(
+            starHistoryRenderState,
+            reduceMotion: reduceMotion
+        )
         return webView
     }
 
@@ -388,7 +391,10 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             reduceMotion: reduceMotion
         )
         loadIfNeeded(into: webView, context: context)
-        context.coordinator.updateStarHistoryRenderState(starHistoryRenderState)
+        context.coordinator.updateStarHistoryRenderState(
+            starHistoryRenderState,
+            reduceMotion: reduceMotion
+        )
         scrollToTopIfNeeded(in: webView, context: context)
         performFindIfNeeded(in: webView, context: context)
     }
@@ -548,6 +554,9 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         private var didReportApproachingBottom = false
         /// App 关动画或系统 Reduce Motion 时，DOM 入场一律关掉。
         private var translationReduceMotion = false
+        /// 同上，作用于 Star History 卡片的曲线生长入场；WebView 内 CSS 的
+        /// `prefers-reduced-motion` 只感知系统偏好，App 内开关必须由 Swift 侧 OR 后传入。
+        private var starHistoryReduceMotion = false
         private var mermaidDocumentRevision = 0
         private var mermaidRuntimeTask: Task<Void, Never>?
         private var findTask: Task<Void, Never>?
@@ -713,8 +722,13 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         ///
         /// HTML 由 Swift 固定模板生成并完成转义，通过 `arguments` 桥接给 WebKit；这里不把
         /// HTML 插进 JavaScript 源码，避免引号或换行改变脚本结构。revision 相同则完全跳过。
-        func updateStarHistoryRenderState(_ state: ReadmeStarHistoryRenderState) {
+        /// `animate` 与翻译入场同一门控：状态声明「这是一次入场」且未开 Reduce Motion。
+        func updateStarHistoryRenderState(
+            _ state: ReadmeStarHistoryRenderState,
+            reduceMotion: Bool
+        ) {
             pendingStarHistoryRenderState = state
+            starHistoryReduceMotion = reduceMotion
             applyStarHistoryRenderStateIfNeeded()
         }
 
@@ -725,6 +739,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
 
             let state = pendingStarHistoryRenderState
             let revision = state.revision
+            let animateEntrance = state.prefersAnimatedEntrance && !starHistoryReduceMotion
             starHistoryDOMTask?.cancel()
             starHistoryDOMTask = Task { @MainActor [weak self, weak webView] in
                 guard let self, let webView, !Task.isCancelled else { return }
@@ -734,9 +749,12 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                         if (typeof window.starcatReplaceReadmeStarHistory !== 'function') {
                             throw new Error('Starcat README Star History bridge is unavailable');
                         }
-                        window.starcatReplaceReadmeStarHistory(html);
+                        window.starcatReplaceReadmeStarHistory(html, animate);
                         """,
-                        arguments: ["html": state.html ?? ""],
+                        arguments: [
+                            "html": state.html ?? "",
+                            "animate": animateEntrance
+                        ],
                         in: nil,
                         contentWorld: .page
                     )
@@ -883,7 +901,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 return Math.max(0, scrollHeight - clientHeight);
             }
 
-            window.starcatReplaceReadmeStarHistory = function(html) {
+            window.starcatReplaceReadmeStarHistory = function(html, animate) {
                 var host = document.getElementById('starcat-readme-star-history');
                 if (!host) { return; }
                 if (host.starcatHistoryCleanup) { host.starcatHistoryCleanup(); }
@@ -912,7 +930,9 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                     }, { once: true });
                 });
                 host.hidden = false;
-                configureStarHistory(host);
+                // animate 由 Swift 侧 OR 过 Reduce Motion 后传入：true 只在本仓首张
+                // 正式卡片（骨架 → 曲线的入场帧）出现，重渲染一律 false。
+                configureStarHistory(host, animate === true);
                 schedule();
             };
 

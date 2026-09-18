@@ -281,8 +281,9 @@ enum ReadmeStarHistoryDOM {
     """
 
     /// 在 README 文档自己的闭包中声明，避免暴露给远端内容新的 native bridge。
+    /// `animate` 仅在本仓首张正式卡片入场（且 Swift 侧确认未开 Reduce Motion）时为 true。
     static let script = """
-    function configureStarHistory(host) {
+    function configureStarHistory(host, animate) {
         var tags = host.querySelector('.starcat-star-history-tags');
         var languageChip = tags && tags.querySelector('.starcat-star-history-tag-language');
         var topicChips = tags ? Array.from(tags.querySelectorAll('.starcat-star-history-tag-topic')) : [];
@@ -354,6 +355,49 @@ enum ReadmeStarHistoryDOM {
         var start = points[0][0], end = points[points.length - 1][0], duration = Math.max(1, end - start);
         var width = 0, height = 0, left = 44, right = 12, top = 64, bottom = 30;
         var selected = points.length - 1, tooltipIndex = -1, interacting = false;
+        // ---- 入场「描边生长」动画（详见 playReveal）----
+        // 样式全部走内联，结束后由 finishReveal 清空；任何残留的 dasharray 都会在
+        // 后续 layout() 重写 points 后把新几何裁短，因此所有退出路径都必须清干净。
+        var revealActive = false, revealWidth = 0, revealHeight = 0;
+        var revealLine = svg.querySelector('.starcat-star-history-line');
+        var revealArea = svg.querySelector('.starcat-star-history-area');
+        function finishReveal() {
+            if (!revealActive) { return; }
+            revealActive = false;
+            revealLine.style.transition = ''; revealLine.style.strokeDasharray = ''; revealLine.style.strokeDashoffset = '';
+            revealArea.style.transition = ''; revealArea.style.opacity = '';
+            markerGroup.style.transition = ''; markerGroup.style.opacity = '';
+            callouts.style.transition = ''; callouts.style.opacity = '';
+        }
+        function playReveal() {
+            // 折线用 dasharray = 总长度 + dashoffset 从总长度过渡到 0，实现「逐段描出」；
+            // 面积、事件标记与标注跟随曲线进度延迟淡入。坐标轴与网格线保持静态。
+            var length = revealLine.getTotalLength();
+            if (!(length > 0)) { return; }
+            revealActive = true;
+            revealWidth = width; revealHeight = height;
+            revealLine.style.transition = 'none';
+            revealLine.style.strokeDasharray = String(length);
+            revealLine.style.strokeDashoffset = String(length);
+            revealArea.style.opacity = '0';
+            markerGroup.style.opacity = '0';
+            callouts.style.opacity = '0';
+            // 强制同步 reflow 让「完全隐藏」初值先生效，再挂过渡释放，避免起始帧闪完整曲线。
+            void revealLine.getBoundingClientRect();
+            revealLine.style.transition = 'stroke-dashoffset 1.1s cubic-bezier(.4, 0, .2, 1)';
+            revealLine.style.strokeDashoffset = '0';
+            revealArea.style.transition = 'opacity .7s ease .35s';
+            revealArea.style.opacity = '1';
+            markerGroup.style.transition = 'opacity .4s ease .75s';
+            markerGroup.style.opacity = '1';
+            callouts.style.transition = 'opacity .4s ease .75s';
+            callouts.style.opacity = '1';
+            revealLine.addEventListener('transitionend', function(event) {
+                if (event.propertyName === 'stroke-dashoffset') { finishReveal(); }
+            }, { once: true });
+            // 离屏 WebView 的渲染时钟可能停滞导致 transitionend 不触发；超时兜底收尾。
+            setTimeout(finishReveal, 1700);
+        }
         function compact(value) {
             var magnitude = Math.abs(value);
             if (magnitude >= 999500) { return shortNumber.format(value / 1000000) + 'M'; }
@@ -437,6 +481,10 @@ enum ReadmeStarHistoryDOM {
             if (!chart.isConnected) { return; }
             layoutMetadata();
             width = chart.clientWidth; height = chart.clientHeight;
+            // 入场动画期间发生「真实」尺寸变化时直接跳到终态：本函数会重写 points，
+            // 旧 dasharray/过渡中的 dashoffset 都不再匹配新几何，续播只会裁出错形。
+            // 初次 ResizeObserver 回调尺寸与 revealWidth/Height 相同，不会误杀动画。
+            if (revealActive && (width !== revealWidth || height !== revealHeight)) { finishReveal(); }
             if (width < 100) { return; }
             svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
             var coordinates = rendered.map(function(point) { return x(point) + ',' + y(point); }).join(' ');
@@ -513,6 +561,9 @@ enum ReadmeStarHistoryDOM {
         if (journey) { observer.observe(journey); }
         host.starcatHistoryCleanup = function() { observer.disconnect(); };
         layout();
+        // 首帧 layout 已把 points 写成真实坐标，此时再启动入场动画；
+        // 后续 ResizeObserver 的初次回调尺寸不变，不会触发 finishReveal。
+        if (animate) { playReveal(); }
     }
     """
 }
