@@ -919,6 +919,8 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 if (embedded || !html) {
                     host.replaceChildren();
                     host.hidden = true;
+                    // 卡片被移除：尚未兑现的入场动画一并取消，不转移到之后无关的卡片。
+                    host.starcatHistoryRevealOwed = false;
                     schedule();
                     return;
                 }

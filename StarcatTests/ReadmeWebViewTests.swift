@@ -237,6 +237,14 @@ struct ReadmeWebViewTests {
         #expect(script.contains("window.starcatReplaceReadmeStarHistory = function(html, animate)"))
         // 入场动画开关必须经参数传入受控函数，而不是让页面脚本自行判断。
         #expect(script.contains("configureStarHistory(host, animate === true);"))
+        // 曲线动画要等卡片首次进入视口才播放；未兑现的入场债转移给替换卡，
+        // 卡片被移除时债务取消，避免动画消耗在屏幕外或转移到无关卡片。
+        #expect(script.contains("host.starcatHistoryRevealOwed = false;"))
+        #expect(script.contains("new IntersectionObserver"))
+        #expect(script.contains("scheduleRevealWhenVisible"))
+        // 总星标数字与曲线同帧从 0 数到当前总数，退出路径统一恢复 Swift 原文。
+        #expect(script.contains("starcat-star-history-current-value strong"))
+        #expect(script.contains("revealTotal.textContent = revealTotalText;"))
         #expect(script.contains("host.innerHTML = html;"))
         #expect(script.contains(".starcat-star-history-avatar img"))
         #expect(script.contains("image.remove();"))

@@ -642,6 +642,8 @@ struct ReadmeStarHistoryPreviewTests {
             context: ReadmeStarHistoryHTMLRenderer.ReadmeStarHistoryRenderContext.prepare(language: Self.repo().language)
         ))
         #expect(html.contains("<strong>50.5K</strong>"))
+        // 总星标数字 ticker 的数值来源：元数据原始值，不能用历史曲线最后读数。
+        #expect(html.contains(#"data-count="50511""#))
         #expect(!html.contains("<script>"))
         #expect(!html.contains("<img src=x"))
         #expect(html.contains("&lt;script&gt;"))
