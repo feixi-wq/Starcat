@@ -1526,9 +1526,10 @@ final class GitHubStarListAIGroupingSession {
     }
 
     private func isRateLimited(_ error: Error) -> Bool {
-        guard let aiError = error as? AIClientError else { return false }
-        if case .rateLimited = aiError { return true }
-        return false
+        if let aiError = error as? AIClientError, case .rateLimited = aiError {
+            return true
+        }
+        return (error as? TypeSafeClientError)?.isRateLimitLike == true
     }
 
     private func integrate(

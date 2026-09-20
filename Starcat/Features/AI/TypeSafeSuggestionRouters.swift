@@ -14,8 +14,8 @@
 //  - 分组:仅 `session.mode == .manual`(用户手动整理 / 多选批量整理 / 手动草稿恢复)
 //    走 Jev;AutoTidyScheduler 的自动整理与 auto-apply 继续走 LLM,自动写入链路
 //    完全不接触 Jev;
-//  - 标签:仅「纯标签批量」(generateBatchTagSuggestions)走 Jev;摘要+标签混合
-//    洞察(insight 任务)不接,避免一次任务拆两个 Provider 串行调用;
+//  - 标签:仅手动「纯标签批量」(generateBatchTagSuggestions)走 Jev;自动整理与摘要+标签
+//    混合洞察(insight 任务)不接,避免自动写入链路使用实验 Provider，也避免双 Provider 串行调用;
 //  - 失败语义:Jev 失败不静默回退 LLM(双跑烧两份钱 + 加倍延迟),错误沿既有
 //    失败分类上抛,由会话 / 队列现有的重试与展示语义接管。
 //
@@ -116,18 +116,50 @@ final class TypeSafeBatchAIInsightRouter: BatchAIInsightProviding {
     }
 
     func ensureGenerationClientsReady(includeSummary: Bool, includeTags: Bool) throws {
-        // 纯标签批量且 Jev 生效时,标签生成不依赖任何 LLM Provider,
-        // 跳过既有预检让「只配了 Jev Key」的用户也能跑标签整理;
-        // 其余组合(含摘要)透传,预检语义不变。
-        if includeTags && !includeSummary && isTagsRoutingToTypesafe { return }
-        try base.ensureGenerationClientsReady(includeSummary: includeSummary, includeTags: includeTags)
+        try ensureGenerationClientsReady(
+            includeSummary: includeSummary,
+            includeTags: includeTags,
+            invocationMode: .manual
+        )
+    }
+
+    func ensureGenerationClientsReady(
+        includeSummary: Bool,
+        includeTags: Bool,
+        invocationMode: BatchAIInvocationMode
+    ) throws {
+        // 只有人工纯标签批量且 Jev 生效时才跳过 LLM 预检，让只配置 Jev Key 的用户
+        // 也能生成建议；自动整理仍必须通过原 Provider 预检，不能借 UI 静默标志越界。
+        if invocationMode == .manual,
+           includeTags,
+           !includeSummary,
+           isTagsRoutingToTypesafe {
+            return
+        }
+        try base.ensureGenerationClientsReady(
+            includeSummary: includeSummary,
+            includeTags: includeTags,
+            invocationMode: invocationMode
+        )
     }
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
         tagHintsByRepoID: [Int64: AITagHints]
     ) async throws -> [Int64: [AITagSuggestion]] {
-        if isTagsRoutingToTypesafe {
+        try await generateBatchTagSuggestions(
+            for: repos,
+            tagHintsByRepoID: tagHintsByRepoID,
+            invocationMode: .manual
+        )
+    }
+
+    func generateBatchTagSuggestions(
+        for repos: [Repo],
+        tagHintsByRepoID: [Int64: AITagHints],
+        invocationMode: BatchAIInvocationMode
+    ) async throws -> [Int64: [AITagSuggestion]] {
+        if invocationMode == .manual, isTagsRoutingToTypesafe {
             do {
                 return try await typesafeProvider.generateBatchTagSuggestions(
                     for: repos,
@@ -142,7 +174,8 @@ final class TypeSafeBatchAIInsightRouter: BatchAIInsightProviding {
         }
         return try await base.generateBatchTagSuggestions(
             for: repos,
-            tagHintsByRepoID: tagHintsByRepoID
+            tagHintsByRepoID: tagHintsByRepoID,
+            invocationMode: invocationMode
         )
     }
 

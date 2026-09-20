@@ -154,9 +154,11 @@ final class TypeSafeDecisionService {
 
             var suggestions: [GitHubStarListAISuggestion] = []
             for candidate in askableCandidates {
-                let answer = response.answers["list::\(candidate.listId)"]
-                guard let probability = answer?.noul,
-                      probability.isFinite else { continue }
+                let questionID = "list::\(candidate.listId)"
+                let probability = try Self.validatedNoulProbability(
+                    in: response,
+                    questionID: questionID
+                )
                 guard probability >= Self.groupingProbabilityFloor else { continue }
                 suggestions.append(Self.suggestion(listId: candidate.listId, probability: probability))
             }
@@ -181,15 +183,15 @@ final class TypeSafeDecisionService {
 
     /// 单个 List 的隶属判断问题。
     ///
-    /// List 的 instruction 与 repo 内容都是不可信数据,只作为被评估对象出现在
-    /// state / criteria 文本里;Jev 是只读分类器,没有工具调用面,注入面比 LLM 小,
-    /// 但 criteria 文本仍由本方法固定模板拼出,不回显任何「指令式」内容。
+    /// List 的 instruction 与 repo 内容都是不可信数据，只作为分类输入；Jev 当前没有
+    /// 工具调用或写入能力，但这不是安全边界，最终结果仍必须经过封闭集校验和人工确认。
     private static func listMembershipQuestion(
         for candidate: GitHubStarListAIContext
     ) -> TypeSafeQuestion {
         .noul(
             instructions: """
-            Should the repository described in `repository` be added to the user's GitHub list "\(candidate.name)"? \
+            Should the repository described by `repository` and `readmeExcerpt` be added to the user's GitHub list "\(candidate.name)"? \
+            `existingListNames` lists memberships the repository already has. \
             The user's rule for this list is: \(candidate.instruction)
             """,
             criteria: TypeSafeNoulCriteria(
@@ -282,10 +284,12 @@ final class TypeSafeDecisionService {
 
             var suggestions: [AITagSuggestion] = []
             for name in candidates {
-                let answer = response.answers["tag::\(name)"]
-                guard let probability = answer?.noul,
-                      probability.isFinite,
-                      probability >= Self.tagProbabilityFloor else { continue }
+                let questionID = "tag::\(name)"
+                let probability = try Self.validatedNoulProbability(
+                    in: response,
+                    questionID: questionID
+                )
+                guard probability >= Self.tagProbabilityFloor else { continue }
                 suggestions.append(AITagSuggestion(
                     name: name,
                     confidence: min(max(probability, 0), 1),
@@ -307,14 +311,31 @@ final class TypeSafeDecisionService {
     private static func tagMembershipQuestion(for tagName: String) -> TypeSafeQuestion {
         .noul(
             instructions: """
-            Should the existing user tag "\(tagName)" be applied to the repository described in `repository`? \
-            `existing_tags` lists tags the repository already has; do not re-suggest synonyms of them.
+            Should the existing user tag "\(tagName)" be applied to the repository described by `repository` and `readmeExcerpt`? \
+            `existingTags` lists tags the repository already has; do not re-suggest synonyms of them.
             """,
             criteria: TypeSafeNoulCriteria(
                 true: "The tag accurately describes an important aspect of this repository.",
                 false: "The tag is only loosely related, or the repository already has a tag with the same meaning."
             )
         )
+    }
+
+    /// System One 对本次发送的每个 Noul 问题都必须返回一个 0...1 的 Noul 概率。
+    /// 缺键或类型不符不是“无匹配”，否则协议漂移 / 部分响应会被静默写成成功结果。
+    private static func validatedNoulProbability(
+        in response: TypeSafeSystemOneResponse,
+        questionID: String
+    ) throws -> Double {
+        guard let answer = response.answers[questionID],
+              answer.type == "noul",
+              let probability = answer.noul,
+              probability.isFinite,
+              (0...1).contains(probability)
+        else {
+            throw TypeSafeClientError.invalidAnswer(questionID: questionID)
+        }
+        return probability
     }
 }
 

@@ -191,6 +191,9 @@ struct BatchAIQueueServiceTests {
         #expect(service.pendingTagReviewCount == 1)
         #expect(service.selectedRepoIDsForTagApplication == [repo.id])
         #expect(service.selectedTagReviewRepositoryCount == 1)
+        #expect(provider.batchTagGenerationCount == 1)
+        #expect(provider.lastBatchInvocationMode == .manual)
+        #expect(provider.generationCount == 0)
         #expect(try await repoTagRepository.fetchTags(forRepo: repo.id).isEmpty)
     }
 
@@ -214,6 +217,29 @@ struct BatchAIQueueServiceTests {
         #expect(BatchAIQueuePresentationStore.primaryState(for: job) == .failed)
         #expect(service.failedCount == 1)
         #expect(service.completedCount == 0)
+    }
+
+    @Test("TypeSafe 已耗尽传输重试后不再触发队列级乘法重试")
+    func typeSafeFailureDoesNotRetryAtQueueLayer() async throws {
+        let provider = ImmediateBatchAIInsightProvider(
+            suggestions: [],
+            batchTagError: .server(statusCode: 500)
+        )
+        let service = try makeService(insightProvider: provider)
+        var repo = Repo.makeMinimal(owner: "acme", name: "typesafe-failure")
+        repo.id = 514
+        var options = BatchAIQueueOptions()
+        options.actions = [.tags]
+        options.maxRetries = 3
+
+        #expect(service.start(repos: [repo], options: options))
+        await waitUntilStopped(service)
+
+        let job = try #require(service.jobs.first)
+        #expect(job.status == .failed)
+        #expect(job.failure == .typeSafe(.server(statusCode: 500)))
+        #expect(job.attempts == 1)
+        #expect(provider.batchTagGenerationCount == 1)
     }
 
     @Test("只生成摘要时允许标签建议为空")
@@ -369,13 +395,14 @@ struct BatchAIQueueServiceTests {
         options.autoApplyTags = true
         options.confidenceThreshold = 0.85
 
-        #expect(service.start(repos: [repo], options: options, silent: true))
+        #expect(service.start(repos: [repo], options: options, invocationMode: .automatic))
         await waitUntilStopped(service)
 
         let job = try #require(service.jobs.first)
         #expect(job.status == .ignored)
         #expect(job.tagReviewState == .notRequired)
         #expect(job.belowThresholdTags.map(\.name) == ["Swift"])
+        #expect(provider.lastBatchInvocationMode == .automatic)
         #expect(service.pendingTagReviewCount == 0)
     }
 
@@ -496,9 +523,10 @@ struct BatchAIQueueServiceTests {
         #expect(service.start(repos: repos, options: options))
         await waitUntilStopped(service)
 
-        #expect(provider.batchSizes.isEmpty)
-        #expect(provider.individualCallCount == 20)
-        #expect(provider.maximumActiveIndividualCalls == 5)
+        #expect(provider.batchSizes.count == 20)
+        #expect(provider.batchSizes.allSatisfy { $0 == 1 })
+        #expect(provider.individualCallCount == 0)
+        #expect(provider.maximumActiveBatchCalls == 5)
         #expect(service.jobs.allSatisfy { $0.status == .completed })
         #expect(service.processingJobIDs.isEmpty)
     }
@@ -523,7 +551,7 @@ struct BatchAIQueueServiceTests {
         #expect(service.jobs.first(where: { $0.repoId == blockedRepoID })?.status == .processing)
         #expect(service.jobs.first(where: { $0.repoId == 1_100 })?.status == .completed)
         #expect(service.jobs.first(where: { $0.repoId == 1_102 })?.status == .completed)
-        #expect(provider.individualCallCount == 3)
+        #expect(provider.batchCallCount == 3)
 
         provider.releaseBlockedCall()
         await waitUntilStopped(service)
@@ -1074,12 +1102,16 @@ private final class BlockingBatchAIInsightProvider: BatchAIInsightProviding {
 @MainActor
 private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
     let suggestions: [AITagSuggestion]
+    let batchTagError: TypeSafeClientError?
     private(set) var lastCodeContextEnabledOverride: Bool?
     private(set) var lastExternalContextEnabledOverride: Bool?
     private(set) var generationCount = 0
+    private(set) var batchTagGenerationCount = 0
+    private(set) var lastBatchInvocationMode: BatchAIInvocationMode?
 
-    init(suggestions: [AITagSuggestion]) {
+    init(suggestions: [AITagSuggestion], batchTagError: TypeSafeClientError? = nil) {
         self.suggestions = suggestions
+        self.batchTagError = batchTagError
     }
 
     func ensureGenerationClientsReady(includeSummary: Bool, includeTags: Bool) throws {}
@@ -1088,7 +1120,18 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
         for repos: [Repo],
         tagHintsByRepoID: [Int64: AITagHints]
     ) async throws -> [Int64: [AITagSuggestion]] {
-        Dictionary(uniqueKeysWithValues: repos.map { ($0.id, suggestions) })
+        batchTagGenerationCount += 1
+        if let batchTagError { throw batchTagError }
+        return Dictionary(uniqueKeysWithValues: repos.map { ($0.id, suggestions) })
+    }
+
+    func generateBatchTagSuggestions(
+        for repos: [Repo],
+        tagHintsByRepoID: [Int64: AITagHints],
+        invocationMode: BatchAIInvocationMode
+    ) async throws -> [Int64: [AITagSuggestion]] {
+        lastBatchInvocationMode = invocationMode
+        return try await generateBatchTagSuggestions(for: repos, tagHintsByRepoID: tagHintsByRepoID)
     }
 
     func generateBatchInsight(
@@ -1225,6 +1268,7 @@ private final class StaggeredBatchAIInsightProvider: BatchAIInsightProviding {
     private let blockedRepoID: Int64
     private var blockedContinuation: CheckedContinuation<Void, Never>?
     private var blockedStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var batchCallCount = 0
     private(set) var individualCallCount = 0
 
     init(blockedRepoID: Int64) {
@@ -1237,8 +1281,19 @@ private final class StaggeredBatchAIInsightProvider: BatchAIInsightProviding {
         for repos: [Repo],
         tagHintsByRepoID: [Int64: AITagHints]
     ) async throws -> [Int64: [AITagSuggestion]] {
-        Issue.record("仓库级 Worker 不应调用批量标签接口")
-        return [:]
+        batchCallCount += 1
+        let repo = try #require(repos.first)
+        if repo.id == blockedRepoID {
+            await withCheckedContinuation { continuation in
+                blockedContinuation = continuation
+                let waiters = blockedStartWaiters
+                blockedStartWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+        return [
+            repo.id: [AITagSuggestion(name: "Test", confidence: 0.9, reason: "test fixture")]
+        ]
     }
 
     func generateBatchInsight(
@@ -1325,7 +1380,12 @@ private final class ConcurrentBatchAIInsightProvider: BatchAIInsightProviding {
         maximumActiveBatchCalls = max(maximumActiveBatchCalls, activeBatchCalls)
         defer { activeBatchCalls -= 1 }
         try await Task.sleep(for: delay)
-        return Dictionary(uniqueKeysWithValues: repos.map { ($0.id, []) })
+        return Dictionary(uniqueKeysWithValues: repos.map { repo in
+            (
+                repo.id,
+                [AITagSuggestion(name: "Test", confidence: 0.9, reason: "test fixture")]
+            )
+        })
     }
 
     func generateBatchInsight(

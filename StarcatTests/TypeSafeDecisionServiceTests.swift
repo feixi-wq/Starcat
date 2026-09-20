@@ -178,6 +178,49 @@ struct TypeSafeClientTests {
         #expect(response.answers["q1"]?.noul == 0.87)
         #expect(URLProtocolStub.receivedRequests.count == 2)
     }
+
+    @Test("500 与瞬时传输错误在客户端层有限重试")
+    func retriesServerAndTransportFailures() async throws {
+        for failure in ["server", "transport"] {
+            let client = makeClient()
+            let counter = RequestCounter()
+            URLProtocolStub.requestHandler = { request in
+                counter.increment()
+                if counter.value == 1 {
+                    if failure == "transport" { throw URLError(.networkConnectionLost) }
+                    return self.response(for: request, status: 500, body: "{}")
+                }
+                return self.response(for: request, status: 200, body: self.successBody)
+            }
+
+            let response = try await client.evaluate(
+                state: "demo",
+                model: "jev-1.13.0",
+                questions: ["q1": .noul(instructions: "demo", criteria: nil)],
+                apiKey: "tsk-test"
+            )
+            #expect(response.answers["q1"]?.noul == 0.87)
+            #expect(URLProtocolStub.receivedRequests.count == 2)
+        }
+    }
+
+    @Test("422 属于永久请求错误且不重试")
+    func validationDoesNotRetry() async throws {
+        let client = makeClient()
+        URLProtocolStub.requestHandler = { request in
+            self.response(for: request, status: 422, body: #"{"detail":"bad state"}"#)
+        }
+
+        await #expect(throws: TypeSafeClientError.validation("bad state")) {
+            _ = try await client.evaluate(
+                state: "demo",
+                model: "jev-1.13.0",
+                questions: ["q1": .noul(instructions: "demo", criteria: nil)],
+                apiKey: "tsk-test"
+            )
+        }
+        #expect(URLProtocolStub.receivedRequests.count == 1)
+    }
 }
 
 /// URLProtocol 的 handler 闭包是 @Sendable,用锁计数器跨隔离记录次数。
@@ -239,10 +282,16 @@ struct TypeSafeDecisionServiceTests {
         }
     }
 
-    private func questionKeysOfLastRequest() throws -> [String] {
+    private func lastRequestBody() throws -> [String: Any] {
         let request = try #require(URLProtocolStub.receivedRequests.last)
-        let body = try JSONSerialization.jsonObject(with: #require(request.httpBody)) as? [String: Any]
-        return Array((body?["questions"] as? [String: Any])?.keys ?? [:].keys)
+        let data = try #require(request.httpBody)
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try #require(object as? [String: Any])
+    }
+
+    private func questionKeysOfLastRequest() throws -> [String] {
+        let body = try lastRequestBody()
+        return Array((body["questions"] as? [String: Any])?.keys ?? [:].keys)
     }
 
     private func makeCandidate(id: String, name: String, instruction: String) -> GitHubStarListAIContext {
@@ -286,6 +335,18 @@ struct TypeSafeDecisionServiceTests {
         #expect(suggestions[0].listId == "ml")
         #expect(abs(suggestions[0].confidence - 0.9) < 0.0001)
         #expect(suggestions[0].reason.hasPrefix("Jev P="))
+
+        let body = try lastRequestBody()
+        let state = try #require(body["state"] as? [String: Any])
+        #expect(state["repository"] != nil)
+        #expect(state["readmeExcerpt"] != nil)
+        #expect(state["existingListNames"] != nil)
+        let questions = try #require(body["questions"] as? [String: Any])
+        let question = try #require(questions["list::ml"] as? [String: Any])
+        let instructions = try #require(question["instructions"] as? String)
+        #expect(instructions.contains("`repository`"))
+        #expect(instructions.contains("`readmeExcerpt`"))
+        #expect(instructions.contains("`existingListNames`"))
     }
 
     @Test("分组:已有 membership 的 List 不进入问题集")
@@ -296,7 +357,7 @@ struct TypeSafeDecisionServiceTests {
         try storeKey(keychain)
 
         stubAnswers("""
-        { "model": "jev-1.13.0", "answers": { "list::ml": { "type": "noul", "noul": 0.9 } } }
+        { "model": "jev-1.13.0", "answers": { "list::web": { "type": "noul", "noul": 0.9 } } }
         """)
 
         var repo = Repo.makeMinimal(owner: "acme", name: "r1")
@@ -335,6 +396,46 @@ struct TypeSafeDecisionServiceTests {
         #expect(URLProtocolStub.receivedRequests.isEmpty)
     }
 
+    @Test("分组:完整低概率响应是有效无匹配")
+    func groupingAcceptsCompleteLowProbabilityResponse() async throws {
+        let keychain = InMemoryKeychain()
+        let settings = AppSettings(defaults: defaults, keychain: keychain)
+        let service = try makeService(settings: settings, keychain: keychain)
+        try storeKey(keychain)
+        stubAnswers(#"{"model":"jev-1.13.0","answers":{"list::ml":{"type":"noul","noul":0.2}}}"#)
+
+        var repo = Repo.makeMinimal(owner: "acme", name: "r1")
+        repo.id = 1
+        let results = try await service.generateGitHubListSuggestions(
+            for: [repo],
+            candidates: [makeCandidate(id: "ml", name: "ML", instruction: "machine learning tools")],
+            existingListIDsByRepo: [1: []],
+            existingListNamesByRepo: [1: []]
+        )
+
+        #expect(results[1] == [])
+    }
+
+    @Test("分组:缺失必答键不能伪装成无匹配")
+    func groupingRejectsMissingAnswer() async throws {
+        let keychain = InMemoryKeychain()
+        let settings = AppSettings(defaults: defaults, keychain: keychain)
+        let service = try makeService(settings: settings, keychain: keychain)
+        try storeKey(keychain)
+        stubAnswers(#"{"model":"jev-1.13.0","answers":{}}"#)
+
+        var repo = Repo.makeMinimal(owner: "acme", name: "r1")
+        repo.id = 1
+        await #expect(throws: TypeSafeClientError.invalidAnswer(questionID: "list::ml")) {
+            _ = try await service.generateGitHubListSuggestions(
+                for: [repo],
+                candidates: [makeCandidate(id: "ml", name: "ML", instruction: "machine learning tools")],
+                existingListIDsByRepo: [1: []],
+                existingListNamesByRepo: [1: []]
+            )
+        }
+    }
+
     // MARK: 标签
 
     @Test("标签:按概率生成建议并截断到数量上限")
@@ -370,6 +471,38 @@ struct TypeSafeDecisionServiceTests {
         // 默认上限 3:ai(0.9)/cli(0.8)/swift(0.7) 入选;unrelated(0.3) 低于 0.5 下限被过滤。
         #expect(suggestions.map(\.name) == ["ai", "cli", "swift"])
         #expect(suggestions.map(\.confidence) == [0.9, 0.8, 0.7])
+
+        let body = try lastRequestBody()
+        let state = try #require(body["state"] as? [String: Any])
+        #expect(state["readmeExcerpt"] != nil)
+        #expect(state["existingTags"] != nil)
+        #expect(state["existing_tags"] == nil)
+        let questions = try #require(body["questions"] as? [String: Any])
+        let question = try #require(questions["tag::ai"] as? [String: Any])
+        let instructions = try #require(question["instructions"] as? String)
+        #expect(instructions.contains("`readmeExcerpt`"))
+        #expect(instructions.contains("`existingTags`"))
+        #expect(!instructions.contains("existing_tags"))
+    }
+
+    @Test("标签:答案类型或概率范围无效时整仓失败")
+    func tagsRejectInvalidNoulAnswer() async throws {
+        let keychain = InMemoryKeychain()
+        let settings = AppSettings(defaults: defaults, keychain: keychain)
+        let service = try makeService(settings: settings, keychain: keychain)
+        try storeKey(keychain)
+        stubAnswers(
+            #"{"model":"jev-1.13.0","answers":{"tag::ai":{"type":"choice","noul":1.2}}}"#
+        )
+
+        var repo = Repo.makeMinimal(owner: "acme", name: "r1")
+        repo.id = 1
+        await #expect(throws: TypeSafeClientError.invalidAnswer(questionID: "tag::ai")) {
+            _ = try await service.generateBatchTagSuggestions(
+                for: [repo],
+                tagHintsByRepoID: [1: AITagHints(repoTags: [], libraryTags: ["ai"])]
+            )
+        }
     }
 
     @Test("标签:repo 已有标签不再进入问题集")
@@ -497,7 +630,19 @@ struct TypeSafeSuggestionRoutersTests {
                 httpVersion: "HTTP/1.1",
                 headerFields: ["Content-Type": "application/json"]
             )!
-            return (response, Data(#"{"model":"jev-1.13.0","answers":{}}"#.utf8))
+            let requestBody = try #require(request.httpBody)
+            let object = try #require(
+                JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+            )
+            let questions = try #require(object["questions"] as? [String: Any])
+            let answers = Dictionary(uniqueKeysWithValues: questions.keys.map { questionID in
+                (questionID, ["type": "noul", "noul": 0.1] as [String: Any])
+            })
+            let body = try JSONSerialization.data(withJSONObject: [
+                "model": "jev-1.13.0",
+                "answers": answers
+            ])
+            return (response, body)
         }
         let database = try InMemoryDatabaseManager()
         return TypeSafeDecisionService(
@@ -608,7 +753,7 @@ struct TypeSafeSuggestionRoutersTests {
 
     // MARK: 批量洞察路由
 
-    @Test("纯标签批量 + Jev 生效 → 走 Jev 且跳过 LLM 预检")
+    @Test("仅人工纯标签批量可跳过 LLM 预检")
     func batchTagsRouteAndPreflightBypass() throws {
         let keychain = InMemoryKeychain()
         try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
@@ -623,15 +768,31 @@ struct TypeSafeSuggestionRoutersTests {
 
         // LLM Provider 未就绪(会抛错)时,纯标签预检被跳过,不再阻断批量启动。
         #expect(throws: Never.self) {
-            try router.ensureGenerationClientsReady(includeSummary: false, includeTags: true)
+            try router.ensureGenerationClientsReady(
+                includeSummary: false,
+                includeTags: true,
+                invocationMode: .manual
+            )
+        }
+        // 自动整理即使开关与 Key 都就绪，也必须走原 LLM 预检。
+        #expect(throws: CocoaError.self) {
+            try router.ensureGenerationClientsReady(
+                includeSummary: false,
+                includeTags: true,
+                invocationMode: .automatic
+            )
         }
         // 含摘要的组合仍透传既有预检语义。
         #expect(throws: CocoaError.self) {
-            try router.ensureGenerationClientsReady(includeSummary: true, includeTags: true)
+            try router.ensureGenerationClientsReady(
+                includeSummary: true,
+                includeTags: true,
+                invocationMode: .manual
+            )
         }
     }
 
-    @Test("标签批量路由到 Jev;开关关回退 LLM")
+    @Test("人工标签批量路由到 Jev;自动模式与开关关闭回退 LLM")
     func batchTagsRoutingMatrix() async throws {
         // 开:走 Jev
         do {
@@ -644,9 +805,21 @@ struct TypeSafeSuggestionRoutersTests {
                 typesafeProvider: try makeJevStubService(settings: settings, keychain: keychain),
                 settings: settings
             )
-            _ = try await router.generateBatchTagSuggestions(for: sampleRepos, tagHintsByRepoID: [1: .empty])
+            _ = try await router.generateBatchTagSuggestions(
+                for: sampleRepos,
+                tagHintsByRepoID: [1: .empty],
+                invocationMode: .manual
+            )
             #expect(base.tagCallCount == 0)
             #expect(URLProtocolStub.receivedRequests.isEmpty) // 空词表短路,未发请求
+
+            _ = try await router.generateBatchTagSuggestions(
+                for: sampleRepos,
+                tagHintsByRepoID: [1: .empty],
+                invocationMode: .automatic
+            )
+            #expect(base.tagCallCount == 1)
+            #expect(URLProtocolStub.receivedRequests.isEmpty)
         }
 
         // 关:走 LLM
@@ -659,7 +832,11 @@ struct TypeSafeSuggestionRoutersTests {
                 typesafeProvider: try makeJevStubService(settings: settings, keychain: keychain),
                 settings: settings
             )
-            _ = try await router.generateBatchTagSuggestions(for: sampleRepos, tagHintsByRepoID: [1: .empty])
+            _ = try await router.generateBatchTagSuggestions(
+                for: sampleRepos,
+                tagHintsByRepoID: [1: .empty],
+                invocationMode: .manual
+            )
             #expect(base.tagCallCount == 1)
             #expect(URLProtocolStub.receivedRequests.isEmpty)
         }

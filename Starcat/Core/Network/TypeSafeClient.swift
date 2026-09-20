@@ -9,8 +9,8 @@
 //    Choice 多选一),本客户端只覆盖 POC 需要的 Noul 原语与通用请求骨架;
 //  - 官方只有 Python / TypeScript SDK,Swift 侧按 `OpenSSFScoreAPI` 的独立公开
 //    API actor 模板手写:自带 URLSession、领域错误枚举,不复用 GitHubAPIClient;
-//  - 官方文档要求 429 / 529 指数退避重试;项目没有通用 retry 层,因此退避逻辑
-//    收口在本 actor 内,不外溢到调用方;
+//  - 瞬时传输失败、408、429 与 5xx 的退避重试收口在本 actor 内；上层队列不再
+//    对已经耗尽本层预算的 TypeSafe 错误自动重试，避免两层重试相乘;
 //  - API Key 按 BYOK 逐次传入而不是构造时固化:设置页改 Key 后无需热更新装配,
 //    也避免 actor 持有可变凭据状态。
 //
@@ -25,7 +25,7 @@ import Foundation
 // MARK: - 错误
 
 /// TypeSafe API 领域错误。
-enum TypeSafeClientError: Error, Equatable {
+enum TypeSafeClientError: Error, Equatable, Sendable {
     /// 未配置 API Key(调用前应先路由回退到 LLM 路径,这里是兜底)。
     case missingAPIKey
     case unauthorized
@@ -38,11 +38,35 @@ enum TypeSafeClientError: Error, Equatable {
     case server(statusCode: Int)
     case transport(String)
     case decoding(String)
+    /// HTTP 成功但某个必答问题缺失、类型不符或概率越界。
+    case invalidAnswer(questionID: String)
 
     var isRetryableWithBackoff: Bool {
         switch self {
-        case .rateLimited, .overloaded: return true
-        default: return false
+        case .rateLimited, .overloaded, .transport:
+            return true
+        case .server(let statusCode):
+            return statusCode == 408 || (500...599).contains(statusCode)
+        case .missingAPIKey, .unauthorized, .validation, .decoding, .invalidAnswer:
+            return false
+        }
+    }
+
+    var retryAfterSeconds: Double? {
+        switch self {
+        case .rateLimited(let seconds), .overloaded(let seconds):
+            return seconds
+        case .missingAPIKey, .unauthorized, .validation, .server, .transport, .decoding, .invalidAnswer:
+            return nil
+        }
+    }
+
+    var isRateLimitLike: Bool {
+        switch self {
+        case .rateLimited, .overloaded:
+            return true
+        case .missingAPIKey, .unauthorized, .validation, .server, .transport, .decoding, .invalidAnswer:
+            return false
         }
     }
 }
@@ -69,6 +93,8 @@ extension TypeSafeClientError: LocalizedError {
             return "TypeSafe API transport error: \(message)"
         case let .decoding(message):
             return "TypeSafe API response decoding failed: \(message)"
+        case let .invalidAnswer(questionID):
+            return "TypeSafe API returned an invalid Noul answer for \(questionID)"
         }
     }
 }
@@ -163,10 +189,15 @@ struct TypeSafeUsage: Decodable, Equatable {
 /// 真正的并发控制由上层(分组会话的 5 Worker、批量队列)负责。
 actor TypeSafeClient {
     private static let timeout: TimeInterval = 20
-    private static let maxRetries = 3
-    /// 退避基数 0.5s(0.5 / 1 / 2):Jev 单次调用 70–500ms,过长退避会拖垮
-    /// 分组会话的 worker 吞吐;官方同时要求尊重更大的 Retry-After。
+    /// 两次重试 = 最多三次传输；上层业务队列不会再对 TypeSafe 错误自动重试。
+    private static let maxRetries = 2
+    /// 单次调用的退避等待总预算为八秒。服务端要求更长 Retry-After 时直接把错误交给上层冷却，
+    /// 不能提前重试，也不能让一个仓库长期占住五路 Worker 之一。
+    private static let maxRetryDelayBudget: Double = 8
+    /// 退避基数 0.5s(0.5 / 1):Jev 单次调用 70–500ms,过长退避会拖垮
+    /// 分组会话的 worker 吞吐;仍优先尊重更大的 Retry-After。
     private static let backoffBaseSeconds: Double = 0.5
+    private static let backoffJitterUpperBound: Double = 0.25
 
     private let baseURL: URL
     private let session: URLSession
@@ -230,14 +261,22 @@ actor TypeSafeClient {
     // MARK: - 传输与重试
 
     private func sendWithRetry(_ request: URLRequest) async throws -> TypeSafeSystemOneResponse {
-        var attempt = 0
+        var retryCount = 0
+        var scheduledDelay: Double = 0
         while true {
             do {
                 return try await sendOnce(request)
             } catch let error as TypeSafeClientError where error.isRetryableWithBackoff {
-                guard attempt < Self.maxRetries else { throw error }
-                let delay = Self.backoffDelay(after: attempt, retryHint: retryHint(from: error))
-                attempt += 1
+                guard retryCount < Self.maxRetries else { throw error }
+                let delay = Self.backoffDelay(
+                    after: retryCount,
+                    retryHint: error.retryAfterSeconds
+                )
+                // 预算不足时不能无视服务端 Retry-After 提前撞回去；直接上抛后由队列级
+                // 共享冷却保护其他 Worker，人工入口仍可在稍后显式重试。
+                guard scheduledDelay + delay <= Self.maxRetryDelayBudget else { throw error }
+                retryCount += 1
+                scheduledDelay += delay
                 // Task.sleep 抛 CancellationError 直接向上传播,
                 // 让分组会话 / 批量队列的协作式取消立即生效。
                 try await Task.sleep(for: .seconds(delay))
@@ -251,6 +290,8 @@ actor TypeSafeClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         } catch {
             throw TypeSafeClientError.transport(error.localizedDescription)
@@ -279,25 +320,26 @@ actor TypeSafeClient {
         }
     }
 
-    private func retryHint(from error: TypeSafeClientError) -> Double? {
-        switch error {
-        case let .rateLimited(seconds), let .overloaded(seconds):
-            return seconds
-        default:
-            return nil
-        }
-    }
-
     private static func backoffDelay(after attempt: Int, retryHint: Double?) -> Double {
         let exponential = backoffBaseSeconds * pow(2, Double(attempt))
-        guard let retryHint, retryHint > exponential else { return exponential }
-        return min(retryHint, 60)
+        let hinted = retryHint.map { min(max($0, 0), 60) } ?? 0
+        // 只加正 jitter，保证不会早于 Retry-After；同时打散多个并发 Worker 的重试时刻。
+        return max(exponential, hinted) + Double.random(in: 0...backoffJitterUpperBound)
     }
 
-    /// Retry-After 只按秒数解析(官方返回秒);HTTP-date 形式退回指数退避。
+    /// SDK / 网关可能返回秒或毫秒版本；优先读取更精细的 retry-after-ms。
+    /// 非数字（例如 HTTP-date）退回指数退避，不尝试猜测时区与服务器时钟偏差。
     private static func retryAfter(from http: HTTPURLResponse) -> Double? {
+        if let rawMilliseconds = http.value(forHTTPHeaderField: "retry-after-ms"),
+           let milliseconds = Double(rawMilliseconds.trimmingCharacters(in: .whitespaces)),
+           milliseconds >= 0 {
+            return milliseconds / 1_000
+        }
         guard let raw = http.value(forHTTPHeaderField: "Retry-After") else { return nil }
-        return Double(raw.trimmingCharacters(in: .whitespaces))
+        guard let seconds = Double(raw.trimmingCharacters(in: .whitespaces)), seconds >= 0 else {
+            return nil
+        }
+        return seconds
     }
 
     private static func errorDetail(from data: Data) -> String {

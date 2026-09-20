@@ -18,10 +18,25 @@ import Foundation
 protocol BatchAIInsightProviding: AnyObject {
     func ensureGenerationClientsReady(includeSummary: Bool, includeTags: Bool) throws
 
+    /// 带调用来源的预检入口。Jev 路由器据此只允许人工会话绕过 LLM 预检；
+    /// 其他 Provider 通过默认实现保持既有行为。
+    func ensureGenerationClientsReady(
+        includeSummary: Bool,
+        includeTags: Bool,
+        invocationMode: BatchAIInvocationMode
+    ) throws
+
     /// 标签专用批量入口。一个请求承载多个仓库，返回值必须包含每个 repo id。
     func generateBatchTagSuggestions(
         for repos: [Repo],
         tagHintsByRepoID: [Int64: AITagHints]
+    ) async throws -> [Int64: [AITagSuggestion]]
+
+    /// 带调用来源的标签入口，避免自动整理误入只面向人工审核的实验 Provider。
+    func generateBatchTagSuggestions(
+        for repos: [Repo],
+        tagHintsByRepoID: [Int64: AITagHints],
+        invocationMode: BatchAIInvocationMode
     ) async throws -> [Int64: [AITagSuggestion]]
 
     func generateBatchInsight(
@@ -32,6 +47,24 @@ protocol BatchAIInsightProviding: AnyObject {
         codeContextEnabledOverride: Bool?,
         externalContextEnabledOverride: Bool?
     ) async throws -> RepoAIInsightGeneration
+}
+
+extension BatchAIInsightProviding {
+    func ensureGenerationClientsReady(
+        includeSummary: Bool,
+        includeTags: Bool,
+        invocationMode: BatchAIInvocationMode
+    ) throws {
+        try ensureGenerationClientsReady(includeSummary: includeSummary, includeTags: includeTags)
+    }
+
+    func generateBatchTagSuggestions(
+        for repos: [Repo],
+        tagHintsByRepoID: [Int64: AITagHints],
+        invocationMode: BatchAIInvocationMode
+    ) async throws -> [Int64: [AITagSuggestion]] {
+        try await generateBatchTagSuggestions(for: repos, tagHintsByRepoID: tagHintsByRepoID)
+    }
 }
 
 extension RepoAIInsightService: BatchAIInsightProviding {

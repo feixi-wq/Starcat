@@ -85,6 +85,7 @@ enum BatchAITagSuggestionAvailability: String, Codable, Equatable, Sendable {
 /// 这里保留错误类型与参数，`localizedMessage` 每次渲染时按当前 `LocaleStore` 重新查表。
 enum BatchAIFailure: Equatable, Sendable {
     case aiClient(AIClientError)
+    case typeSafe(TypeSafeClientError)
     case repoInsight(RepoAIInsightError)
     case recommendationValidation(AIRecommendationValidationError)
     case cancelled
@@ -96,6 +97,10 @@ enum BatchAIFailure: Equatable, Sendable {
     init(error: Error) {
         if let ai = error as? AIClientError {
             self = .aiClient(ai)
+            return
+        }
+        if let typeSafe = error as? TypeSafeClientError {
+            self = .typeSafe(typeSafe)
             return
         }
         if let insight = error as? RepoAIInsightError {
@@ -124,6 +129,8 @@ enum BatchAIFailure: Equatable, Sendable {
     var localizedMessage: String {
         switch self {
         case .aiClient(let error):
+            return error.localizedDescription
+        case .typeSafe(let error):
             return error.localizedDescription
         case .repoInsight(let error):
             return error.localizedDescription
@@ -255,6 +262,17 @@ enum BatchAIAction: String, CaseIterable, Codable, Hashable, Sendable {
     case summary
     /// 生成标签；自动应用关闭时在批量窗口内等待用户逐仓确认。
     case tags
+}
+
+// MARK: - BatchAIInvocationMode
+
+/// 批量整理的调用来源，只存在于当前运行时，不写入草稿。
+///
+/// Jev 的 Labs 契约明确只覆盖用户主动发起的建议流程；自动整理可能直接落库，必须继续走
+/// 已验证的 LLM 路径。使用独立枚举而不是复用 `silent`，避免把 UI 展示策略误当 Provider 路由条件。
+enum BatchAIInvocationMode: Equatable, Sendable {
+    case manual
+    case automatic
 }
 
 // MARK: - BatchAIQueueOptions
