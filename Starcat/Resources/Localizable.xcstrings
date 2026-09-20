@@ -341,6 +341,23 @@
         }
       }
     },
+    "settings.labs.typesafe.tags.hybrid.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "For tag-only batch runs, Jev first reuses matching existing tags. If fewer than your configured minimum match, your AI provider generates at most one new tag; mixed summary+tag runs continue using the AI provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "纯标签批量任务会先由 Jev 复用匹配的现有标签；少于你设置的最小数量时，再由 AI Provider 生成最多一个新标签。摘要+标签混合任务仍走 AI Provider。"
+          }
+        }
+      }
+    },
     "settings.labs.typesafe.scope.note" : {
       "extractionState" : "manual",
       "localizations" : {

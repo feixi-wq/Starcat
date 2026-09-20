@@ -93,7 +93,7 @@ struct LabsSettingsTab: View {
                     .foregroundStyle(.secondary)
 
                 Toggle("settings.labs.typesafe.tags", isOn: $settings.typesafeTagSuggestionsEnabled)
-                Text("settings.labs.typesafe.tags.description")
+                Text("settings.labs.typesafe.tags.hybrid.description")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
