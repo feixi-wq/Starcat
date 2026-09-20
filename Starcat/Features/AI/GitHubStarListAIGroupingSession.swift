@@ -286,6 +286,11 @@ final class GitHubStarListAIGroupingSession {
     /// 当前 runTask 批次覆盖的仓库。暂停态重试靠它判断目标能否直接重新入队，
     /// 还是必须重启一个覆盖全部待办的批次（目标可能来自更早批次的失败）。
     private var activeRunRepoIDs: Set<Int64> = []
+    /// Worker 热路径只按索引向前领取任务，避免每个仓库都从 jobs 起点重新线性扫描。
+    /// jobs 的展示顺序在会话期间不会改变；重新入队时统一重建游标与计数即可。
+    @ObservationIgnored private var jobIndexByRepoID: [Int64: Int] = [:]
+    @ObservationIgnored private var nextQueuedJobIndex = 0
+    @ObservationIgnored private var queuedRunJobCount = 0
     private var rateLimitCooldownUntil: Date?
     /// 人工整理启动时冻结自动确认阈值；暂停、继续和单仓重试必须保持同一语义。
     @ObservationIgnored private var manualAutomaticThreshold: Double?
@@ -688,6 +693,7 @@ final class GitHubStarListAIGroupingSession {
                 jobs[index].status = .queued
                 jobs[index].analysisFailure = nil
             }
+            rebuildRunQueueState(eligibleRepoIDs: activeRunRepoIDs)
             isPaused = false
         } else {
             var pendingRepoByID: [Int64: Repo] = [:]
@@ -891,6 +897,7 @@ final class GitHubStarListAIGroupingSession {
             isApplying = false
             contextErrorMessage = nil
             activeRunRepoIDs = []
+            rebuildRunQueueState(eligibleRepoIDs: [])
             rateLimitCooldownUntil = nil
 
             for job in jobs where job.status == .failed || {
@@ -1372,6 +1379,7 @@ final class GitHubStarListAIGroupingSession {
                 jobs[index].analysisFailure = nil
             }
         }
+        rebuildRunQueueState(eligibleRepoIDs: activeRunRepoIDs)
 
         runTask = Task { [weak self] in
             guard let self else { return }
@@ -1398,6 +1406,7 @@ final class GitHubStarListAIGroupingSession {
         generation: UInt64
     ) async {
         let reposByID = Dictionary(uniqueKeysWithValues: repos.map { ($0.id, $0) })
+        let listNamesByID = Dictionary(uniqueKeysWithValues: availableLists.map { ($0.id, $0.name) })
 
         // 只创建五个长期 Worker。领取动作在 MainActor 上原子完成，因此同一仓库不会被重复消费；
         // 网络 await 期间 MainActor 会让出执行权，五个请求仍能并行在途。
@@ -1409,6 +1418,7 @@ final class GitHubStarListAIGroupingSession {
                         reposByID: reposByID,
                         candidates: candidates,
                         existingMemberships: existingMemberships,
+                        listNamesByID: listNamesByID,
                         automaticThreshold: automaticThreshold,
                         generation: generation
                     )
@@ -1438,13 +1448,12 @@ final class GitHubStarListAIGroupingSession {
         reposByID: [Int64: Repo],
         candidates: [GitHubStarListAIContext],
         existingMemberships: [Int64: Set<String>],
+        listNamesByID: [String: String],
         automaticThreshold: Double?,
         generation: UInt64
     ) async {
         while !Task.isCancelled, generation == self.generation {
-            guard jobs.contains(where: {
-                $0.status == .queued && reposByID[$0.id] != nil
-            }) else { return }
+            guard queuedRunJobCount > 0 else { return }
             if isPaused {
                 try? await Task.sleep(for: .milliseconds(250))
                 continue
@@ -1459,6 +1468,7 @@ final class GitHubStarListAIGroupingSession {
                 repo,
                 candidates: candidates,
                 existingMemberships: existingMemberships,
+                listNamesByID: listNamesByID,
                 automaticThreshold: automaticThreshold,
                 generation: generation
             )
@@ -1469,24 +1479,41 @@ final class GitHubStarListAIGroupingSession {
 
     /// MainActor 串行执行领取与状态切换，相当于队列的原子 pop。
     private func claimNextRepo(from reposByID: [Int64: Repo]) -> Repo? {
-        guard let index = jobs.firstIndex(where: {
-            $0.status == .queued && reposByID[$0.id] != nil
-        }) else { return nil }
-        jobs[index].status = .analyzing
-        return reposByID[jobs[index].id]
+        while nextQueuedJobIndex < jobs.count {
+            let index = nextQueuedJobIndex
+            nextQueuedJobIndex += 1
+            guard jobs[index].status == .queued,
+                  let repo = reposByID[jobs[index].id]
+            else { continue }
+            jobs[index].status = .analyzing
+            queuedRunJobCount -= 1
+            return repo
+        }
+        return nil
+    }
+
+    /// 新批次或暂停态重新入队时一次性重建索引；正常领取阶段只移动游标，整体为 O(n)。
+    private func rebuildRunQueueState(eligibleRepoIDs: Set<Int64>) {
+        jobIndexByRepoID = Dictionary(uniqueKeysWithValues: jobs.enumerated().map { ($0.element.id, $0.offset) })
+        nextQueuedJobIndex = jobs.firstIndex {
+            $0.status == .queued && eligibleRepoIDs.contains($0.id)
+        } ?? jobs.endIndex
+        queuedRunJobCount = jobs.count {
+            $0.status == .queued && eligibleRepoIDs.contains($0.id)
+        }
     }
 
     private func processClaimedRepo(
         _ repo: Repo,
         candidates: [GitHubStarListAIContext],
         existingMemberships: [Int64: Set<String>],
+        listNamesByID: [String: String],
         automaticThreshold: Double?,
         generation: UInt64
     ) async {
         do {
             // 先记录 analyzing，再请求 AI。强退恢复时据此转成中断失败，绝不自动重复调用。
             try await persistJob(repoID: repo.id)
-            let listNamesByID = Dictionary(uniqueKeysWithValues: availableLists.map { ($0.id, $0.name) })
             let existingListNames = (existingMemberships[repo.id] ?? [])
                 .compactMap { listNamesByID[$0] }
                 .sorted()
@@ -1539,7 +1566,7 @@ final class GitHubStarListAIGroupingSession {
         switch outcome {
         case .success(let repos, let results):
             for repo in repos {
-                guard let index = jobs.firstIndex(where: { $0.id == repo.id }) else { continue }
+                guard let index = jobIndexByRepoID[repo.id] else { continue }
                 // Provider 返回完整概率；自动应用先按用户阈值判断，审核页再收敛为高价值 Top 结果。
                 // 这样 0.50...0.55 的合法自动阈值不会被 Jev Service 提前吞掉。
                 let evaluatedSuggestions = results[repo.id] ?? []
@@ -1588,7 +1615,7 @@ final class GitHubStarListAIGroupingSession {
         case .failure(let repos, let failure):
             let cancelled = if case .cancelled = failure { true } else { Task.isCancelled }
             for repo in repos {
-                guard let index = jobs.firstIndex(where: { $0.id == repo.id }) else { continue }
+                guard let index = jobIndexByRepoID[repo.id] else { continue }
                 jobs[index].status = cancelled ? .stopped : .failed
                 jobs[index].analysisFailure = cancelled ? nil : failure
                 jobs[index].finishedAt = .now
@@ -1889,6 +1916,10 @@ final class GitHubStarListAIGroupingSession {
         availableLists = []
         rulesByListID = [:]
         existingListIDsByRepo = [:]
+        activeRunRepoIDs = []
+        jobIndexByRepoID = [:]
+        nextQueuedJobIndex = 0
+        queuedRunJobCount = 0
         rateLimitCooldownUntil = nil
         manualAutomaticThreshold = nil
         automaticConfigurationFingerprint = nil
