@@ -175,7 +175,7 @@ enum TypeSafeQuestion: Encodable, Equatable {
 
 /// `POST /v1/systemone` 响应。
 ///
-/// answers 以调用方自定义的 question id 为键;usage 用于诊断,POC 不做计费统计。
+/// answers 以调用方自定义的 question id 为键;usage 只进入无业务正文的聚合诊断日志。
 struct TypeSafeSystemOneResponse: Decodable, Equatable {
     let model: String?
     let answers: [String: TypeSafeAnswer]
@@ -202,6 +202,14 @@ struct TypeSafeUsage: Decodable, Equatable {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
     }
+}
+
+/// 聚合指标的固定业务分类。只允许代码内枚举值，禁止把用户输入作为日志维度。
+enum TypeSafeEvaluationOperation: String, Sendable {
+    case unspecified
+    case githubListGrouping = "github_list_grouping"
+    case tagReuse = "tag_reuse"
+    case connectionTest = "connection_test"
 }
 
 // MARK: - 客户端
@@ -256,7 +264,8 @@ actor TypeSafeClient {
         state: State,
         model: String,
         questions: [String: TypeSafeQuestion],
-        apiKey: String
+        apiKey: String,
+        operation: TypeSafeEvaluationOperation = .unspecified
     ) async throws -> TypeSafeSystemOneResponse {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { throw TypeSafeClientError.missingAPIKey }
@@ -278,32 +287,126 @@ actor TypeSafeClient {
         request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
         request.setValue("Starcat/1.0", forHTTPHeaderField: "User-Agent")
 
-        return try await sendWithRetry(request)
+        return try await sendWithRetry(
+            request,
+            questionCount: questions.count,
+            operation: operation
+        )
     }
 
     // MARK: - 传输与重试
 
-    private func sendWithRetry(_ request: URLRequest) async throws -> TypeSafeSystemOneResponse {
+    /// 一次逻辑请求只写一条聚合指标；内部退避不会制造多条成功/失败日志。
+    /// 日志刻意不接收 request body、URL query 或错误详情，避免 README、规则与凭据泄露。
+    private func sendWithRetry(
+        _ request: URLRequest,
+        questionCount: Int,
+        operation: TypeSafeEvaluationOperation
+    ) async throws -> TypeSafeSystemOneResponse {
+        let startedAt = ContinuousClock.now
+        var attemptCount = 0
+        var failureCount = 0
+        var rateLimitCount = 0
         var retryCount = 0
         var scheduledDelay: Double = 0
+        let logMetrics: (String, TypeSafeUsage?, String?) -> Void = { outcome, usage, errorKind in
+            Self.logRequestMetrics(
+                outcome: outcome,
+                operation: operation,
+                startedAt: startedAt,
+                questionCount: questionCount,
+                attemptCount: attemptCount,
+                failureCount: failureCount,
+                rateLimitCount: rateLimitCount,
+                usage: usage,
+                errorKind: errorKind
+            )
+        }
         while true {
             do {
-                return try await sendOnce(request)
-            } catch let error as TypeSafeClientError where error.isRetryableWithBackoff {
-                guard retryCount < Self.maxRetries else { throw error }
+                attemptCount += 1
+                let response = try await sendOnce(request)
+                logMetrics("success", response.usage, nil)
+                return response
+            } catch is CancellationError {
+                logMetrics("cancelled", nil, nil)
+                throw CancellationError()
+            } catch let error as TypeSafeClientError {
+                failureCount += 1
+                if error.isRateLimitLike { rateLimitCount += 1 }
+                guard error.isRetryableWithBackoff,
+                      retryCount < Self.maxRetries
+                else {
+                    logMetrics("failure", nil, Self.metricKind(for: error))
+                    throw error
+                }
                 let delay = Self.backoffDelay(
                     after: retryCount,
                     retryHint: error.retryAfterSeconds
                 )
                 // 预算不足时不能无视服务端 Retry-After 提前撞回去；直接上抛后由队列级
                 // 共享冷却保护其他 Worker，人工入口仍可在稍后显式重试。
-                guard scheduledDelay + delay <= Self.maxRetryDelayBudget else { throw error }
+                guard scheduledDelay + delay <= Self.maxRetryDelayBudget else {
+                    logMetrics("failure", nil, Self.metricKind(for: error))
+                    throw error
+                }
                 retryCount += 1
                 scheduledDelay += delay
                 // Task.sleep 抛 CancellationError 直接向上传播,
                 // 让分组会话 / 批量队列的协作式取消立即生效。
-                try await Task.sleep(for: .seconds(delay))
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    logMetrics("cancelled", nil, nil)
+                    throw error
+                }
             }
+        }
+    }
+
+    private static func logRequestMetrics(
+        outcome: String,
+        operation: TypeSafeEvaluationOperation,
+        startedAt: ContinuousClock.Instant,
+        questionCount: Int,
+        attemptCount: Int,
+        failureCount: Int,
+        rateLimitCount: Int,
+        usage: TypeSafeUsage?,
+        errorKind: String?
+    ) {
+        let elapsed = startedAt.duration(to: ContinuousClock.now)
+        let latencyMilliseconds = Int(elapsed.components.seconds) * 1_000
+            + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+        let inputTokens = usage?.inputTokens ?? 0
+        let outputTokens = usage?.outputTokens ?? 0
+        let errorKind = errorKind ?? "none"
+        AppLog.ai.debug(
+            "[typesafe] operation=\(operation.rawValue, privacy: .public) outcome=\(outcome, privacy: .public) latency_ms=\(latencyMilliseconds, privacy: .public) questions=\(questionCount, privacy: .public) attempts=\(attemptCount, privacy: .public) failures=\(failureCount, privacy: .public) rate_limits=\(rateLimitCount, privacy: .public) input_tokens=\(inputTokens, privacy: .public) output_tokens=\(outputTokens, privacy: .public) error_kind=\(errorKind, privacy: .public)"
+        )
+    }
+
+    /// 指标只保留有限错误分类，不写 `localizedDescription`，避免传输层把服务端正文带入日志。
+    private static func metricKind(for error: TypeSafeClientError) -> String {
+        switch error {
+        case .missingAPIKey:
+            return "missing_api_key"
+        case .unauthorized:
+            return "unauthorized"
+        case .validation:
+            return "validation"
+        case .rateLimited:
+            return "rate_limited"
+        case .overloaded:
+            return "overloaded"
+        case .server:
+            return "server"
+        case .transport:
+            return "transport"
+        case .decoding:
+            return "decoding"
+        case .invalidAnswer:
+            return "invalid_answer"
         }
     }
 

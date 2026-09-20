@@ -266,7 +266,8 @@ struct LabsSettingsTab: View {
                             criteria: nil
                         )
                     ],
-                    apiKey: candidate
+                    apiKey: candidate,
+                    operation: .connectionTest
                 )
                 let elapsed = clock.now - start
                 let milliseconds = Int(elapsed.components.seconds) * 1_000

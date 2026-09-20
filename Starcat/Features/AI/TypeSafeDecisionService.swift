@@ -147,7 +147,8 @@ final class TypeSafeDecisionService {
                 state: state,
                 model: model,
                 questions: questions,
-                apiKey: apiKey
+                apiKey: apiKey,
+                operation: .githubListGrouping
             )
 
             var suggestions: [GitHubStarListAISuggestion] = []
@@ -275,7 +276,8 @@ final class TypeSafeDecisionService {
                 state: state,
                 model: model,
                 questions: questions,
-                apiKey: apiKey
+                apiKey: apiKey,
+                operation: .tagReuse
             )
 
             var suggestions: [AITagSuggestion] = []
