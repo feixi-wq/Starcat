@@ -27,8 +27,8 @@
 //    策略;这是 POC 的已知能力边界,不是缺陷。
 //
 //  已知 POC 调参点(集中在此,便于后续调整):
-//  - 概率下限:分组 0.55 / 标签 0.50 —— 校准概率低于此值视为噪声;
-//  - 分组建议上限 5:避免大候选集把审核 UI 淹没;
+//  - 分组返回完整 Noul 概率,审核展示与自动应用阈值由产品 Policy 决定;
+//  - 标签概率下限 0.50;
 //  - 标签词表上限 150:防止单请求问题数失控;词表已按使用频率排序,
 //    截断即「只考虑最常用的 150 个」。
 //
@@ -47,9 +47,7 @@ final class TypeSafeDecisionService {
 
     private static let groupingReadmeLimit = 2_400
     private static let tagsReadmeLimit = 4_000
-    private static let groupingProbabilityFloor = 0.55
     private static let tagProbabilityFloor = 0.50
-    private static let groupingSuggestionCap = 5
     private static let tagVocabularyCap = 150
 
     // MARK: - 依赖
@@ -159,7 +157,6 @@ final class TypeSafeDecisionService {
                     in: response,
                     questionID: questionID
                 )
-                guard probability >= Self.groupingProbabilityFloor else { continue }
                 suggestions.append(Self.suggestion(listId: candidate.listId, probability: probability))
             }
 
@@ -168,10 +165,6 @@ final class TypeSafeDecisionService {
                 if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
                 return $0.listId < $1.listId
             }
-            if suggestions.count > Self.groupingSuggestionCap {
-                suggestions = Array(suggestions.prefix(Self.groupingSuggestionCap))
-            }
-
             results[repo.id] = try GitHubStarListAISuggestionPolicy.validatedModelSuggestions(
                 suggestions,
                 candidates: eligibleCandidates,
@@ -189,14 +182,17 @@ final class TypeSafeDecisionService {
         for candidate: GitHubStarListAIContext
     ) -> TypeSafeQuestion {
         .noul(
-            instructions: """
-            Should the repository described by `repository` and `readmeExcerpt` be added to the user's GitHub list "\(candidate.name)"? \
-            `existingListNames` lists memberships the repository already has. \
-            The user's rule for this list is: \(candidate.instruction)
-            """,
+            // list name / rule 是用户数据，必须与固定问题分字段编码；否则规则里的引号或
+            // 类似指令文本会改变问题边界，导致概率难以跨仓库比较。
+            instructions: .object([
+                "main_question": "Should the repository described by `repository` and `readmeExcerpt` be added to this GitHub list?",
+                "list_name": candidate.name,
+                "list_rule": candidate.instruction,
+                "existing_memberships_note": "`existingListNames` contains GitHub lists the repository already belongs to."
+            ]),
             criteria: TypeSafeNoulCriteria(
-                true: "The repository's main purpose clearly matches the list rule.",
-                false: "The repository does not belong on this list; sharing a language, topic, or keyword alone is not enough."
+                true: "The repository clearly satisfies `list_rule`.",
+                false: "The repository does not satisfy `list_rule`."
             )
         )
     }
@@ -310,10 +306,10 @@ final class TypeSafeDecisionService {
 
     private static func tagMembershipQuestion(for tagName: String) -> TypeSafeQuestion {
         .noul(
-            instructions: """
+            instructions: .text("""
             Should the existing user tag "\(tagName)" be applied to the repository described by `repository` and `readmeExcerpt`? \
             `existingTags` lists tags the repository already has; do not re-suggest synonyms of them.
-            """,
+            """),
             criteria: TypeSafeNoulCriteria(
                 true: "The tag accurately describes an important aspect of this repository.",
                 false: "The tag is only loosely related, or the repository already has a tag with the same meaning."

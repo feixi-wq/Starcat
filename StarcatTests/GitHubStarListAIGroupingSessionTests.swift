@@ -424,6 +424,48 @@ struct GitHubStarListAIGroupingSessionTests {
         #expect(environment.session.mode == .idle)
     }
 
+    @Test("人工自动确认允许用户配置的 0.50 阈值通过 Jev 完整概率")
+    func manualAutoConfirmUsesConfiguredFloorInsteadOfProviderFloor() async throws {
+        let provider = ConcurrentGitHubStarListSuggestionProvider(
+            delay: .milliseconds(1),
+            suggestionsByRepoID: [
+                1: [GitHubStarListAISuggestion(listId: "list-1", confidence: 0.52, reason: "Jev P=0.52")]
+            ]
+        )
+        let environment = try await makeEnvironment(
+            repoCount: 1,
+            groupedRepoFullNames: [],
+            aiRule: (instruction: "Developer tools", autoApplyEnabled: true),
+            insightService: provider
+        )
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+            let payload = if body.contains("repository(owner:") {
+                Data(#"{"data":{"repository":{"id":"repo-node"}}}"#.utf8)
+            } else {
+                Data(#"{"data":{"updateUserListsForItem":{"lists":[]}}}"#.utf8)
+            }
+            guard let url = request.url,
+                  let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                  )
+            else { throw URLError(.badURL) }
+            return (response, payload)
+        }
+
+        await environment.session.prepareManualContext()
+        await environment.session.startManual(autoConfirmEnabled: true, confidenceThreshold: 0.50)
+        await waitUntilStopped(environment.session)
+
+        #expect(environment.session.existingListIDsByRepo[1] == ["list-1"])
+        #expect(environment.session.jobs.first?.applyState == .applied(["list-1"]))
+        #expect(environment.session.jobs.first?.suggestions.map(\.listId) == ["list-1"])
+    }
+
     @Test("持久化自动忽略会跨轮展示但不重复分析，手动重试后重新进入队列")
     func persistedAutoIgnoreRequiresExplicitRetry() async throws {
         let provider = ConcurrentGitHubStarListSuggestionProvider(delay: .milliseconds(1))

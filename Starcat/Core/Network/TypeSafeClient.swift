@@ -123,10 +123,33 @@ struct TypeSafeNoulCriteria: Encodable, Equatable {
     }
 }
 
+/// TypeSafe question 的 instructions 既可以是普通文本，也可以是结构化对象。
+///
+/// 业务字段来自用户配置时使用 object，把固定问题与动态数据分开编码，避免引号、换行或
+/// 类似指令的内容破坏问题边界。当前 Starcat 只需要字符串键值，不提前实现任意 JSON 树。
+enum TypeSafeQuestionInstructions: Encodable, Equatable, ExpressibleByStringLiteral {
+    case text(String)
+    case object([String: String])
+
+    init(stringLiteral value: String) {
+        self = .text(value)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .text(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        }
+    }
+}
+
 /// 问题原语。POC 只实现 Noul(独立二元隶属判断,天然支持「零或多个」语义);
 /// Choice / Score 留待后续按需补充,不预先铺代码。
 enum TypeSafeQuestion: Encodable, Equatable {
-    case noul(instructions: String, criteria: TypeSafeNoulCriteria?)
+    case noul(instructions: TypeSafeQuestionInstructions, criteria: TypeSafeNoulCriteria?)
 
     private enum CodingKeys: String, CodingKey {
         case type

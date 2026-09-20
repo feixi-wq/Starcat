@@ -1540,18 +1540,26 @@ final class GitHubStarListAIGroupingSession {
         case .success(let repos, let results):
             for repo in repos {
                 guard let index = jobs.firstIndex(where: { $0.id == repo.id }) else { continue }
-                let suggestions = results[repo.id] ?? []
+                // Provider 返回完整概率；自动应用先按用户阈值判断，审核页再收敛为高价值 Top 结果。
+                // 这样 0.50...0.55 的合法自动阈值不会被 Jev Service 提前吞掉。
+                let evaluatedSuggestions = results[repo.id] ?? []
+                let approved = automaticThreshold.map { threshold in
+                    GitHubStarListAISuggestionPolicy.automaticSuggestions(
+                        from: evaluatedSuggestions,
+                        candidates: candidateContexts,
+                        confidenceThreshold: threshold
+                    )
+                } ?? []
+                let suggestions = GitHubStarListAISuggestionPolicy.reviewSuggestions(
+                    from: evaluatedSuggestions,
+                    requiredListIDs: Set(approved.map(\.listId))
+                )
                 jobs[index].suggestions = suggestions
                 jobs[index].status = .completed
                 jobs[index].analysisFailure = nil
                 jobs[index].finishedAt = .now
 
-                if let automaticThreshold {
-                    let approved = GitHubStarListAISuggestionPolicy.automaticSuggestions(
-                        from: suggestions,
-                        candidates: candidateContexts,
-                        confidenceThreshold: automaticThreshold
-                    )
+                if automaticThreshold != nil {
                     selectedListIDsByRepo[repo.id] = Set(approved.map(\.listId))
                     if !approved.isEmpty {
                         await applyOne(repo: repo, allowAutomaticRetry: true)

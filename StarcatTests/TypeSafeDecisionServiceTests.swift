@@ -300,7 +300,7 @@ struct TypeSafeDecisionServiceTests {
 
     // MARK: 分组
 
-    @Test("分组:过阈值概率生成建议,低概率被过滤,产出经封闭集校验")
+    @Test("分组:保留完整概率并使用结构化规则,产出经封闭集校验")
     func groupingMapsProbabilities() async throws {
         let keychain = InMemoryKeychain()
         let settings = AppSettings(defaults: defaults, keychain: keychain)
@@ -331,10 +331,12 @@ struct TypeSafeDecisionServiceTests {
         )
 
         let suggestions = try #require(results[1])
-        #expect(suggestions.count == 1)
+        #expect(suggestions.count == 2)
         #expect(suggestions[0].listId == "ml")
         #expect(abs(suggestions[0].confidence - 0.9) < 0.0001)
         #expect(suggestions[0].reason.hasPrefix("Jev P="))
+        #expect(suggestions[1].listId == "web")
+        #expect(abs(suggestions[1].confidence - 0.4) < 0.0001)
 
         let body = try lastRequestBody()
         let state = try #require(body["state"] as? [String: Any])
@@ -343,10 +345,15 @@ struct TypeSafeDecisionServiceTests {
         #expect(state["existingListNames"] != nil)
         let questions = try #require(body["questions"] as? [String: Any])
         let question = try #require(questions["list::ml"] as? [String: Any])
-        let instructions = try #require(question["instructions"] as? String)
-        #expect(instructions.contains("`repository`"))
-        #expect(instructions.contains("`readmeExcerpt`"))
-        #expect(instructions.contains("`existingListNames`"))
+        let instructions = try #require(question["instructions"] as? [String: String])
+        #expect(instructions["main_question"]?.contains("`repository`") == true)
+        #expect(instructions["main_question"]?.contains("`readmeExcerpt`") == true)
+        #expect(instructions["existing_memberships_note"]?.contains("`existingListNames`") == true)
+        #expect(instructions["list_name"] == "ML")
+        #expect(instructions["list_rule"] == "machine learning tools")
+        let criteria = try #require(question["criteria"] as? [String: String])
+        #expect(criteria["true"] == "The repository clearly satisfies `list_rule`.")
+        #expect(criteria["false"] == "The repository does not satisfy `list_rule`.")
     }
 
     @Test("分组:已有 membership 的 List 不进入问题集")
@@ -396,8 +403,8 @@ struct TypeSafeDecisionServiceTests {
         #expect(URLProtocolStub.receivedRequests.isEmpty)
     }
 
-    @Test("分组:完整低概率响应是有效无匹配")
-    func groupingAcceptsCompleteLowProbabilityResponse() async throws {
+    @Test("分组:完整低概率响应保留给产品策略判断")
+    func groupingPreservesCompleteLowProbabilityResponse() async throws {
         let keychain = InMemoryKeychain()
         let settings = AppSettings(defaults: defaults, keychain: keychain)
         let service = try makeService(settings: settings, keychain: keychain)
@@ -413,7 +420,41 @@ struct TypeSafeDecisionServiceTests {
             existingListNamesByRepo: [1: []]
         )
 
-        #expect(results[1] == [])
+        #expect(results[1]?.map(\.confidence) == [0.2])
+    }
+
+    @Test("分组:Service 不截断五个之后的完整概率")
+    func groupingPreservesMoreThanFiveProbabilities() async throws {
+        let keychain = InMemoryKeychain()
+        let settings = AppSettings(defaults: defaults, keychain: keychain)
+        let service = try makeService(settings: settings, keychain: keychain)
+        try storeKey(keychain)
+        stubAnswers("""
+        {
+          "answers": {
+            "list::l1": { "type": "noul", "noul": 0.91 },
+            "list::l2": { "type": "noul", "noul": 0.82 },
+            "list::l3": { "type": "noul", "noul": 0.73 },
+            "list::l4": { "type": "noul", "noul": 0.64 },
+            "list::l5": { "type": "noul", "noul": 0.55 },
+            "list::l6": { "type": "noul", "noul": 0.46 }
+          }
+        }
+        """)
+
+        var repo = Repo.makeMinimal(owner: "acme", name: "r1")
+        repo.id = 1
+        let candidates = (1...6).map { index in
+            makeCandidate(id: "l\(index)", name: "L\(index)", instruction: "rule \(index)")
+        }
+        let results = try await service.generateGitHubListSuggestions(
+            for: [repo],
+            candidates: candidates,
+            existingListIDsByRepo: [1: []],
+            existingListNamesByRepo: [1: []]
+        )
+
+        #expect(results[1]?.map(\.listId) == ["l1", "l2", "l3", "l4", "l5", "l6"])
     }
 
     @Test("分组:缺失必答键不能伪装成无匹配")
