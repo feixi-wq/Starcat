@@ -1053,7 +1053,8 @@ private final class BlockingBatchAIInsightProvider: BatchAIInsightProviding {
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
         generationCount += 1
         let waiters = generationStartWaiters
@@ -1118,7 +1119,8 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
         batchTagGenerationCount += 1
         if let batchTagError { throw batchTagError }
@@ -1131,7 +1133,11 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
         invocationMode: BatchAIInvocationMode
     ) async throws -> [Int64: [AITagSuggestion]] {
         lastBatchInvocationMode = invocationMode
-        return try await generateBatchTagSuggestions(for: repos, tagHintsByRepoID: tagHintsByRepoID)
+        return try await generateBatchTagSuggestions(
+            for: repos,
+            tagHintsByRepoID: tagHintsByRepoID,
+            purpose: .reuseFirst
+        )
     }
 
     func generateBatchInsight(
@@ -1197,7 +1203,8 @@ private final class SelectiveBatchAIInsightProvider: BatchAIInsightProviding {
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
         Issue.record("仓库级 Worker 不应调用批量标签接口")
         return [:]
@@ -1279,7 +1286,8 @@ private final class StaggeredBatchAIInsightProvider: BatchAIInsightProviding {
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
         batchCallCount += 1
         let repo = try #require(repos.first)
@@ -1373,7 +1381,8 @@ private final class ConcurrentBatchAIInsightProvider: BatchAIInsightProviding {
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
         batchSizes.append(repos.count)
         activeBatchCalls += 1

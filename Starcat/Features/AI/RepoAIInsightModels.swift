@@ -156,6 +156,15 @@ enum AITagSuggestionCountPolicy {
     }
 }
 
+/// 批量标签模型在当前请求中的单一职责。
+///
+/// Jev 已经完成现有词表筛选后，LLM 只能补充一个词表外的新标签，不能重新选择
+/// 被 Jev 判定为不匹配的旧标签。显式建模用途，避免靠清空词表等隐式参数改变 Prompt 语义。
+enum AITagSuggestionPurpose: Equatable, Sendable {
+    case reuseFirst
+    case newOnly
+}
+
 /// AI 标签名的本地收敛策略。
 ///
 /// Prompt 只能提高模型遵守规则的概率，不能充当数据完整性边界；尤其不同 Provider 可能

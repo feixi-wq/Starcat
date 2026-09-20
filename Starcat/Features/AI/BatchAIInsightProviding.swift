@@ -27,9 +27,11 @@ protocol BatchAIInsightProviding: AnyObject {
     ) throws
 
     /// 标签专用批量入口。一个请求承载多个仓库，返回值必须包含每个 repo id。
+    /// `purpose == .newOnly` 时，Provider 必须拒绝 repo 已有标签和全库词表中的名称。
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]]
 
     /// 带调用来源的标签入口，避免自动整理误入只面向人工审核的实验 Provider。
@@ -50,6 +52,17 @@ protocol BatchAIInsightProviding: AnyObject {
 }
 
 extension BatchAIInsightProviding {
+    func generateBatchTagSuggestions(
+        for repos: [Repo],
+        tagHintsByRepoID: [Int64: AITagHints]
+    ) async throws -> [Int64: [AITagSuggestion]] {
+        try await generateBatchTagSuggestions(
+            for: repos,
+            tagHintsByRepoID: tagHintsByRepoID,
+            purpose: .reuseFirst
+        )
+    }
+
     func ensureGenerationClientsReady(
         includeSummary: Bool,
         includeTags: Bool,
@@ -63,18 +76,24 @@ extension BatchAIInsightProviding {
         tagHintsByRepoID: [Int64: AITagHints],
         invocationMode: BatchAIInvocationMode
     ) async throws -> [Int64: [AITagSuggestion]] {
-        try await generateBatchTagSuggestions(for: repos, tagHintsByRepoID: tagHintsByRepoID)
+        try await generateBatchTagSuggestions(
+            for: repos,
+            tagHintsByRepoID: tagHintsByRepoID,
+            purpose: .reuseFirst
+        )
     }
 }
 
 extension RepoAIInsightService: BatchAIInsightProviding {
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
         try await generateTagSuggestions(
             for: repos,
-            tagHintsByRepoID: tagHintsByRepoID
+            tagHintsByRepoID: tagHintsByRepoID,
+            purpose: purpose
         )
     }
 

@@ -579,18 +579,24 @@ struct TypeSafeSuggestionRoutersTests {
     private final class RecordingBatchProvider: BatchAIInsightProviding {
         private(set) var tagCallCount = 0
         private(set) var insightCallCount = 0
+        private(set) var preflightCallCount = 0
+        private(set) var tagPurposes: [AITagSuggestionPurpose] = []
         var preflightShouldThrow = false
+        var tagSuggestions: [AITagSuggestion] = []
 
         func ensureGenerationClientsReady(includeSummary: Bool, includeTags: Bool) throws {
+            preflightCallCount += 1
             if preflightShouldThrow { throw CocoaError(.userActivityConnectionUnavailable) }
         }
 
         func generateBatchTagSuggestions(
             for repos: [Repo],
-            tagHintsByRepoID: [Int64: AITagHints]
+            tagHintsByRepoID: [Int64: AITagHints],
+            purpose: AITagSuggestionPurpose
         ) async throws -> [Int64: [AITagSuggestion]] {
             tagCallCount += 1
-            return [:]
+            tagPurposes.append(purpose)
+            return Dictionary(uniqueKeysWithValues: repos.map { ($0.id, tagSuggestions) })
         }
 
         func generateBatchInsight(
@@ -621,7 +627,11 @@ struct TypeSafeSuggestionRoutersTests {
         return settings
     }
 
-    private func makeJevStubService(settings: AppSettings, keychain: InMemoryKeychain) throws -> TypeSafeDecisionService {
+    private func makeJevStubService(
+        settings: AppSettings,
+        keychain: InMemoryKeychain,
+        noulProbability: Double = 0.1
+    ) throws -> TypeSafeDecisionService {
         URLProtocolStub.reset()
         URLProtocolStub.requestHandler = { request in
             let response = HTTPURLResponse(
@@ -636,7 +646,7 @@ struct TypeSafeSuggestionRoutersTests {
             )
             let questions = try #require(object["questions"] as? [String: Any])
             let answers = Dictionary(uniqueKeysWithValues: questions.keys.map { questionID in
-                (questionID, ["type": "noul", "noul": 0.1] as [String: Any])
+                (questionID, ["type": "noul", "noul": noulProbability] as [String: Any])
             })
             let body = try JSONSerialization.data(withJSONObject: [
                 "model": "jev-1.13.0",
@@ -792,9 +802,9 @@ struct TypeSafeSuggestionRoutersTests {
         }
     }
 
-    @Test("人工标签批量路由到 Jev;自动模式与开关关闭回退 LLM")
+    @Test("人工标签先走 Jev 且不足时生成新标签;自动模式与开关关闭走普通 LLM")
     func batchTagsRoutingMatrix() async throws {
-        // 开:走 Jev
+        // 开:空词表不发 Jev 请求，直接按 newOnly 调用 LLM。
         do {
             let keychain = InMemoryKeychain()
             try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
@@ -810,7 +820,8 @@ struct TypeSafeSuggestionRoutersTests {
                 tagHintsByRepoID: [1: .empty],
                 invocationMode: .manual
             )
-            #expect(base.tagCallCount == 0)
+            #expect(base.tagCallCount == 1)
+            #expect(base.tagPurposes == [.newOnly])
             #expect(URLProtocolStub.receivedRequests.isEmpty) // 空词表短路,未发请求
 
             _ = try await router.generateBatchTagSuggestions(
@@ -818,7 +829,8 @@ struct TypeSafeSuggestionRoutersTests {
                 tagHintsByRepoID: [1: .empty],
                 invocationMode: .automatic
             )
-            #expect(base.tagCallCount == 1)
+            #expect(base.tagCallCount == 2)
+            #expect(base.tagPurposes == [.newOnly, .reuseFirst])
             #expect(URLProtocolStub.receivedRequests.isEmpty)
         }
 
@@ -838,7 +850,72 @@ struct TypeSafeSuggestionRoutersTests {
                 invocationMode: .manual
             )
             #expect(base.tagCallCount == 1)
+            #expect(base.tagPurposes == [.reuseFirst])
             #expect(URLProtocolStub.receivedRequests.isEmpty)
         }
+    }
+
+    @Test("Jev 结果达到 minimum 时不预检也不调用 LLM")
+    func batchTagsSkipLLMWhenJevIsSufficient() async throws {
+        let keychain = InMemoryKeychain()
+        try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
+        let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
+        let base = RecordingBatchProvider()
+        base.preflightShouldThrow = true
+        let router = TypeSafeBatchAIInsightRouter(
+            base: base,
+            typesafeProvider: try makeJevStubService(
+                settings: settings,
+                keychain: keychain,
+                noulProbability: 0.92
+            ),
+            settings: settings
+        )
+
+        let results = try await router.generateBatchTagSuggestions(
+            for: sampleRepos,
+            tagHintsByRepoID: [1: AITagHints(repoTags: [], libraryTags: ["Swift"])],
+            invocationMode: .manual
+        )
+
+        #expect(results[1]?.map(\.name) == ["Swift"])
+        #expect(base.preflightCallCount == 0)
+        #expect(base.tagCallCount == 0)
+        #expect(URLProtocolStub.receivedRequests.count == 1)
+    }
+
+    @Test("Jev 结果低于 minimum 时仅生成新标签并与已有结果合并")
+    func batchTagsFallbackToNewOnlyAndMerge() async throws {
+        let keychain = InMemoryKeychain()
+        try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
+        let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
+        settings.applyAITagSuggestionCounts(minimum: 2, maximum: 3)
+        let base = RecordingBatchProvider()
+        // Swift 是现有词表名称，即使 LLM 违规返回也必须丢弃；Rust 才是可合并的新标签。
+        base.tagSuggestions = [
+            AITagSuggestion(name: "Rust", confidence: 0.83, reason: "new systems language"),
+            AITagSuggestion(name: "swift", confidence: 0.99, reason: "must be rejected")
+        ]
+        let router = TypeSafeBatchAIInsightRouter(
+            base: base,
+            typesafeProvider: try makeJevStubService(
+                settings: settings,
+                keychain: keychain,
+                noulProbability: 0.91
+            ),
+            settings: settings
+        )
+
+        let results = try await router.generateBatchTagSuggestions(
+            for: sampleRepos,
+            tagHintsByRepoID: [1: AITagHints(repoTags: [], libraryTags: ["Swift"])],
+            invocationMode: .manual
+        )
+
+        #expect(Set(results[1]?.map(\.name) ?? []) == Set(["Swift", "Rust"]))
+        #expect(base.preflightCallCount == 1)
+        #expect(base.tagCallCount == 1)
+        #expect(base.tagPurposes == [.newOnly])
+        #expect(URLProtocolStub.receivedRequests.count == 1)
     }
 }

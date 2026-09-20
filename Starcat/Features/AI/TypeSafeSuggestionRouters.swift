@@ -145,9 +145,17 @@ final class TypeSafeBatchAIInsightRouter: BatchAIInsightProviding {
 
     func generateBatchTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose
     ) async throws -> [Int64: [AITagSuggestion]] {
-        try await generateBatchTagSuggestions(
+        if purpose == .newOnly {
+            return try await base.generateBatchTagSuggestions(
+                for: repos,
+                tagHintsByRepoID: tagHintsByRepoID,
+                purpose: .newOnly
+            )
+        }
+        return try await generateBatchTagSuggestions(
             for: repos,
             tagHintsByRepoID: tagHintsByRepoID,
             invocationMode: .manual
@@ -161,10 +169,58 @@ final class TypeSafeBatchAIInsightRouter: BatchAIInsightProviding {
     ) async throws -> [Int64: [AITagSuggestion]] {
         if invocationMode == .manual, isTagsRoutingToTypesafe {
             do {
-                return try await typesafeProvider.generateBatchTagSuggestions(
+                let reusableResults = try await typesafeProvider.generateBatchTagSuggestions(
                     for: repos,
                     tagHintsByRepoID: tagHintsByRepoID
                 )
+                let minimum = settings.clampedAITagSuggestionCounts.minimum
+                let maximum = settings.clampedAITagSuggestionCounts.maximum
+                let fallbackRepos = repos.filter { repo in
+                    (reusableResults[repo.id]?.count ?? 0) < minimum
+                }
+                guard !fallbackRepos.isEmpty else { return reusableResults }
+
+                // LLM 是“现有标签不足”的按需能力，不能在批次启动时强制预检，否则只配置
+                // Jev 且能命中旧标签的用户也会被无关的 LLM 配置阻断。
+                try base.ensureGenerationClientsReady(
+                    includeSummary: false,
+                    includeTags: true,
+                    invocationMode: invocationMode
+                )
+                let fallbackHints = Dictionary(uniqueKeysWithValues: fallbackRepos.map { repo in
+                    (repo.id, tagHintsByRepoID[repo.id] ?? .empty)
+                })
+                let generatedResults = try await base.generateBatchTagSuggestions(
+                    for: fallbackRepos,
+                    tagHintsByRepoID: fallbackHints,
+                    purpose: .newOnly
+                )
+
+                var mergedResults = Dictionary(uniqueKeysWithValues: repos.map { repo in
+                    (repo.id, reusableResults[repo.id] ?? [])
+                })
+                for repo in fallbackRepos {
+                    let hints = fallbackHints[repo.id] ?? .empty
+                    let reusable = reusableResults[repo.id] ?? []
+                    let forbiddenKeys = Set(
+                        (hints.repoTags + hints.libraryTags).map(AITagSuggestionPolicy.canonicalKey)
+                    )
+                    let reusableKeys = Set(reusable.map { AITagSuggestionPolicy.canonicalKey($0.name) })
+                    let genuinelyNew = (generatedResults[repo.id] ?? []).filter { suggestion in
+                        let key = AITagSuggestionPolicy.canonicalKey(suggestion.name)
+                        return !key.isEmpty
+                            && !forbiddenKeys.contains(key)
+                            && !reusableKeys.contains(key)
+                    }
+                    // 输入顺序先放 Jev 结果，使现有标签先占 maximum 配额；策略层只在完成
+                    // 选取后按置信度排序展示，不会让新标签挤掉可复用标签。
+                    mergedResults[repo.id] = AITagSuggestionPolicy.normalizedSuggestions(
+                        reusable + genuinelyNew,
+                        vocabulary: hints.repoTags + hints.libraryTags,
+                        maximumSuggestionCount: maximum
+                    )
+                }
+                return mergedResults
             } catch let error as TypeSafeClientError {
                 AppLog.ai.error(
                     "[typesafePOC] tag suggestions failed, surfacing error: \(error.localizedDescription, privacy: .public)"

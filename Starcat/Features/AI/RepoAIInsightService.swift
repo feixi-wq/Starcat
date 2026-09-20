@@ -622,7 +622,8 @@ final class RepoAIInsightService {
     /// 顶层注入一次，避免 8 个仓库重复携带同一份 12K 字符词表撑爆上下文。
     func generateTagSuggestions(
         for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints]
+        tagHintsByRepoID: [Int64: AITagHints],
+        purpose: AITagSuggestionPurpose = .reuseFirst
     ) async throws -> [Int64: [AITagSuggestion]] {
         try enforceGenerationEntitlement(includeSummary: false, includeTags: true)
         try ensureGenerationClientsReady(includeSummary: false, includeTags: true)
@@ -636,12 +637,16 @@ final class RepoAIInsightService {
         )
         let outputLanguage = Self.outputLanguageDescriptor()
         let tagCounts = settings.clampedAITagSuggestionCounts
+        // Jev 兜底一次最多扩充一个新标签；把 Prompt 占位符也收紧到 1...1，
+        // 避免用户设置的 minimum > 1 与“最多一个新标签”产生互相矛盾的指令。
+        let promptMinimum = purpose == .newOnly ? 1 : tagCounts.minimum
+        let promptMaximum = purpose == .newOnly ? 1 : tagCounts.maximum
         let baseSystemPrompt = task.prompt.renderedSystemPrompt(placeholders: [
             "outputLanguage": outputLanguage,
-            "minTags": String(tagCounts.minimum),
-            "maxTags": String(tagCounts.maximum)
+            "minTags": String(promptMinimum),
+            "maxTags": String(promptMaximum)
         ])
-        let systemPrompt = baseSystemPrompt + """
+        var systemPrompt = baseSystemPrompt + """
 
 
         # Batch Output Override (STRICT)
@@ -651,6 +656,20 @@ final class RepoAIInsightService {
         Return exactly one results entry for every provided repo_id. Do not omit, duplicate, or invent repo_id values.
         Apply all tag constraints above independently to each repository.
         """
+        if purpose == .newOnly {
+            // 这是对用户可编辑基础 Prompt 的内部运行时覆盖：Jev 已经完成旧词表判断，
+            // LLM 只能命名缺失概念，不能重新把低分旧标签塞回结果。
+            systemPrompt += """
+
+
+            # Jev New-Tag Fallback Override (STRICT)
+            Jev has already evaluated the repository against every reusable tag supplied in this request.
+            For every repository, return exactly ONE genuinely new reusable tag name.
+            The name MUST NOT equal or canonically duplicate any name in that repository's existing tags or in <shared_library_tags>.
+            Do not return an existing vocabulary tag even when the base prompt says to prefer reuse.
+            This section overrides every conflicting reuse, minimum-count, and decision-order instruction above.
+            """
+        }
 
         var sharedLibraryTags: [String] = []
         var seenLibraryKeys: Set<String> = []
@@ -674,9 +693,11 @@ final class RepoAIInsightService {
                 "readme": String(source.readme.prefix(4_000)),
                 "codeContext": "",
                 "repoTags": hints.repoTags.joined(separator: ", "),
-                "libraryTags": "Use exact names from <shared_library_tags> below.",
-                "minTags": String(tagCounts.minimum),
-                "maxTags": String(tagCounts.maximum)
+                "libraryTags": purpose == .newOnly
+                    ? "All names in <shared_library_tags> below are forbidden output names."
+                    : "Use exact names from <shared_library_tags> below.",
+                "minTags": String(promptMinimum),
+                "maxTags": String(promptMaximum)
             ])
             repositoryRequests.append([
                 "repo_id": repo.id,
@@ -702,7 +723,10 @@ final class RepoAIInsightService {
             model: model,
             parameters: task.parameters,
             responseFormat: .jsonObject,
-            usageContext: AIUsageContext(feature: .repoTags, phase: "batch-recommendation")
+            usageContext: AIUsageContext(
+                feature: .repoTags,
+                phase: purpose == .newOnly ? "batch-new-tag-fallback" : "batch-recommendation"
+            )
         ))
         try Task.checkCancellation()
 
@@ -712,8 +736,22 @@ final class RepoAIInsightService {
         )
         return Dictionary(uniqueKeysWithValues: repos.map { repo in
             let hints = tagHintsByRepoID[repo.id] ?? .empty
+            let decodedSuggestions = decoded[repo.id] ?? []
+            let allowedSuggestions: [AITagSuggestion]
+            if purpose == .newOnly {
+                let forbiddenKeys = Set(
+                    (hints.repoTags + hints.libraryTags).map(AITagSuggestionPolicy.canonicalKey)
+                )
+                // Prompt 不是完整性边界；Provider 若仍返回旧标签，必须在进入审核前丢弃。
+                allowedSuggestions = decodedSuggestions.filter { suggestion in
+                    let key = AITagSuggestionPolicy.canonicalKey(suggestion.name)
+                    return !key.isEmpty && !forbiddenKeys.contains(key)
+                }
+            } else {
+                allowedSuggestions = decodedSuggestions
+            }
             let suggestions = AITagSuggestionPolicy.normalizedSuggestions(
-                decoded[repo.id] ?? [],
+                allowedSuggestions,
                 vocabulary: hints.repoTags + hints.libraryTags,
                 maximumSuggestionCount: tagCounts.maximum
             )
