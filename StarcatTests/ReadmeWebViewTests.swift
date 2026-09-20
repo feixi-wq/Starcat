@@ -252,6 +252,53 @@ struct ReadmeWebViewTests {
         #expect(!script.contains("location.reload"))
     }
 
+    @Test("Star History 内嵌图片加载失败时兜底注入原生卡片")
+    func starHistoryBridge_injectsFallbackWhenEmbeddedImageFails() throws {
+        let script = ReadmeWebView.readmeEnhancementScript
+        let bridgeStart = try #require(script.range(of: "window.starcatReplaceReadmeStarHistory = function"))
+        let bridgeEnd = try #require(
+            script.range(of: "function watchEmbeddedStarHistoryRecovery", range: bridgeStart.upperBound..<script.endIndex)
+        )
+        let bridge = script[bridgeStart.lowerBound..<bridgeEnd.upperBound]
+
+        // 内嵌标记 ≠ 图片加载成功：camo 偶发 429/503 时图片裂开、原生卡片又被
+        // 跳过，README 底部会彻底空白，因此失败态必须落到原生卡片兜底。
+        #expect(bridge.contains("embeddedImage.complete && embeddedImage.naturalWidth === 0"))
+        #expect(bridge.contains("applyReadmeStarHistory(host, html, animate === true);"))
+        #expect(bridge.contains("addEventListener('error'"))
+        // Swift 每次渲染状态更新都会重新调用桥接函数；epoch 守卫让上一轮挂起的
+        // 异步兜底失效，旧 html 闭包晚到不能覆盖新内容。
+        #expect(script.contains("var starHistoryApplyEpoch = 0;"))
+        #expect(script.contains("if (epoch !== starHistoryApplyEpoch) { return; }"))
+        // 兜底卡上屏后隐藏破损的 picture（破图 + 卡片同框），恢复加载时还原；
+        // 每轮先还原再按真实状态结算，兜住「恢复发生在两轮调用之间」的窗口。
+        #expect(script.contains("watchEmbeddedStarHistoryRecovery(host, embeddedImage, embeddedPicture, epoch);"))
+        #expect(script.contains("embeddedPicture.style.display = 'none';"))
+        #expect(script.contains("embeddedPicture.style.display = '';"))
+        #expect(script.contains("function watchEmbeddedStarHistoryRecovery(host, embeddedImage, embeddedPicture, epoch)"))
+    }
+
+    @Test("README 渐显图片加载失败时立即解除隐形")
+    func enhanceImage_failureExitsHiddenState() throws {
+        let script = ReadmeWebView.readmeEnhancementScript
+        let document = ReadmeWebView.assembleDocument(fragment: "<p>Hello</p>", isDark: false)
+
+        // complete && naturalWidth === 0 表示加载已结束且失败，load 事件不会再
+        // 触发；不在这里直接结算，图片会永远停在 opacity:0（凭空消失）。
+        #expect(script.contains("function markFailed()"))
+        #expect(script.contains("image.classList.add('readme-image-failed');"))
+        #expect(script.contains("image.removeAttribute('data-readme-zoomable');"))
+        #expect(script.contains("image.addEventListener('error', markFailed, { once: true });"))
+        // markLoaded 必须清掉失败态：<picture> 换源重载成功后图片要回到正常显示。
+        #expect(script.contains("image.classList.remove('readme-image-failed');"))
+        // CSS 失败态规则放在 loaded 规则之后，与 :not(.readme-image-loaded) 隐藏
+        // 规则同特异性时靠源顺序取胜，失败图片显示 alt 文案而不是隐形。
+        #expect(document.contains("body.readme-js-ready .markdown-body img.readme-image-failed {"))
+        let hiddenRule = try #require(document.range(of: "img:not(.readme-image-loaded)"))
+        let failedRule = try #require(document.range(of: "img.readme-image-failed"))
+        #expect(hiddenRule.upperBound < failedRule.lowerBound)
+    }
+
     @Test("README 翻译过渡不强制同步布局")
     func translationAnimation_avoidsForcedLayoutReads() throws {
         let script = ReadmeWebView.readmeEnhancementScript
