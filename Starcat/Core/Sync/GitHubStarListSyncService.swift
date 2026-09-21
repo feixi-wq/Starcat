@@ -18,7 +18,7 @@ import GRDB
 /// 批量更新 GitHub Stars List membership 的结果摘要。
 ///
 /// 单条失败不会中断后续仓库；已经处于目标状态的仓库计入 skipped，避免重复 mutation。
-struct GitHubStarListBatchMembershipSummary: Equatable {
+struct GitHubStarListBatchMembershipSummary: Equatable, Sendable {
     let total: Int
     let succeeded: Int
     let skipped: Int
@@ -55,11 +55,38 @@ struct GitHubStarListPendingMembershipSyncSummary: Equatable, Sendable {
     let failed: Int
 }
 
+/// 同步服务只依赖 GitHub Lists API，避免测试批量调度时必须经过 URLSession 的串行 Stub 队列。
+protocol GitHubStarListAPIClientProtocol: AnyObject, Sendable {
+    func starLists(login: String) async throws -> GitHubStarListRemoteSnapshot
+    func createUserList(
+        name: String,
+        description: String?,
+        isPrivate: Bool
+    ) async throws -> GitHubStarListRemoteRecord
+    func updateUserList(
+        id: String,
+        name: String,
+        description: String?,
+        isPrivate: Bool
+    ) async throws -> GitHubStarListRemoteRecord
+    func deleteUserList(id: String) async throws
+    func updateUserListsForRepository(
+        owner: String,
+        name: String,
+        listIds: [String]
+    ) async throws -> [GitHubStarListRemoteRecord]
+}
+
+extension GitHubAPIClient: GitHubStarListAPIClientProtocol {}
+
 @MainActor
 @Observable
 final class GitHubStarListSyncService {
 
-    private let apiClient: GitHubAPIClient
+    /// GitHub mutation 保持小规模并发，缩短批量等待，同时避免把大量请求瞬间压到 GitHub。
+    private static let batchMembershipConcurrency = 3
+
+    private let apiClient: any GitHubStarListAPIClientProtocol
     private let repository: any GitHubStarListRepositoryProtocol
 
     /// 同一轮操作里，一个 owner 已确认受限后，后续仓库直接本地落盘，避免重复制造必败请求。
@@ -70,7 +97,7 @@ final class GitHubStarListSyncService {
     private(set) var lastErrorMessage: String?
 
     init(
-        apiClient: GitHubAPIClient,
+        apiClient: any GitHubStarListAPIClientProtocol,
         repository: any GitHubStarListRepositoryProtocol
     ) {
         self.apiClient = apiClient
@@ -323,12 +350,101 @@ final class GitHubStarListSyncService {
         membershipIn listID: String,
         shouldBelong: Bool
     ) async -> GitHubStarListBatchMembershipSummary {
+        guard !targets.isEmpty else {
+            return GitHubStarListBatchMembershipSummary(
+                total: 0,
+                succeeded: 0,
+                skipped: 0,
+                failed: 0
+            )
+        }
+
+        // 同一 owner 必须串行：首个仓库命中组织 OAuth 限制后，后续仓库才能直接走本地覆盖，
+        // 避免三路并发同时发出已知必败的 GitHub 请求。不同 owner 之间仍可并行。
+        var ownerOrder: [String] = []
+        var targetsByOwner: [String: [BatchStarTarget]] = [:]
+        for target in targets {
+            let ownerKey = normalizedOwner(target.owner)
+            if targetsByOwner[ownerKey] == nil {
+                ownerOrder.append(ownerKey)
+            }
+            targetsByOwner[ownerKey, default: []].append(target)
+        }
+        let ownerBatches = ownerOrder.compactMap { targetsByOwner[$0] }
+
+        var lanes = Array(repeating: [[BatchStarTarget]](), count: Self.batchMembershipConcurrency)
+        for (index, batch) in ownerBatches.enumerated() {
+            lanes[index % Self.batchMembershipConcurrency].append(batch)
+        }
+        let firstBatches = lanes[0]
+        let secondBatches = lanes[1]
+        let thirdBatches = lanes[2]
+
+        // 固定三条 MainActor lane，网络 await 时彼此让出执行权。这里不用动态 TaskGroup，
+        // 是为了避开 Swift 6 region-based isolation checker 对 actor-isolated group closure 的误报。
+        async let firstLane = updateRepoBatches(
+            firstBatches,
+            membershipIn: listID,
+            shouldBelong: shouldBelong
+        )
+        async let secondLane = updateRepoBatches(
+            secondBatches,
+            membershipIn: listID,
+            shouldBelong: shouldBelong
+        )
+        async let thirdLane = updateRepoBatches(
+            thirdBatches,
+            membershipIn: listID,
+            shouldBelong: shouldBelong
+        )
+        let partialSummaries = await [firstLane, secondLane, thirdLane]
+
+        return GitHubStarListBatchMembershipSummary(
+            total: targets.count,
+            succeeded: partialSummaries.reduce(0) { $0 + $1.succeeded },
+            skipped: partialSummaries.reduce(0) { $0 + $1.skipped },
+            failed: partialSummaries.reduce(0) { $0 + $1.failed },
+            savedLocally: partialSummaries.reduce(0) { $0 + $1.savedLocally }
+        )
+    }
+
+    /// 一条 lane 内顺序领取 owner 批次；三条 lane 同时在途，整体并发上限固定为 3。
+    private func updateRepoBatches(
+        _ batches: [[BatchStarTarget]],
+        membershipIn listID: String,
+        shouldBelong: Bool
+    ) async -> GitHubStarListBatchMembershipSummary {
+        var summaries: [GitHubStarListBatchMembershipSummary] = []
+        for batch in batches {
+            guard !Task.isCancelled else { break }
+            summaries.append(await updateRepoBatch(
+                batch,
+                membershipIn: listID,
+                shouldBelong: shouldBelong
+            ))
+        }
+        return GitHubStarListBatchMembershipSummary(
+            total: summaries.reduce(0) { $0 + $1.total },
+            succeeded: summaries.reduce(0) { $0 + $1.succeeded },
+            skipped: summaries.reduce(0) { $0 + $1.skipped },
+            failed: summaries.reduce(0) { $0 + $1.failed },
+            savedLocally: summaries.reduce(0) { $0 + $1.savedLocally }
+        )
+    }
+
+    /// 一个 owner 内顺序处理，跨 owner 由 `updateRepos` 以固定三个 Worker 调度。
+    private func updateRepoBatch(
+        _ targets: [BatchStarTarget],
+        membershipIn listID: String,
+        shouldBelong: Bool
+    ) async -> GitHubStarListBatchMembershipSummary {
         var succeeded = 0
         var skipped = 0
         var failed = 0
         var savedLocally = 0
 
         for target in targets {
+            guard !Task.isCancelled else { break }
             do {
                 var listIDs = Set(try await repository.listIds(forRepo: target.ghRepoId))
                 let didChange: Bool
