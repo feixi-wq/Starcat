@@ -189,6 +189,13 @@ struct GitHubStarListAIGroupingPreflightContext: Equatable, Sendable {
     }
 }
 
+/// 一次待执行的 membership 写入。`desiredListIDs == nil` 表示只新增本轮建议，
+/// 非 nil（包括空集合）表示用完整集合覆盖现有分组。
+private struct GitHubStarListMembershipApplyRequest: Sendable {
+    let repo: Repo
+    let desiredListIDs: Set<String>?
+}
+
 /// GitHub Lists 建议生成的最小能力边界。
 ///
 /// 会话只依赖这一项能力，测试可注入可控 Provider 验证 Worker 并发与渐进回写，
@@ -302,9 +309,14 @@ final class GitHubStarListAIGroupingSession {
     @ObservationIgnored private var automaticDeferredRepoIDs: Set<Int64> = []
     @ObservationIgnored private var activeDraftID: UUID?
     @ObservationIgnored private var isDraftCreated = false
+    /// 批量 mutation 期间只记录脏状态，等整批收口后再通知 UI，避免每个仓库触发一次数据库查询和列表重载。
+    @ObservationIgnored private var hasPendingMembershipChangeNotification = false
+    @ObservationIgnored private var hasPendingAutoIgnoredReposChangeNotification = false
 
     /// 固定五个长期 Worker；不要为每个仓库创建一个 Task，否则大列表会产生无界任务。
     private static let defaultConcurrency = 5
+    /// GitHub membership mutation 保持三路在途；同一 owner 仍串行，保留组织限制的短路语义。
+    private static let membershipApplyConcurrency = 3
     /// 命中 Provider 429 后只让 Worker 0 继续领取任务，避免五路请求持续放大限流。
     private static let rateLimitCooldown: TimeInterval = 30
     private static let organizationOAuthRestrictionFailure = GitHubStarListAIApplyFailure(
@@ -1045,11 +1057,12 @@ final class GitHubStarListAIGroupingSession {
         isApplying = true
         applyTask = Task { [weak self] in
             guard let self else { return }
-            await self.applyExactMemberships(
-                repo: job.repo,
-                desiredListIDs: desiredListIDs,
-                allowAutomaticRetry: true
-            )
+            await self.applyMembershipRequests([
+                GitHubStarListMembershipApplyRequest(
+                    repo: job.repo,
+                    desiredListIDs: desiredListIDs
+                )
+            ])
             self.isApplying = false
             self.applyTask = nil
         }
@@ -1078,22 +1091,19 @@ final class GitHubStarListAIGroupingSession {
     func applySelected(repoIDs: Set<Int64>? = nil) {
         guard mode == .manual, !isApplying else { return }
         let targetRepoIDs = repoIDs ?? selectedRepoIDsForBulkApply
-        let selectedRepos = jobs.compactMap { job -> Repo? in
+        let requests = jobs.compactMap { job -> GitHubStarListMembershipApplyRequest? in
             guard targetRepoIDs.contains(job.id),
                   !(selectedListIDsByRepo[job.id] ?? []).isEmpty
             else { return nil }
-            return job.repo
+            return GitHubStarListMembershipApplyRequest(repo: job.repo, desiredListIDs: nil)
         }
-        guard !selectedRepos.isEmpty else { return }
+        guard !requests.isEmpty else { return }
 
         isApplying = true
         applyTask = Task { [weak self] in
             guard let self else { return }
             await self.refreshMembershipsBeforeApply()
-            for repo in selectedRepos {
-                guard !Task.isCancelled else { break }
-                await self.applyOne(repo: repo, allowAutomaticRetry: true)
-            }
+            await self.applyMembershipRequests(requests)
             self.isApplying = false
             self.applyTask = nil
         }
@@ -1249,14 +1259,17 @@ final class GitHubStarListAIGroupingSession {
         applyTask = Task { [weak self] in
             guard let self else { return }
             if let desiredListIDs = self.editedListIDsByRepo[repoID] {
-                await self.applyExactMemberships(
-                    repo: job.repo,
-                    desiredListIDs: desiredListIDs,
-                    allowAutomaticRetry: true
-                )
+                await self.applyMembershipRequests([
+                    GitHubStarListMembershipApplyRequest(
+                        repo: job.repo,
+                        desiredListIDs: desiredListIDs
+                    )
+                ])
             } else {
                 await self.refreshMembershipsBeforeApply()
-                await self.applyOne(repo: job.repo, allowAutomaticRetry: true)
+                await self.applyMembershipRequests([
+                    GitHubStarListMembershipApplyRequest(repo: job.repo, desiredListIDs: nil)
+                ])
             }
             self.isApplying = false
             self.applyTask = nil
@@ -1284,11 +1297,12 @@ final class GitHubStarListAIGroupingSession {
                     self.jobs[latestIndex].isLocallyApplied = location == .local
                 }
                 await self.persistJobBestEffort(repoID: repoID)
-                self.onMembershipsChanged?()
+                self.recordMembershipChange()
             } catch {
                 // 本地覆盖仍然有效；这里只反馈远端重试失败，不能把已应用状态降级为失败。
                 self.contextErrorMessage = error.localizedDescription
             }
+            self.flushGroupingDataChangeNotifications()
             self.isApplying = false
             self.applyTask = nil
         }
@@ -1307,18 +1321,13 @@ final class GitHubStarListAIGroupingSession {
         applyTask = Task { [weak self] in
             guard let self else { return }
             await self.refreshMembershipsBeforeApply()
-            for job in retryJobs {
-                guard !Task.isCancelled else { break }
-                if let desiredListIDs = self.editedListIDsByRepo[job.id] {
-                    await self.applyExactMemberships(
-                        repo: job.repo,
-                        desiredListIDs: desiredListIDs,
-                        allowAutomaticRetry: true
-                    )
-                } else {
-                    await self.applyOne(repo: job.repo, allowAutomaticRetry: true)
-                }
+            let requests = retryJobs.map { job in
+                GitHubStarListMembershipApplyRequest(
+                    repo: job.repo,
+                    desiredListIDs: self.editedListIDsByRepo[job.id]
+                )
             }
+            await self.applyMembershipRequests(requests)
             self.isApplying = false
             self.applyTask = nil
         }
@@ -1456,6 +1465,8 @@ final class GitHubStarListAIGroupingSession {
             await group.waitForAll()
         }
 
+        // 自动确认会在五个分析 Worker 内完成 mutation；必须等所有 Worker 收口后只刷新一次 UI。
+        flushGroupingDataChangeNotifications()
         guard generation == self.generation, !Task.isCancelled else { return }
         isRunning = false
         runTask = nil
@@ -1662,6 +1673,86 @@ final class GitHubStarListAIGroupingSession {
         }
     }
 
+    /// 三条固定 lane 并发执行不同 owner 的 GitHub mutation；同一 owner 放在同一批次顺序处理。
+    /// 这样既减少大批量串行等待，也不会在首个组织限制返回前并发发出多条已知必败请求。
+    private func applyMembershipRequests(
+        _ requests: [GitHubStarListMembershipApplyRequest]
+    ) async {
+        guard !requests.isEmpty else { return }
+
+        var ownerOrder: [String] = []
+        var requestsByOwner: [String: [GitHubStarListMembershipApplyRequest]] = [:]
+        for request in requests {
+            let ownerKey = request.repo.owner
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if requestsByOwner[ownerKey] == nil {
+                ownerOrder.append(ownerKey)
+            }
+            requestsByOwner[ownerKey, default: []].append(request)
+        }
+        let ownerBatches = ownerOrder.compactMap { requestsByOwner[$0] }
+
+        var lanes = Array(
+            repeating: [[GitHubStarListMembershipApplyRequest]](),
+            count: Self.membershipApplyConcurrency
+        )
+        for (index, batch) in ownerBatches.enumerated() {
+            lanes[index % Self.membershipApplyConcurrency].append(batch)
+        }
+        let firstBatches = lanes[0]
+        let secondBatches = lanes[1]
+        let thirdBatches = lanes[2]
+
+        // 与同步服务保持固定 lane，避开 Swift 6 对 MainActor TaskGroup closure 的 region isolation 误报。
+        async let firstLane: Void = applyMembershipRequestBatches(firstBatches)
+        async let secondLane: Void = applyMembershipRequestBatches(secondBatches)
+        async let thirdLane: Void = applyMembershipRequestBatches(thirdBatches)
+        _ = await (firstLane, secondLane, thirdLane)
+        flushGroupingDataChangeNotifications()
+    }
+
+    private func applyMembershipRequestBatches(
+        _ batches: [[GitHubStarListMembershipApplyRequest]]
+    ) async {
+        for batch in batches {
+            guard !Task.isCancelled else { break }
+            for request in batch {
+                guard !Task.isCancelled else { break }
+                if let desiredListIDs = request.desiredListIDs {
+                    await applyExactMemberships(
+                        repo: request.repo,
+                        desiredListIDs: desiredListIDs,
+                        allowAutomaticRetry: true
+                    )
+                } else {
+                    await applyOne(repo: request.repo, allowAutomaticRetry: true)
+                }
+            }
+        }
+    }
+
+    private func recordMembershipChange() {
+        hasPendingMembershipChangeNotification = true
+    }
+
+    private func recordAutoIgnoredReposChange() {
+        hasPendingAutoIgnoredReposChangeNotification = true
+    }
+
+    /// 同一批次只发一次刷新信号。membership 刷新会同时读取自动忽略投影，
+    /// 因此两类数据都变化时无需再发第二个回调。
+    private func flushGroupingDataChangeNotifications() {
+        if hasPendingMembershipChangeNotification {
+            hasPendingMembershipChangeNotification = false
+            hasPendingAutoIgnoredReposChangeNotification = false
+            onMembershipsChanged?()
+        } else if hasPendingAutoIgnoredReposChangeNotification {
+            hasPendingAutoIgnoredReposChangeNotification = false
+            onAutoIgnoredReposChanged?()
+        }
+    }
+
     private func applyOne(repo: Repo, allowAutomaticRetry: Bool) async {
         guard let index = jobs.firstIndex(where: { $0.id == repo.id }) else { return }
         let current = existingListIDsByRepo[repo.id] ?? []
@@ -1705,7 +1796,7 @@ final class GitHubStarListAIGroupingSession {
                     jobs[latestIndex].isLocallyApplied = writeResult.location == .local
                 }
                 await persistJobBestEffort(repoID: repo.id)
-                onMembershipsChanged?()
+                recordMembershipChange()
                 return
             } catch {
                 let failure = GitHubStarListAIApplyFailure.classify(error)
@@ -1764,7 +1855,7 @@ final class GitHubStarListAIGroupingSession {
                     jobs[latestIndex].isLocallyApplied = location == .local
                 }
                 await persistJobBestEffort(repoID: repo.id)
-                onMembershipsChanged?()
+                recordMembershipChange()
                 return
             } catch {
                 let failure = GitHubStarListAIApplyFailure.classify(error)
@@ -1797,7 +1888,7 @@ final class GitHubStarListAIGroupingSession {
                 reason: .organizationOAuthRestriction
             )
             preparedAutomaticallyIgnoredRepoIDs.insert(repoID)
-            onAutoIgnoredReposChanged?()
+            recordAutoIgnoredReposChange()
         } catch {
             // 远端限制已经发生，本轮仍必须收敛成忽略；持久化失败只影响跨轮次去重。
             AppLog.database.error("[githubListGrouping] persist auto-ignore failed: \(error.localizedDescription, privacy: .public)")
@@ -1958,6 +2049,8 @@ final class GitHubStarListAIGroupingSession {
         automaticDeferredRepoIDs = []
         activeDraftID = nil
         isDraftCreated = false
+        hasPendingMembershipChangeNotification = false
+        hasPendingAutoIgnoredReposChangeNotification = false
         isRunning = false
         isPaused = false
         isApplying = false

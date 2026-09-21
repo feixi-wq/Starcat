@@ -2224,8 +2224,7 @@ struct RepoListView: View {
         Task {
             do {
                 let location = try await operation()
-                await viewModel.refreshSidebar()
-                await viewModel.reloadItems(forceRefresh: true)
+                await viewModel.refreshGitHubStarListData(reloadCurrentList: true)
                 if location == .local {
                     // 分组已经在有效查询视图中生效；Sheet 解释它为何尚未写入 GitHub。
                     gitHubStarListOAuthRestrictedRepo = repo

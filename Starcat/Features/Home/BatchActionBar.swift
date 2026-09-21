@@ -608,7 +608,7 @@ struct BatchActionBar: View {
             )
             // 只刷新 membership 投影，不立即 reload 当前列表：在「未分组」中首次勾选后，
             // 仓库虽然已不属于当前查询，但批量快照必须保留，用户才能继续勾选其它分组。
-            await viewModel.refreshSidebar()
+            await viewModel.refreshGitHubStarListData(reloadCurrentList: false)
             isUpdatingGitHubStarLists = false
             let toastKey: String
             if summary.failed > 0 {

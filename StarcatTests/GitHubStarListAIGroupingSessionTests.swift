@@ -424,6 +424,52 @@ struct GitHubStarListAIGroupingSessionTests {
         #expect(environment.session.mode == .idle)
     }
 
+    @Test("人工批量应用完成后只通知一次 membership 刷新")
+    func manualBulkApplyCoalescesMembershipRefresh() async throws {
+        let provider = ConcurrentGitHubStarListSuggestionProvider(
+            delay: .milliseconds(1),
+            suggestionsByRepoID: [
+                1: [GitHubStarListAISuggestion(listId: "list-1", confidence: 0.95, reason: "Tools")],
+                2: [GitHubStarListAISuggestion(listId: "list-1", confidence: 0.94, reason: "Tools")]
+            ]
+        )
+        let environment = try await makeEnvironment(
+            repoCount: 2,
+            groupedRepoFullNames: [],
+            aiRule: (instruction: "Developer tools", autoApplyEnabled: true),
+            insightService: provider
+        )
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+            let payload = if body.contains("repository(owner:") {
+                Data(#"{"data":{"repository":{"id":"repo-node"}}}"#.utf8)
+            } else {
+                Data(#"{"data":{"updateUserListsForItem":{"lists":[]}}}"#.utf8)
+            }
+            return (Self.response(200, for: request), payload)
+        }
+        var membershipRefreshCount = 0
+        environment.session.onMembershipsChanged = {
+            membershipRefreshCount += 1
+        }
+
+        await environment.session.prepareManualContext()
+        await environment.session.startManual()
+        await waitUntilStopped(environment.session)
+        environment.session.applySelected()
+        await waitUntilApplyStopped(environment.session)
+
+        #expect(environment.session.existingListIDsByRepo[1] == ["list-1"])
+        #expect(environment.session.existingListIDsByRepo[2] == ["list-1"])
+        #expect(membershipRefreshCount == 1)
+        let mutationCount = URLProtocolStub.receivedRequests.count { request in
+            let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+            return body.contains("updateUserListsForItem")
+        }
+        #expect(mutationCount == 2)
+    }
+
     @Test("组织限制下 AI 分组保存本地且授权恢复后可回写 GitHub")
     func organizationRestrictionAppliesLocallyAndCanRetryRemoteSync() async throws {
         let provider = ConcurrentGitHubStarListSuggestionProvider(
