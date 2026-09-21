@@ -193,6 +193,10 @@ struct BatchAIQueueServiceTests {
         #expect(service.selectedTagReviewRepositoryCount == 1)
         #expect(provider.batchTagGenerationCount == 1)
         #expect(provider.lastBatchInvocationMode == .manual)
+        #expect(provider.lastTagGenerationPolicy == AITagGenerationPolicy(
+            allowNewTags: false,
+            minimumReusableConfidence: 0
+        ))
         #expect(provider.generationCount == 0)
         #expect(try await repoTagRepository.fetchTags(forRepo: repo.id).isEmpty)
     }
@@ -403,7 +407,34 @@ struct BatchAIQueueServiceTests {
         #expect(job.tagReviewState == .notRequired)
         #expect(job.belowThresholdTags.map(\.name) == ["Swift"])
         #expect(provider.lastBatchInvocationMode == .automatic)
+        #expect(provider.lastTagGenerationPolicy == AITagGenerationPolicy(
+            allowNewTags: false,
+            minimumReusableConfidence: 0.85
+        ))
         #expect(service.pendingTagReviewCount == 0)
+    }
+
+    @Test("摘要与标签混合任务也转发 Jev 新增策略")
+    func mixedInsightForwardsTagGenerationPolicy() async throws {
+        let provider = ImmediateBatchAIInsightProvider(suggestions: Self.sampleSuggestions)
+        let service = try makeService(insightProvider: provider)
+        var repo = Repo.makeMinimal(owner: "acme", name: "mixed-policy")
+        repo.id = 515
+        var options = BatchAIQueueOptions()
+        options.actions = [.summary, .tags]
+        options.autoApplyTags = true
+        options.autoCreateMissingTags = true
+        options.confidenceThreshold = 0.92
+
+        #expect(service.start(repos: [repo], options: options, invocationMode: .automatic))
+        await waitUntilStopped(service)
+
+        #expect(provider.generationCount == 1)
+        #expect(provider.batchTagGenerationCount == 0)
+        #expect(provider.lastInsightTagGenerationPolicy == AITagGenerationPolicy(
+            allowNewTags: true,
+            minimumReusableConfidence: 0.92
+        ))
     }
 
     @Test("批量应用只处理仓库复选框选中的建议")
@@ -1109,6 +1140,8 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
     private(set) var generationCount = 0
     private(set) var batchTagGenerationCount = 0
     private(set) var lastBatchInvocationMode: BatchAIInvocationMode?
+    private(set) var lastTagGenerationPolicy: AITagGenerationPolicy?
+    private(set) var lastInsightTagGenerationPolicy: AITagGenerationPolicy?
 
     init(suggestions: [AITagSuggestion], batchTagError: TypeSafeClientError? = nil) {
         self.suggestions = suggestions
@@ -1137,6 +1170,20 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
             for: repos,
             tagHintsByRepoID: tagHintsByRepoID,
             purpose: .reuseFirst
+        )
+    }
+
+    func generateBatchTagSuggestions(
+        for repos: [Repo],
+        tagHintsByRepoID: [Int64: AITagHints],
+        invocationMode: BatchAIInvocationMode,
+        tagGenerationPolicy: AITagGenerationPolicy
+    ) async throws -> [Int64: [AITagSuggestion]] {
+        lastTagGenerationPolicy = tagGenerationPolicy
+        return try await generateBatchTagSuggestions(
+            for: repos,
+            tagHintsByRepoID: tagHintsByRepoID,
+            invocationMode: invocationMode
         )
     }
 
@@ -1171,6 +1218,26 @@ private final class ImmediateBatchAIInsightProvider: BatchAIInsightProviding {
             tagErrorMessage: nil,
             contextDegradationReason: nil,
             externalContextDegradationReason: nil
+        )
+    }
+
+    func generateBatchInsight(
+        for repo: Repo,
+        existingTagHints: AITagHints,
+        includeSummary: Bool,
+        includeTags: Bool,
+        codeContextEnabledOverride: Bool?,
+        externalContextEnabledOverride: Bool?,
+        tagGenerationPolicy: AITagGenerationPolicy
+    ) async throws -> RepoAIInsightGeneration {
+        lastInsightTagGenerationPolicy = tagGenerationPolicy
+        return try await generateBatchInsight(
+            for: repo,
+            existingTagHints: existingTagHints,
+            includeSummary: includeSummary,
+            includeTags: includeTags,
+            codeContextEnabledOverride: codeContextEnabledOverride,
+            externalContextEnabledOverride: externalContextEnabledOverride
         )
     }
 }

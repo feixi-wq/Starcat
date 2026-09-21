@@ -1264,10 +1264,10 @@ final class AppSettings {
         didSet { persistBool(key: Keys.typesafeGroupingSuggestionsEnabled, value: typesafeGroupingSuggestionsEnabled) }
     }
 
-    /// Jev 接管「批量 AI 标签整理」的建议生成（默认 false）。
+    /// Jev 接管所有 AI 标签建议的现有词表判断（默认 false）。
     ///
-    /// 仅影响纯标签批量任务；摘要+标签混合洞察不接 Jev（POC 边界，
-    /// 见 `TypeSafeBatchAIInsightRouter`）。
+    /// 单仓标签、纯标签批量、摘要+标签混合任务与自动整理统一走
+    /// `TypeSafeTagSuggestionRouter`；关闭或缺少 Key 时回退原 LLM 路径。
     var typesafeTagSuggestionsEnabled: Bool {
         didSet { persistBool(key: Keys.typesafeTagSuggestionsEnabled, value: typesafeTagSuggestionsEnabled) }
     }

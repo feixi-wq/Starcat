@@ -5,8 +5,8 @@
 //  Jev 决策服务的两个装配路由器 —— 实验性功能(Labs)POC。
 //
 //  为什么用路由器而不是直接替换 Provider:
-//  - 现有 LLM 路径必须一行不动地保留为默认路径:开关关闭、Key 未配置、后台自动
-//    整理时,路由器原样透传,行为与接入前逐字节等价;
+//  - 现有 LLM 路径必须保留为默认路径：开关关闭或 Key 未配置时原样调用 LLM，
+//    不能让实验功能的配置状态阻断正式标签能力；
 //  - Jev 是实验特性,后续可能整体下线 —— 下线时只需从 AppDependencies 摘掉这两层
 //    路由,业务文件(会话 / 队列 / 服务)零改动。
 //
@@ -14,8 +14,8 @@
 //  - 分组:仅 `session.mode == .manual`(用户手动整理 / 多选批量整理 / 手动草稿恢复)
 //    走 Jev;AutoTidyScheduler 的自动整理与 auto-apply 继续走 LLM,自动写入链路
 //    完全不接触 Jev;
-//  - 标签:仅手动「纯标签批量」(generateBatchTagSuggestions)走 Jev;自动整理与摘要+标签
-//    混合洞察(insight 任务)不接,避免自动写入链路使用实验 Provider，也避免双 Provider 串行调用;
+//  - 标签：所有标签生成入口统一先让 Jev 对现有词表打分；结果不足且业务策略允许新增时，
+//    才按需调用一次 LLM 生成词表外的新标签，新标签不再回送 Jev 做二次否决；
 //  - 失败语义:Jev 失败不静默回退 LLM(双跑烧两份钱 + 加倍延迟),错误沿既有
 //    失败分类上抛,由会话 / 队列现有的重试与展示语义接管。
 //
@@ -90,168 +90,104 @@ final class TypeSafeGitHubListSuggestionRouter: GitHubStarListSuggestionProvidin
     }
 }
 
-// MARK: - 批量洞察路由
+// MARK: - 标签建议路由
 
-/// `BatchAIQueueService` 的 `BatchAIInsightProviding` 路由层。
+/// 所有 AI 标签入口共用的 Jev-first 路由。
+///
+/// 路由器不持有 `RepoAIInsightService`，而是由调用方传入本次 LLM fallback 闭包：
+/// 这样单仓面板可以复用已经准备好的 README / 代码上下文，批量队列也能继续使用轻量
+/// 批请求，同时避免 Service 与 Router 互相强持有。
 @MainActor
-final class TypeSafeBatchAIInsightRouter: BatchAIInsightProviding {
-    private let base: any BatchAIInsightProviding
+final class TypeSafeTagSuggestionRouter {
     private let typesafeProvider: TypeSafeDecisionService
     private let settings: AppSettings
 
     init(
-        base: any BatchAIInsightProviding,
         typesafeProvider: TypeSafeDecisionService,
         settings: AppSettings
     ) {
-        self.base = base
         self.typesafeProvider = typesafeProvider
         self.settings = settings
     }
 
-    private var isTagsRoutingToTypesafe: Bool {
+    var isRoutingToTypesafe: Bool {
         settings.typesafeDecisionEnabled
             && settings.typesafeTagSuggestionsEnabled
             && typesafeProvider.canResolveAPIKey()
     }
 
-    func ensureGenerationClientsReady(includeSummary: Bool, includeTags: Bool) throws {
-        try ensureGenerationClientsReady(
-            includeSummary: includeSummary,
-            includeTags: includeTags,
-            invocationMode: .manual
-        )
-    }
-
-    func ensureGenerationClientsReady(
-        includeSummary: Bool,
-        includeTags: Bool,
-        invocationMode: BatchAIInvocationMode
-    ) throws {
-        // 只有人工纯标签批量且 Jev 生效时才跳过 LLM 预检，让只配置 Jev Key 的用户
-        // 也能生成建议；自动整理仍必须通过原 Provider 预检，不能借 UI 静默标志越界。
-        if invocationMode == .manual,
-           includeTags,
-           !includeSummary,
-           isTagsRoutingToTypesafe {
-            return
-        }
-        try base.ensureGenerationClientsReady(
-            includeSummary: includeSummary,
-            includeTags: includeTags,
-            invocationMode: invocationMode
-        )
-    }
-
-    func generateBatchTagSuggestions(
+    func generateTagSuggestions(
         for repos: [Repo],
         tagHintsByRepoID: [Int64: AITagHints],
-        purpose: AITagSuggestionPurpose
+        policy: AITagGenerationPolicy,
+        llmFallback: @MainActor (
+            _ repos: [Repo],
+            _ tagHintsByRepoID: [Int64: AITagHints],
+            _ purpose: AITagSuggestionPurpose
+        ) async throws -> [Int64: [AITagSuggestion]]
     ) async throws -> [Int64: [AITagSuggestion]] {
-        if purpose == .newOnly {
-            return try await base.generateBatchTagSuggestions(
+        guard !repos.isEmpty else { return [:] }
+        guard isRoutingToTypesafe else {
+            return try await llmFallback(repos, tagHintsByRepoID, .reuseFirst)
+        }
+
+        do {
+            let reusableResults = try await typesafeProvider.generateBatchTagSuggestions(
                 for: repos,
-                tagHintsByRepoID: tagHintsByRepoID,
-                purpose: .newOnly
+                tagHintsByRepoID: tagHintsByRepoID
             )
-        }
-        return try await generateBatchTagSuggestions(
-            for: repos,
-            tagHintsByRepoID: tagHintsByRepoID,
-            invocationMode: .manual
-        )
-    }
+            guard policy.allowNewTags else { return reusableResults }
 
-    func generateBatchTagSuggestions(
-        for repos: [Repo],
-        tagHintsByRepoID: [Int64: AITagHints],
-        invocationMode: BatchAIInvocationMode
-    ) async throws -> [Int64: [AITagSuggestion]] {
-        if invocationMode == .manual, isTagsRoutingToTypesafe {
-            do {
-                let reusableResults = try await typesafeProvider.generateBatchTagSuggestions(
-                    for: repos,
-                    tagHintsByRepoID: tagHintsByRepoID
-                )
-                let minimum = settings.clampedAITagSuggestionCounts.minimum
-                let maximum = settings.clampedAITagSuggestionCounts.maximum
-                let fallbackRepos = repos.filter { repo in
-                    (reusableResults[repo.id]?.count ?? 0) < minimum
-                }
-                guard !fallbackRepos.isEmpty else { return reusableResults }
-
-                // LLM 是“现有标签不足”的按需能力，不能在批次启动时强制预检，否则只配置
-                // Jev 且能命中旧标签的用户也会被无关的 LLM 配置阻断。
-                try base.ensureGenerationClientsReady(
-                    includeSummary: false,
-                    includeTags: true,
-                    invocationMode: invocationMode
-                )
-                let fallbackHints = Dictionary(uniqueKeysWithValues: fallbackRepos.map { repo in
-                    (repo.id, tagHintsByRepoID[repo.id] ?? .empty)
-                })
-                let generatedResults = try await base.generateBatchTagSuggestions(
-                    for: fallbackRepos,
-                    tagHintsByRepoID: fallbackHints,
-                    purpose: .newOnly
-                )
-
-                var mergedResults = Dictionary(uniqueKeysWithValues: repos.map { repo in
-                    (repo.id, reusableResults[repo.id] ?? [])
-                })
-                for repo in fallbackRepos {
-                    let hints = fallbackHints[repo.id] ?? .empty
-                    let reusable = reusableResults[repo.id] ?? []
-                    let forbiddenKeys = Set(
-                        (hints.repoTags + hints.libraryTags).map(AITagSuggestionPolicy.canonicalKey)
-                    )
-                    let reusableKeys = Set(reusable.map { AITagSuggestionPolicy.canonicalKey($0.name) })
-                    let genuinelyNew = (generatedResults[repo.id] ?? []).filter { suggestion in
-                        let key = AITagSuggestionPolicy.canonicalKey(suggestion.name)
-                        return !key.isEmpty
-                            && !forbiddenKeys.contains(key)
-                            && !reusableKeys.contains(key)
-                    }
-                    // 输入顺序先放 Jev 结果，使现有标签先占 maximum 配额；策略层只在完成
-                    // 选取后按置信度排序展示，不会让新标签挤掉可复用标签。
-                    mergedResults[repo.id] = AITagSuggestionPolicy.normalizedSuggestions(
-                        reusable + genuinelyNew,
-                        vocabulary: hints.repoTags + hints.libraryTags,
-                        maximumSuggestionCount: maximum
-                    )
-                }
-                return mergedResults
-            } catch let error as TypeSafeClientError {
-                AppLog.ai.error(
-                    "[typesafePOC] tag suggestions failed, surfacing error: \(error.localizedDescription, privacy: .public)"
-                )
-                throw error
+            let minimum = settings.clampedAITagSuggestionCounts.minimum
+            let maximum = settings.clampedAITagSuggestionCounts.maximum
+            let fallbackRepos = repos.filter { repo in
+                (reusableResults[repo.id] ?? []).count { suggestion in
+                    suggestion.confidence >= policy.minimumReusableConfidence
+                } < minimum
             }
-        }
-        return try await base.generateBatchTagSuggestions(
-            for: repos,
-            tagHintsByRepoID: tagHintsByRepoID,
-            invocationMode: invocationMode
-        )
-    }
+            guard !fallbackRepos.isEmpty else { return reusableResults }
 
-    /// 摘要 + 标签混合洞察不接 Jev(POC 边界):一次任务拆两个 Provider 会串行
-    /// 双调用,延迟与失败面都翻倍,等标签路径验证价值后再考虑。
-    func generateBatchInsight(
-        for repo: Repo,
-        existingTagHints: AITagHints,
-        includeSummary: Bool,
-        includeTags: Bool,
-        codeContextEnabledOverride: Bool?,
-        externalContextEnabledOverride: Bool?
-    ) async throws -> RepoAIInsightGeneration {
-        try await base.generateBatchInsight(
-            for: repo,
-            existingTagHints: existingTagHints,
-            includeSummary: includeSummary,
-            includeTags: includeTags,
-            codeContextEnabledOverride: codeContextEnabledOverride,
-            externalContextEnabledOverride: externalContextEnabledOverride
-        )
+            let fallbackHints = Dictionary(uniqueKeysWithValues: fallbackRepos.map { repo in
+                (repo.id, tagHintsByRepoID[repo.id] ?? .empty)
+            })
+            // LLM 只补词表外的新概念。它的产出直接进入审核 / 阈值应用，不再回送 Jev，
+            // 否则新标签天然缺少历史样本，低分会让这次 LLM 调用变成无效消耗。
+            let generatedResults = try await llmFallback(fallbackRepos, fallbackHints, .newOnly)
+
+            var mergedResults = Dictionary(uniqueKeysWithValues: repos.map { repo in
+                (repo.id, reusableResults[repo.id] ?? [])
+            })
+            for repo in fallbackRepos {
+                let hints = fallbackHints[repo.id] ?? .empty
+                let reusable = reusableResults[repo.id] ?? []
+                let forbiddenKeys = Set(
+                    (hints.repoTags + hints.libraryTags).map(AITagSuggestionPolicy.canonicalKey)
+                )
+                let reusableKeys = Set(reusable.map { AITagSuggestionPolicy.canonicalKey($0.name) })
+                let genuinelyNew = (generatedResults[repo.id] ?? []).filter { suggestion in
+                    let key = AITagSuggestionPolicy.canonicalKey(suggestion.name)
+                    return !key.isEmpty
+                        && !forbiddenKeys.contains(key)
+                        && !reusableKeys.contains(key)
+                }
+                let normalizedNew = AITagSuggestionPolicy.normalizedSuggestions(
+                    genuinelyNew,
+                    vocabulary: [],
+                    maximumSuggestionCount: 1
+                )
+                // 一旦 Jev 判定旧标签不足并实际调用了 LLM，有效新标签必须保留；否则低分
+                // 旧标签占满 maximum 后会把新标签截掉，形成“付费生成但结果不可见”的浪费。
+                let reusableLimit = max(0, maximum - normalizedNew.count)
+                mergedResults[repo.id] = AITagSuggestionPolicy.sortedByConfidenceDescending(
+                    Array(reusable.prefix(reusableLimit)) + normalizedNew
+                )
+            }
+            return mergedResults
+        } catch let error as TypeSafeClientError {
+            AppLog.ai.error(
+                "[typesafePOC] tag suggestions failed, surfacing error: \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
     }
 }

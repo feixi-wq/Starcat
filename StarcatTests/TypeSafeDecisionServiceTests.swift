@@ -5,7 +5,7 @@
 //  覆盖 Labs POC 的 TypeSafe(Jev)链路:
 //  - TypeSafeClient 的 wire contract(请求体 / 鉴权 / 错误映射 / 429 重试);
 //  - TypeSafeDecisionService 的 Noul 扇出 → 建议映射(阈值过滤 / 避重 / 封闭集校验);
-//  - 两个路由器的分流矩阵(手动走 Jev、自动与关闭走 LLM、Key 缺失回退)。
+//  - 两个路由器的分流矩阵（分组保持手动边界；标签覆盖所有入口并按需回退 LLM）。
 //
 //  所有网络均由 URLProtocolStub 拦截,不依赖 api.typesafe.ai 实时状态。
 //
@@ -617,39 +617,22 @@ struct TypeSafeSuggestionRoutersTests {
         }
     }
 
-    private final class RecordingBatchProvider: BatchAIInsightProviding {
-        private(set) var tagCallCount = 0
-        private(set) var insightCallCount = 0
-        private(set) var preflightCallCount = 0
+    /// 路由器及其 fallback 都固定在 MainActor；测试桩遵循同一隔离边界，避免把可变记录状态
+    /// 发送到并发执行器后再由测试读取。
+    @MainActor
+    private final class RecordingTagFallback {
+        private(set) var callCount = 0
         private(set) var tagPurposes: [AITagSuggestionPurpose] = []
-        var preflightShouldThrow = false
         var tagSuggestions: [AITagSuggestion] = []
 
-        func ensureGenerationClientsReady(includeSummary: Bool, includeTags: Bool) throws {
-            preflightCallCount += 1
-            if preflightShouldThrow { throw CocoaError(.userActivityConnectionUnavailable) }
-        }
-
-        func generateBatchTagSuggestions(
+        func generate(
             for repos: [Repo],
             tagHintsByRepoID: [Int64: AITagHints],
             purpose: AITagSuggestionPurpose
         ) async throws -> [Int64: [AITagSuggestion]] {
-            tagCallCount += 1
+            callCount += 1
             tagPurposes.append(purpose)
             return Dictionary(uniqueKeysWithValues: repos.map { ($0.id, tagSuggestions) })
-        }
-
-        func generateBatchInsight(
-            for repo: Repo,
-            existingTagHints: AITagHints,
-            includeSummary: Bool,
-            includeTags: Bool,
-            codeContextEnabledOverride: Bool?,
-            externalContextEnabledOverride: Bool?
-        ) async throws -> RepoAIInsightGeneration {
-            insightCallCount += 1
-            throw CocoaError(.userActivityConnectionUnavailable)
         }
     }
 
@@ -802,109 +785,66 @@ struct TypeSafeSuggestionRoutersTests {
         }
     }
 
-    // MARK: 批量洞察路由
+    // MARK: 标签路由
 
-    @Test("仅人工纯标签批量可跳过 LLM 预检")
-    func batchTagsRouteAndPreflightBypass() throws {
-        let keychain = InMemoryKeychain()
-        try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
-        let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
-        let base = RecordingBatchProvider()
-        base.preflightShouldThrow = true
-        let router = TypeSafeBatchAIInsightRouter(
-            base: base,
-            typesafeProvider: try makeJevStubService(settings: settings, keychain: keychain),
-            settings: settings
-        )
-
-        // LLM Provider 未就绪(会抛错)时,纯标签预检被跳过,不再阻断批量启动。
-        #expect(throws: Never.self) {
-            try router.ensureGenerationClientsReady(
-                includeSummary: false,
-                includeTags: true,
-                invocationMode: .manual
-            )
-        }
-        // 自动整理即使开关与 Key 都就绪，也必须走原 LLM 预检。
-        #expect(throws: CocoaError.self) {
-            try router.ensureGenerationClientsReady(
-                includeSummary: false,
-                includeTags: true,
-                invocationMode: .automatic
-            )
-        }
-        // 含摘要的组合仍透传既有预检语义。
-        #expect(throws: CocoaError.self) {
-            try router.ensureGenerationClientsReady(
-                includeSummary: true,
-                includeTags: true,
-                invocationMode: .manual
-            )
-        }
-    }
-
-    @Test("人工标签先走 Jev 且不足时生成新标签;自动模式与开关关闭走普通 LLM")
-    func batchTagsRoutingMatrix() async throws {
-        // 开:空词表不发 Jev 请求，直接按 newOnly 调用 LLM。
+    @Test("Jev 开启时空词表直接调用 newOnly；关闭或缺 Key 时保持普通 LLM")
+    func tagRoutingMatrix() async throws {
         do {
             let keychain = InMemoryKeychain()
             try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
             let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
-            let base = RecordingBatchProvider()
-            let router = TypeSafeBatchAIInsightRouter(
-                base: base,
+            let fallback = RecordingTagFallback()
+            let router = TypeSafeTagSuggestionRouter(
                 typesafeProvider: try makeJevStubService(settings: settings, keychain: keychain),
                 settings: settings
             )
-            _ = try await router.generateBatchTagSuggestions(
+            _ = try await router.generateTagSuggestions(
                 for: sampleRepos,
                 tagHintsByRepoID: [1: .empty],
-                invocationMode: .manual
-            )
-            #expect(base.tagCallCount == 1)
-            #expect(base.tagPurposes == [.newOnly])
-            #expect(URLProtocolStub.receivedRequests.isEmpty) // 空词表短路,未发请求
-
-            _ = try await router.generateBatchTagSuggestions(
-                for: sampleRepos,
-                tagHintsByRepoID: [1: .empty],
-                invocationMode: .automatic
-            )
-            #expect(base.tagCallCount == 2)
-            #expect(base.tagPurposes == [.newOnly, .reuseFirst])
+                policy: .manualReview
+            ) { repos, hints, purpose in
+                try await fallback.generate(for: repos, tagHintsByRepoID: hints, purpose: purpose)
+            }
+            #expect(fallback.callCount == 1)
+            #expect(fallback.tagPurposes == [.newOnly])
             #expect(URLProtocolStub.receivedRequests.isEmpty)
         }
 
-        // 关:走 LLM
-        do {
+        for hasKey in [true, false] {
             let keychain = InMemoryKeychain()
-            let settings = makeSettings(keychain: keychain, enabled: false, grouping: false, tags: false)
-            let base = RecordingBatchProvider()
-            let router = TypeSafeBatchAIInsightRouter(
-                base: base,
+            if hasKey {
+                try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
+            }
+            let settings = makeSettings(
+                keychain: keychain,
+                enabled: !hasKey,
+                grouping: false,
+                tags: !hasKey
+            )
+            let fallback = RecordingTagFallback()
+            let router = TypeSafeTagSuggestionRouter(
                 typesafeProvider: try makeJevStubService(settings: settings, keychain: keychain),
                 settings: settings
             )
-            _ = try await router.generateBatchTagSuggestions(
+            _ = try await router.generateTagSuggestions(
                 for: sampleRepos,
                 tagHintsByRepoID: [1: .empty],
-                invocationMode: .manual
-            )
-            #expect(base.tagCallCount == 1)
-            #expect(base.tagPurposes == [.reuseFirst])
+                policy: .manualReview
+            ) { repos, hints, purpose in
+                try await fallback.generate(for: repos, tagHintsByRepoID: hints, purpose: purpose)
+            }
+            #expect(fallback.tagPurposes == [.reuseFirst])
             #expect(URLProtocolStub.receivedRequests.isEmpty)
         }
     }
 
-    @Test("Jev 结果达到 minimum 时不预检也不调用 LLM")
-    func batchTagsSkipLLMWhenJevIsSufficient() async throws {
+    @Test("Jev 结果满足数量和置信度时不调用 LLM")
+    func tagsSkipLLMWhenJevIsSufficient() async throws {
         let keychain = InMemoryKeychain()
         try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
         let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
-        let base = RecordingBatchProvider()
-        base.preflightShouldThrow = true
-        let router = TypeSafeBatchAIInsightRouter(
-            base: base,
+        let fallback = RecordingTagFallback()
+        let router = TypeSafeTagSuggestionRouter(
             typesafeProvider: try makeJevStubService(
                 settings: settings,
                 keychain: keychain,
@@ -913,32 +853,66 @@ struct TypeSafeSuggestionRoutersTests {
             settings: settings
         )
 
-        let results = try await router.generateBatchTagSuggestions(
+        let results = try await router.generateTagSuggestions(
             for: sampleRepos,
             tagHintsByRepoID: [1: AITagHints(repoTags: [], libraryTags: ["Swift"])],
-            invocationMode: .manual
-        )
+            policy: AITagGenerationPolicy(allowNewTags: true, minimumReusableConfidence: 0.90)
+        ) { repos, hints, purpose in
+            try await fallback.generate(for: repos, tagHintsByRepoID: hints, purpose: purpose)
+        }
 
         #expect(results[1]?.map(\.name) == ["Swift"])
-        #expect(base.preflightCallCount == 0)
-        #expect(base.tagCallCount == 0)
+        #expect(fallback.callCount == 0)
         #expect(URLProtocolStub.receivedRequests.count == 1)
     }
 
-    @Test("Jev 结果低于 minimum 时仅生成新标签并与已有结果合并")
-    func batchTagsFallbackToNewOnlyAndMerge() async throws {
+    @Test("单仓标签生成经统一路由走 Jev，且不要求无关的 LLM 配置")
+    func singleRepoInsightUsesUnifiedTagRouter() async throws {
+        let keychain = InMemoryKeychain()
+        try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
+        let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
+        let router = TypeSafeTagSuggestionRouter(
+            typesafeProvider: try makeJevStubService(
+                settings: settings,
+                keychain: keychain,
+                noulProbability: 0.94
+            ),
+            settings: settings
+        )
+        let database = try InMemoryDatabaseManager()
+        let service = RepoAIInsightService(
+            summaryRepository: GRDBAISummaryRepository(database: database),
+            readmeRepository: ReadmeRepository(database: database),
+            settings: settings,
+            keychain: keychain,
+            tagSuggestionRouter: router
+        )
+        let repo = try #require(sampleRepos.first)
+
+        let result = try await service.generateInsight(
+            for: repo,
+            existingTagHints: AITagHints(repoTags: [], libraryTags: ["Swift"]),
+            includeSummary: false,
+            includeTags: true
+        )
+
+        #expect(result.insight.suggestedTags.map(\.name) == ["Swift"])
+        #expect(result.tagErrorMessage == nil)
+        #expect(URLProtocolStub.receivedRequests.count == 1)
+    }
+
+    @Test("Jev 结果不足时仅生成新标签并合并，且不二次验证新标签")
+    func tagsFallbackToNewOnlyAndMerge() async throws {
         let keychain = InMemoryKeychain()
         try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
         let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
         settings.applyAITagSuggestionCounts(minimum: 2, maximum: 3)
-        let base = RecordingBatchProvider()
-        // Swift 是现有词表名称，即使 LLM 违规返回也必须丢弃；Rust 才是可合并的新标签。
-        base.tagSuggestions = [
+        let fallback = RecordingTagFallback()
+        fallback.tagSuggestions = [
             AITagSuggestion(name: "Rust", confidence: 0.83, reason: "new systems language"),
             AITagSuggestion(name: "swift", confidence: 0.99, reason: "must be rejected")
         ]
-        let router = TypeSafeBatchAIInsightRouter(
-            base: base,
+        let router = TypeSafeTagSuggestionRouter(
             typesafeProvider: try makeJevStubService(
                 settings: settings,
                 keychain: keychain,
@@ -947,16 +921,48 @@ struct TypeSafeSuggestionRoutersTests {
             settings: settings
         )
 
-        let results = try await router.generateBatchTagSuggestions(
+        let results = try await router.generateTagSuggestions(
             for: sampleRepos,
-            tagHintsByRepoID: [1: AITagHints(repoTags: [], libraryTags: ["Swift"])],
-            invocationMode: .manual
+            tagHintsByRepoID: [
+                1: AITagHints(repoTags: [], libraryTags: ["Swift", "CLI", "AI"])
+            ],
+            policy: AITagGenerationPolicy(allowNewTags: true, minimumReusableConfidence: 0.95)
+        ) { repos, hints, purpose in
+            try await fallback.generate(for: repos, tagHintsByRepoID: hints, purpose: purpose)
+        }
+
+        #expect(results[1]?.count == 3)
+        #expect(results[1]?.contains(where: { $0.name == "Rust" }) == true)
+        #expect(fallback.callCount == 1)
+        #expect(fallback.tagPurposes == [.newOnly])
+        #expect(URLProtocolStub.receivedRequests.count == 1)
+    }
+
+    @Test("禁止新增时 Jev 不足也不调用 LLM")
+    func tagsDoNotFallbackWhenNewTagsAreDisabled() async throws {
+        let keychain = InMemoryKeychain()
+        try keychain.storeServiceAPIKey("tsk-test", forService: TypeSafeDecisionService.keychainServiceID)
+        let settings = makeSettings(keychain: keychain, enabled: true, grouping: true, tags: true)
+        let fallback = RecordingTagFallback()
+        let router = TypeSafeTagSuggestionRouter(
+            typesafeProvider: try makeJevStubService(
+                settings: settings,
+                keychain: keychain,
+                noulProbability: 0.6
+            ),
+            settings: settings
         )
 
-        #expect(Set(results[1]?.map(\.name) ?? []) == Set(["Swift", "Rust"]))
-        #expect(base.preflightCallCount == 1)
-        #expect(base.tagCallCount == 1)
-        #expect(base.tagPurposes == [.newOnly])
+        let results = try await router.generateTagSuggestions(
+            for: sampleRepos,
+            tagHintsByRepoID: [1: AITagHints(repoTags: [], libraryTags: ["Swift"])],
+            policy: AITagGenerationPolicy(allowNewTags: false, minimumReusableConfidence: 0.9)
+        ) { repos, hints, purpose in
+            try await fallback.generate(for: repos, tagHintsByRepoID: hints, purpose: purpose)
+        }
+
+        #expect(results[1]?.map(\.name) == ["Swift"])
+        #expect(fallback.callCount == 0)
         #expect(URLProtocolStub.receivedRequests.count == 1)
     }
 }

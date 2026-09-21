@@ -165,6 +165,27 @@ enum AITagSuggestionPurpose: Equatable, Sendable {
     case newOnly
 }
 
+/// 一次标签生成请求的业务策略。
+///
+/// JEV 只负责给现有标签打分；是否允许在现有标签不足时调用 LLM 创建新概念，必须由
+/// 发起场景显式决定。`minimumReusableConfidence` 只参与“现有标签是否已经足够”的判断，
+/// 不会在这里丢弃低分建议，最终展示或自动应用仍由各自界面的阈值策略负责。
+struct AITagGenerationPolicy: Equatable, Sendable {
+    var allowNewTags: Bool
+    var minimumReusableConfidence: Double
+
+    /// 单仓面板由用户逐项确认，允许在词表不足时补一个新标签。
+    static let manualReview = AITagGenerationPolicy(
+        allowNewTags: true,
+        minimumReusableConfidence: 0
+    )
+
+    init(allowNewTags: Bool, minimumReusableConfidence: Double) {
+        self.allowNewTags = allowNewTags
+        self.minimumReusableConfidence = min(max(minimumReusableConfidence, 0), 1)
+    }
+}
+
 /// AI 标签名的本地收敛策略。
 ///
 /// Prompt 只能提高模型遵守规则的概率，不能充当数据完整性边界；尤其不同 Provider 可能

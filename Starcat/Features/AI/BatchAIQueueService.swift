@@ -1166,12 +1166,13 @@ final class BatchAIQueueService {
         let includesTags = options.shouldRun(.tags, forRepoID: jobId)
         let suggestions: [AITagSuggestion]
         if includesTags && !includesSummary {
-            // 纯标签任务必须进入标签专用路由；此前这里始终调用 generateBatchInsight，
-            // 导致 Jev 路由在生产队列中永远不可达。调用来源同时传入，确保自动整理回退原 LLM。
+            // 纯标签任务进入标签专用路由；调用来源保留队列语义，新增策略负责控制
+            // Jev 结果不足时是否允许 LLM 补充词表外的新标签。
             let suggestionsByRepoID = try await insightService.generateBatchTagSuggestions(
                 for: [repo],
                 tagHintsByRepoID: [repo.id: hints],
-                invocationMode: invocationMode
+                invocationMode: invocationMode,
+                tagGenerationPolicy: options.tagGenerationPolicy
             )
             suggestions = suggestionsByRepoID[repo.id] ?? []
         } else if includesSummary {
@@ -1182,7 +1183,8 @@ final class BatchAIQueueService {
                 includeTags: includesTags,
                 // 标签单独运行时不需要摘要上下文，避免无意义地准备代码或外部搜索。
                 codeContextEnabledOverride: includesSummary ? options.codeContextEnabledOverride : nil,
-                externalContextEnabledOverride: includesSummary ? options.externalContextEnabledOverride : nil
+                externalContextEnabledOverride: includesSummary ? options.externalContextEnabledOverride : nil,
+                tagGenerationPolicy: options.tagGenerationPolicy
             )
             suggestions = insight.insight.suggestedTags
         } else {
@@ -1209,7 +1211,8 @@ final class BatchAIQueueService {
         try insightService.ensureGenerationClientsReady(
             includeSummary: options.actions.contains(.summary),
             includeTags: options.actions.contains(.tags),
-            invocationMode: invocationMode
+            invocationMode: invocationMode,
+            tagGenerationPolicy: options.tagGenerationPolicy
         )
     }
 
@@ -1385,6 +1388,7 @@ final class BatchAIQueueService {
                     tag = created
                     existingTagByName[created.name] = created
                     existingTagByKey[key] = created
+                    rememberTagInSharedLibrary(created.name, canonicalKey: key)
                 } catch {
                     AppLog.ai.error("[batch-ai] auto-create tag failed: repo=\(repoId, privacy: .public), tag=\(normalized, privacy: .public), error=\(error.localizedDescription, privacy: .public)")
                 }
@@ -1405,6 +1409,20 @@ final class BatchAIQueueService {
             }
         }
         return outcome
+    }
+
+    /// 自动整理创建的新标签要立刻进入本轮内存词表，让后续领取的仓库优先交给 Jev 复用。
+    /// 首波并发 Worker 仍可能同时触发 LLM，这是有界并发冷启动的预期行为；从下一波开始
+    /// 即可看到已经落库的标签，不必等整轮结束后重新加载全库。
+    private func rememberTagInSharedLibrary(_ name: String, canonicalKey: String) {
+        guard !canonicalKey.isEmpty else { return }
+        var library = sharedTagLibrary ?? []
+        guard !library.contains(where: {
+            AITagSuggestionPolicy.canonicalKey($0) == canonicalKey
+        }) else { return }
+        // 共享词表有字符预算；新建标签前插，避免已有大词表把刚生成的标签截断在预算外。
+        library.insert(name, at: 0)
+        sharedTagLibrary = library
     }
 
     /// 创建或复用自动应用所需的新标签。

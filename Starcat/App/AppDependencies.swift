@@ -1107,6 +1107,19 @@ final class AppDependencies {
         let summaryRepo = GRDBAISummaryRepository(database: db)
         self.aiSummaryRepository = summaryRepo
 
+        // Labs POC（2026-09-18）：Jev 决策服务与统一标签路由。
+        // 标签路由直接注入 RepoAIInsightService，因此单仓、纯标签批量、摘要+标签混合任务
+        // 和自动整理都会经过同一套 Jev-first 策略；开关关闭或 Key 缺失仍走原 LLM。
+        let typesafeDecisionService = TypeSafeDecisionService(
+            client: TypeSafeClient(),
+            settings: self.settings,
+            readmeRepository: readmeRepo
+        )
+        let typesafeTagSuggestionRouter = TypeSafeTagSuggestionRouter(
+            typesafeProvider: typesafeDecisionService,
+            settings: self.settings
+        )
+
         // 2026-06-13 W4：RepoContextPacker 客户端接入三件套装配。
         // 顺序：① SharedSnapshotService（无依赖，单 struct 实例 OK）
         //      ② RepoContextStorage（单例，从此 root 走 storage.shared 即 W6 决议）
@@ -1128,7 +1141,8 @@ final class AppDependencies {
             readmeRepository: readmeRepo,
             settings: self.settings,
             repoAIContextProvider: repoAIContextProvider,
-            entitlementGate: self.entitlementGate
+            entitlementGate: self.entitlementGate,
+            tagSuggestionRouter: typesafeTagSuggestionRouter
         )
         self.repoAIInsightService = aiInsight
         self.diskChatHistoryStore = .shared
@@ -1180,19 +1194,7 @@ final class AppDependencies {
         // 注：onTagsChanged 由 HomeView 在 environment 注入后挂接，刷新 Sidebar 计数。
         let aiOrganizationDraftRepository = GRDBAIOrganizationDraftRepository(database: db)
 
-        // Labs POC（2026-09-18）：TypeSafe Jev 决策引擎路由层。
-        // 两层路由都包裹既有 `aiInsight`：开关关闭 / Key 未配置 / 后台自动整理时
-        // 逐字节透传原路径；下线时删除本块并把下面两处注入改回 `aiInsight` 即可。
-        let typesafeDecisionService = TypeSafeDecisionService(
-            client: TypeSafeClient(),
-            settings: self.settings,
-            readmeRepository: readmeRepo
-        )
-        let typesafeBatchRouter = TypeSafeBatchAIInsightRouter(
-            base: aiInsight,
-            typesafeProvider: typesafeDecisionService,
-            settings: self.settings
-        )
+        // 分组仍保留独立路由：只影响手动分组，不改变 GitHub Lists 自动落库边界。
         let typesafeGroupingRouter = TypeSafeGitHubListSuggestionRouter(
             llmProvider: aiInsight,
             typesafeProvider: typesafeDecisionService,
@@ -1200,7 +1202,7 @@ final class AppDependencies {
         )
 
         let batchSvc = BatchAIQueueService(
-            insightService: typesafeBatchRouter,
+            insightService: aiInsight,
             tagRepository: tagRepo,
             repoTagRepository: repoTagRepo,
             aiSummaryRepository: summaryRepo,

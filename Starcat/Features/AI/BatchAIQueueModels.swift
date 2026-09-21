@@ -268,8 +268,8 @@ enum BatchAIAction: String, CaseIterable, Codable, Hashable, Sendable {
 
 /// 批量整理的调用来源，只存在于当前运行时，不写入草稿。
 ///
-/// Jev 的 Labs 契约明确只覆盖用户主动发起的建议流程；自动整理可能直接落库，必须继续走
-/// 已验证的 LLM 路径。使用独立枚举而不是复用 `silent`，避免把 UI 展示策略误当 Provider 路由条件。
+/// 调用来源继续负责区分人工审核与后台静默语义；标签 Provider 不再依赖它决定是否走 Jev，
+/// 所有入口统一使用 `AITagGenerationPolicy` 控制新增标签与置信度门槛。
 enum BatchAIInvocationMode: Equatable, Sendable {
     case manual
     case automatic
@@ -298,7 +298,8 @@ struct BatchAIQueueOptions: Codable, Equatable, Sendable {
 
     /// 自动应用时，是否同时创建标签库中尚不存在的标签。
     ///
-    /// 默认关闭，且只在 `autoApplyTags == true` 时生效；关闭时，新标签继续进入当前窗口待确认。
+    /// 默认关闭。它同时控制“Jev 现有标签不足时是否允许 LLM 补新标签”；自动应用关闭时，
+    /// 新标签只进入当前窗口等待人工确认，不会因为允许生成就直接写库。
     var autoCreateMissingTags: Bool = false
 
     /// 本次摘要生成是否启用代码上下文。
@@ -348,5 +349,13 @@ struct BatchAIQueueOptions: Codable, Equatable, Sendable {
     func shouldRun(_ action: BatchAIAction, forRepoID repoID: Int64) -> Bool {
         guard actions.contains(action) else { return false }
         return standardActionRepoIDs?.contains(repoID) ?? true
+    }
+
+    /// 生成与落库共用同一个“允许新增”意图；阈值只在自动应用时参与 Jev 结果是否足够的判断。
+    var tagGenerationPolicy: AITagGenerationPolicy {
+        AITagGenerationPolicy(
+            allowNewTags: autoCreateMissingTags,
+            minimumReusableConfidence: autoApplyTags ? confidenceThreshold : 0
+        )
     }
 }
