@@ -28,11 +28,14 @@ struct GitHubStarListSyncServiceTests {
             return (Self.response(200, for: request), Data(#"{"data":{"updateUserListsForItem":{"lists":[]}}}"#.utf8))
         }
 
-        let added = try await environment.service.addRepo(
+        let result = try await environment.service.addRepo(
             environment.repo,
             toLists: ["list-b", "list-c"]
         )
-        #expect(added == ["list-b", "list-c"])
+        #expect(result == GitHubStarListMembershipWriteResult(
+            changedListIDs: ["list-b", "list-c"],
+            location: .github
+        ))
         #expect(try await environment.repository.listIds(forRepo: environment.repo.id) == ["list-a", "list-b", "list-c"])
 
         let mutationRequests = try URLProtocolStub.receivedRequests.filter {
@@ -47,7 +50,8 @@ struct GitHubStarListSyncServiceTests {
             environment.repo,
             toLists: ["list-b", "list-c"]
         )
-        #expect(duplicateAdd.isEmpty)
+        #expect(duplicateAdd.changedListIDs.isEmpty)
+        #expect(duplicateAdd.location == .github)
         #expect(URLProtocolStub.receivedRequests.count == requestCount)
     }
 
@@ -88,6 +92,80 @@ struct GitHubStarListSyncServiceTests {
             _ = try await environment.service.addRepo(environment.repo, toLists: ["list-b"])
         }
         #expect(try await environment.repository.listIds(forRepo: environment.repo.id) == ["list-a"])
+    }
+
+    @Test("组织 OAuth 限制时保存本地覆盖，而普通网络错误仍保持失败")
+    func organizationRestrictionFallsBackToLocalMembership() async throws {
+        let environment = try await makeEnvironment(existingListIDs: ["list-a"])
+        Self.stubOrganizationRestriction()
+
+        let result = try await environment.service.addRepo(
+            environment.repo,
+            toLists: ["list-b"]
+        )
+
+        #expect(result == GitHubStarListMembershipWriteResult(
+            changedListIDs: ["list-b"],
+            location: .local
+        ))
+        #expect(try await environment.repository.remoteListIds(forRepo: 1) == ["list-a"])
+        #expect(try await environment.repository.listIds(forRepo: 1) == ["list-a", "list-b"])
+        #expect(try await environment.repository.hasLocalListOverrides(forRepo: 1))
+    }
+
+    @Test("同一受限组织一轮只探测一次，其余仓库直接保存本地")
+    func organizationRestrictionIsCachedPerOwner() async throws {
+        let environment = try await makeBatchEnvironment(
+            existingListIDsByRepo: [
+                "octo/one": ["list-a"],
+                "octo/two": ["list-a"]
+            ]
+        )
+        Self.stubOrganizationRestriction()
+
+        let summary = await environment.service.updateRepos(
+            environment.targets,
+            membershipIn: "list-b",
+            shouldBelong: true
+        )
+
+        #expect(summary == GitHubStarListBatchMembershipSummary(
+            total: 2,
+            succeeded: 2,
+            skipped: 0,
+            failed: 0,
+            savedLocally: 2
+        ))
+        #expect(try await environment.repository.listIds(forRepo: 1) == ["list-a", "list-b"])
+        #expect(try await environment.repository.listIds(forRepo: 2) == ["list-a", "list-b"])
+
+        let mutationRequests = try URLProtocolStub.receivedRequests.filter {
+            try Self.graphQLQuery(from: $0).contains("updateUserListsForItem")
+        }
+        #expect(mutationRequests.count == 1)
+    }
+
+    @Test("组织授权恢复后可把本地覆盖精确回写 GitHub")
+    func retryPendingLocalMembershipsConvergesToRemote() async throws {
+        let environment = try await makeEnvironment(existingListIDs: ["list-a"])
+        Self.stubOrganizationRestriction()
+        _ = try await environment.service.setLists(
+            for: environment.repo,
+            listIDs: ["list-b"]
+        )
+        #expect(try await environment.repository.listIds(forRepo: 1) == ["list-b"])
+
+        Self.stubSuccessfulMutations()
+        let summary = await environment.service.retryPendingLocalMemberships()
+
+        #expect(summary == GitHubStarListPendingMembershipSyncSummary(
+            total: 1,
+            synced: 1,
+            stillPending: 0,
+            failed: 0
+        ))
+        #expect(try await environment.repository.remoteListIds(forRepo: 1) == ["list-b"])
+        #expect(try await environment.repository.hasLocalListOverrides(forRepo: 1) == false)
     }
 
     @Test("批量勾选只补齐缺失 membership，并跳过已经属于目标分组的仓库")
@@ -285,6 +363,18 @@ struct GitHubStarListSyncServiceTests {
                 return (response(200, for: request), Data(#"{"data":{"repository":{"id":"repo-node"}}}"#.utf8))
             }
             return (response(200, for: request), Data(#"{"data":{"updateUserListsForItem":{"lists":[]}}}"#.utf8))
+        }
+    }
+
+    private static func stubOrganizationRestriction() {
+        URLProtocolStub.reset()
+        URLProtocolStub.requestHandler = { request in
+            let query = try graphQLQuery(from: request)
+            if query.contains("repository(owner:") {
+                return (response(200, for: request), Data(#"{"data":{"repository":{"id":"repo-node"}}}"#.utf8))
+            }
+            let payload = #"{"data":{"updateUserListsForItem":null},"errors":[{"message":"Although you appear to have the correct authorization credentials, the organization has enabled OAuth App access restrictions."}]}"#
+            return (response(200, for: request), Data(payload.utf8))
         }
     }
 

@@ -156,6 +156,7 @@ struct GitHubStarListRepositoryTests {
         #expect(try await repo.repoCountsByList()["list-a"] == nil)
         #expect(try await repo.repoCountsByList()["list-b"] == 1)
         #expect(try await repo.ungroupedRepoCount() == 0)
+        #expect(try await repo.hasLocalListOverrides(forRepo: 1))
         #expect(try await repo.fetchPendingLocalMembershipSyncs().first?.desiredListIDs == Set(["list-b"]))
 
         // GitHub 仍未接受目标集合时，本地覆盖必须跨刷新保留。
@@ -173,6 +174,7 @@ struct GitHubStarListRepositoryTests {
             syncedAt: Date(timeIntervalSince1970: 2)
         )
         #expect(try await repo.listIds(forRepo: 1) == ["list-b"])
+        #expect(try await repo.hasLocalListOverrides(forRepo: 1) == false)
         #expect(try await repo.fetchPendingLocalMembershipSyncs().isEmpty)
     }
 

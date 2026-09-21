@@ -223,6 +223,16 @@ struct GRDBGitHubStarListRepository: GitHubStarListRepositoryProtocol {
         }
     }
 
+    func hasLocalListOverrides(forRepo repoId: Int64) async throws -> Bool {
+        try await database.writer.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM repo_github_star_list_overrides WHERE repo_id = ? LIMIT 1",
+                arguments: [repoId]
+            ) != nil
+        }
+    }
+
     func fetchPendingLocalMembershipSyncs() async throws -> [GitHubStarListPendingMembershipSync] {
         try await database.writer.read { db in
             let rows = try Row.fetchAll(db, sql: """

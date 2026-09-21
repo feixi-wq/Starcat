@@ -1661,7 +1661,8 @@ final class GitHubStarListAIGroupingSession {
         var lastFailure: GitHubStarListAIApplyFailure?
         for attempt in 1...maximumAttempts {
             do {
-                let added = try await listService.addRepo(repo, toLists: requested)
+                let writeResult = try await listService.addRepo(repo, toLists: requested)
+                let added = writeResult.changedListIDs
                 // `addRepo` 返回空集合既可能是“远端无需新增”，也可能是应用前本地仓储
                 // 已由同步刷新到目标 membership。两种情况都应把本轮请求视为已确认，
                 // 否则会出现 UI 显示已应用、会话内 current groups 却仍缺失的假状态。
