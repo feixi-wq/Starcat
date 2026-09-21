@@ -131984,6 +131984,29 @@
         }
       }
     },
+    "githubStarLists.aiGrouping.localFallback.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting to sync to GitHub. Starcat will retry after organization access is restored."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待同步到 GitHub；组织授权恢复后 Starcat 会自动重试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待同步到 GitHub；組織授權恢復後 Starcat 會自動重試。"
+          }
+        }
+      }
+    },
     "githubStarLists.aiGrouping.metric.failed" : {
       "localizations" : {
         "en" : {
@@ -132332,6 +132355,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已套用"
+          }
+        }
+      }
+    },
+    "githubStarLists.aiGrouping.status.appliedLocally" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved locally"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存到本地"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已儲存到本機"
           }
         }
       }
@@ -134729,6 +134775,52 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "需要 GitHub 組織授權"
+          }
+        }
+      }
+    },
+    "githubStarLists.localFallback.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub blocked the remote update, so Starcat saved this grouping locally. It is available in Starcat now."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub 拦截了远端更新，Starcat 已将该分组保存到本地，现在即可在 Starcat 中使用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GitHub 攔截了遠端更新，Starcat 已將此群組儲存到本機，現在即可在 Starcat 中使用。"
+          }
+        }
+      }
+    },
+    "githubStarLists.localFallback.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved locally"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存到本地"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已儲存到本機"
           }
         }
       }

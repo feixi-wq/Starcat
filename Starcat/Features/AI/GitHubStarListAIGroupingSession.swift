@@ -142,6 +142,8 @@ struct GitHubStarListAIGroupingJob: Identifiable, Equatable, Sendable {
     var finishedAt: Date?
     /// 持久化自动忽略项只参与本轮审计展示，不计入 AI 分析进度，也不会被 Worker 领取。
     var isExcludedFromAnalysis = false
+    /// true 表示分组已在 Starcat 生效，但仍等待 GitHub 组织解除 OAuth App 限制后回写。
+    var isLocallyApplied = false
 
     var isApplied: Bool {
         if case .applied = applyState { true } else { false }
@@ -1265,6 +1267,33 @@ final class GitHubStarListAIGroupingSession {
         retryApplyFailures(repoIDs: nil)
     }
 
+    /// 显式重试把本地分组回写 GitHub；若组织仍受限，服务层会保留本地覆盖而不丢失结果。
+    func retryLocalMembershipSync(repoID: Int64) {
+        guard mode == .manual,
+              !isApplying,
+              let job = jobs.first(where: { $0.id == repoID }),
+              job.isLocallyApplied
+        else { return }
+
+        isApplying = true
+        applyTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let location = try await self.listService.retryLocalMembership(for: job.repo)
+                if let latestIndex = self.jobs.firstIndex(where: { $0.id == repoID }) {
+                    self.jobs[latestIndex].isLocallyApplied = location == .local
+                }
+                await self.persistJobBestEffort(repoID: repoID)
+                self.onMembershipsChanged?()
+            } catch {
+                // 本地覆盖仍然有效；这里只反馈远端重试失败，不能把已应用状态降级为失败。
+                self.contextErrorMessage = error.localizedDescription
+            }
+            self.isApplying = false
+            self.applyTask = nil
+        }
+    }
+
     /// 按选中子集重试应用失败；`repoIDs` 为空集合视为无可重试目标，`nil` 表示全部可重试项。
     func retryApplyFailures(repoIDs: Set<Int64>?) {
         guard mode == .manual, !isApplying else { return }
@@ -1673,6 +1702,7 @@ final class GitHubStarListAIGroupingSession {
                 await clearPersistedAutoIgnore(repoID: repo.id)
                 if let latestIndex = jobs.firstIndex(where: { $0.id == repo.id }) {
                     jobs[latestIndex].applyState = .applied(confirmed)
+                    jobs[latestIndex].isLocallyApplied = writeResult.location == .local
                 }
                 await persistJobBestEffort(repoID: repo.id)
                 onMembershipsChanged?()
@@ -1725,12 +1755,13 @@ final class GitHubStarListAIGroupingSession {
 
         for attempt in 1...maximumAttempts {
             do {
-                try await listService.setLists(for: repo, listIDs: desiredListIDs)
+                let location = try await listService.setLists(for: repo, listIDs: desiredListIDs)
                 existingListIDsByRepo[repo.id] = desiredListIDs
                 editedListIDsByRepo.removeValue(forKey: repo.id)
                 await clearPersistedAutoIgnore(repoID: repo.id)
                 if let latestIndex = jobs.firstIndex(where: { $0.id == repo.id }) {
                     jobs[latestIndex].applyState = .applied(desiredListIDs)
+                    jobs[latestIndex].isLocallyApplied = location == .local
                 }
                 await persistJobBestEffort(repoID: repo.id)
                 onMembershipsChanged?()

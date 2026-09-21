@@ -2186,9 +2186,9 @@ struct RepoListView: View {
                 guard shouldBelong != isMember else { return }
                 mutateGitHubStarListMembership(for: repo) {
                     if shouldBelong {
-                        try await dependencies.githubStarListSyncService.addRepo(repo, toList: listID)
+                        return try await dependencies.githubStarListSyncService.addRepo(repo, toList: listID)
                     } else {
-                        try await dependencies.githubStarListSyncService.removeRepo(repo, fromList: listID)
+                        return try await dependencies.githubStarListSyncService.removeRepo(repo, fromList: listID)
                     }
                 }
             }
@@ -2219,29 +2219,24 @@ struct RepoListView: View {
 
     private func mutateGitHubStarListMembership(
         for repo: Repo,
-        _ operation: @escaping () async throws -> Void
+        _ operation: @escaping () async throws -> GitHubStarListMembershipWriteLocation
     ) {
         Task {
             do {
-                try await operation()
+                let location = try await operation()
                 await viewModel.refreshSidebar()
                 await viewModel.reloadItems(forceRefresh: true)
-                toastMessage = "githubStarLists.toast.updated"
-            } catch {
-                AppLog.network.error("GitHub star list mutation failed: \(error.localizedDescription, privacy: .public)")
-                if isGitHubOrganizationOAuthRestriction(error) {
+                if location == .local {
+                    // 分组已经在有效查询视图中生效；Sheet 解释它为何尚未写入 GitHub。
                     gitHubStarListOAuthRestrictedRepo = repo
                 } else {
-                    toastMessage = "githubStarLists.toast.failed"
+                    toastMessage = "githubStarLists.toast.updated"
                 }
+            } catch {
+                AppLog.network.error("GitHub star list mutation failed: \(error.localizedDescription, privacy: .public)")
+                toastMessage = "githubStarLists.toast.failed"
             }
         }
-    }
-
-    private func isGitHubOrganizationOAuthRestriction(_ error: Error) -> Bool {
-        let message = error.localizedDescription.lowercased()
-        return message.contains("organization has enabled oauth app access restrictions")
-            || message.contains("third-parties is limited")
     }
 
     private var manageNavigationSubtitle: String {
@@ -3030,9 +3025,9 @@ private enum FilterMenuLanguageIconCache {
     }
 }
 
-/// GitHub 组织限制 OAuth App 访问时的结构化说明。
+/// GitHub 组织限制 OAuth App 访问时的本地降级说明。
 ///
-/// 不使用系统 Alert：该错误不是一句失败文案能解释清楚，用户需要知道原因、影响范围和可执行处理方式。
+/// 此时操作已经在 Starcat 本地生效，并非失败；Sheet 只解释远端状态与可执行处理方式。
 /// 底部提供仓库 GitHub 页跳转：组织策略拦的是 OAuth App，网页端登录后仍可改 Lists。
 private struct GitHubStarListOAuthRestrictionSheet: View {
 
@@ -3063,9 +3058,9 @@ private struct GitHubStarListOAuthRestrictionSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("githubStarLists.error.orgOAuthRestricted.title")
+                Text("githubStarLists.localFallback.title")
                     .font(.title3.weight(.semibold))
-                Text("githubStarLists.error.orgOAuthRestricted.subtitle")
+                Text("githubStarLists.localFallback.detail")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3076,7 +3071,7 @@ private struct GitHubStarListOAuthRestrictionSheet: View {
     private var details: some View {
         VStack(alignment: .leading, spacing: 10) {
             restrictionRow("exclamationmark.triangle.fill", "githubStarLists.error.orgOAuthRestricted.reason")
-            restrictionRow("arrow.triangle.2.circlepath", "githubStarLists.error.orgOAuthRestricted.impact")
+            restrictionRow("arrow.triangle.2.circlepath", "githubStarLists.aiGrouping.localFallback.detail")
             restrictionRow("safari.fill", "githubStarLists.error.orgOAuthRestricted.githubOption")
             restrictionRow("person.badge.shield.checkmark.fill", "githubStarLists.error.orgOAuthRestricted.adminOption")
         }
