@@ -46,7 +46,10 @@ struct ScreensaverRootView: View {
     @ViewBuilder
     private func content(metrics: AmbientGridMetrics) -> some View {
         switch viewModel.state {
-        case .idle, .loading, .empty:
+        case .idle, .loading:
+            // 屏保每次启动都会经过瞬态加载；保持纯黑，避免应用图标在头像墙前闪现。
+            Color.clear
+        case .empty:
             ScreensaverEmptyIcon()
         case .loaded(let snapshots):
             ScreensaverGridView(
