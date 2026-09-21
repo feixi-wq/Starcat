@@ -32,6 +32,13 @@ protocol GitHubStarListRepositoryProtocol: Sendable {
     /// 替换某 repo 的 GitHub List 集合。
     func setListIds(forRepo repoId: Int64, listIds: [String]) async throws
 
+    /// 保存某 repo 的完整本地期望；Repository 只落与当前远端快照不同的覆盖行。
+    func setLocalListIds(
+        forRepo repoId: Int64,
+        listIds: [String],
+        failureReason: String
+    ) async throws
+
     // MARK: - 查询
 
     func fetchAllLists() async throws -> [GitHubStarList]
@@ -39,6 +46,12 @@ protocol GitHubStarListRepositoryProtocol: Sendable {
     func findList(id: String) async throws -> GitHubStarList?
 
     func listIds(forRepo repoId: Int64) async throws -> [String]
+
+    /// 只读取 GitHub 已确认的远端关系，不合并本地覆盖。
+    func remoteListIds(forRepo repoId: Int64) async throws -> [String]
+
+    /// 返回所有仍需回写 GitHub 的本地期望；每个仓库只生成一个精确目标集合。
+    func fetchPendingLocalMembershipSyncs() async throws -> [GitHubStarListPendingMembershipSync]
 
     /// 一次性返回所有真实 list 的 starred repo 计数。
     func repoCountsByList() async throws -> [String: Int]
