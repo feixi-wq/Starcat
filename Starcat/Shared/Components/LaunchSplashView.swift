@@ -300,7 +300,8 @@ struct LaunchSplashContainer<Content: View>: View {
             duration: LaunchSplashTiming.mainContentRevealSeconds,
             curve: .easeInOut(duration: LaunchSplashTiming.mainContentRevealSeconds)
         )
-        await restoreSessionWithinSplashBudget()
+        // 返回值「是否在预算内完成」只影响启动分支；这里无论快慢都继续首启引导。
+        _ = await restoreSessionWithinSplashBudget()
         await presentFirstRunOnboardingIfNeeded()
     }
 

@@ -143,7 +143,7 @@ enum AITagSuggestionCountPolicy {
     static func clamp(minimum: Int, maximum: Int) -> (minimum: Int, maximum: Int) {
         let loBound = allowedRange.lowerBound
         let hiBound = allowedRange.upperBound
-        var hi = min(max(maximum, loBound), hiBound)
+        let hi = min(max(maximum, loBound), hiBound)
         var lo = min(max(minimum, loBound), hiBound)
         if lo > hi { lo = hi }
         return (lo, hi)

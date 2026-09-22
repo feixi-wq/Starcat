@@ -97,6 +97,10 @@ struct RepoFileSourcePreview: NSViewRepresentable {
     static let previewFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
     /// 滚动和窗口缩放都会改 line fragment，标尺必须跟着重绘。
+    ///
+    /// 挂 `@MainActor`：NSViewRepresentable 的生命周期回调全部在主线程，
+    /// Coordinator 与 makeNSView / dismantleNSView 同处主隔离域，可直接触碰 AppKit 视图。
+    @MainActor
     final class Coordinator {
         private var observations: [NSObjectProtocol] = []
 
@@ -104,8 +108,12 @@ struct RepoFileSourcePreview: NSViewRepresentable {
             scrollView.contentView.postsBoundsChangedNotifications = true
             scrollView.contentView.postsFrameChangedNotifications = true
             let center = NotificationCenter.default
-            let redraw: (Notification) -> Void = { _ in
-                ruler.needsDisplay = true
+            // `using:` 要求 @Sendable 闭包，不能直接捕获非 Sendable 的 AppKit 视图；
+            // `queue: .main` 保证回调落在主线程，进 MainActor.assumeIsolated 再触发重绘。
+            let redraw: @Sendable (Notification) -> Void = { [weak ruler] _ in
+                MainActor.assumeIsolated {
+                    ruler?.needsDisplay = true
+                }
             }
             observations = [
                 center.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main, using: redraw),
