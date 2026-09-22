@@ -2,20 +2,14 @@
 //  AmbientArtworkStyle.swift
 //  Starcat
 //
-//  Ambient / 屏保共用的占位与像素尺寸纯函数。图片加载仍留在各自壳层，
-//  避免 Core 依赖 Kingfisher 或 GitHub URL 规则。
+//  屏保格子的稳定占位。本地 PNG 由屏保自己解码，这里不碰 Kingfisher 或 GitHub URL。
 //
 
 import Foundation
 
-/// 稳定占位与解码边长。App Ambient 和系统屏保必须得出同一套色板索引。
+/// 缺图时的色板与首字母。同一 card id 必须始终落到同一格颜色。
 enum AmbientArtworkStyle {
     static let paletteCount = 8
-
-    static func targetPixelSize(tilePointSize: Double, displayScale: Double) -> Int {
-        let requested = Int(ceil(max(1, tilePointSize) * max(1, displayScale)))
-        return min(max(requested, 64), 1_024)
-    }
 
     static func monogram(from title: String) -> String? {
         guard let character = title.first(where: { !$0.isWhitespace }) else { return nil }

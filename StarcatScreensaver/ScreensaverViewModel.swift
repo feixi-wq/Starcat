@@ -2,8 +2,8 @@
 //  ScreensaverViewModel.swift
 //  StarcatScreensaver
 //
-//  屏保进程内的 Engine 调度。与 App AmbientViewModel 同构，但不预取网络图片、
-//  不写 AppLog。空快照保持 empty，由根视图画应用图标。
+//  屏保进程内的 Engine 调度。只读本地快照，不预取网络图片、不写 AppLog。
+//  空快照保持 empty，由根视图画应用图标。
 //
 
 import Foundation

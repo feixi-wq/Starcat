@@ -840,22 +840,6 @@ struct DebugMenuCommands: Commands {
 
             Divider()
 
-            Button("ambient.menu.openRepos") {
-                if let dependencies {
-                    AmbientWindowController.show(dependencies: dependencies, scene: .repos)
-                }
-            }
-            .disabled(dependencies == nil)
-
-            Button("ambient.menu.openOwners") {
-                if let dependencies {
-                    AmbientWindowController.show(dependencies: dependencies, scene: .owners)
-                }
-            }
-            .disabled(dependencies == nil)
-
-            Divider()
-
             Menu("Window Size") {
                 Button("Screenshot · 2880 × 1800 px · Apple 16:10") {
                     DebugWindowResizer.resizeFrontmostWindow(
