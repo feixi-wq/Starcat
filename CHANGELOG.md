@@ -2,6 +2,27 @@
 
 Release notes for the Mac App Store edition of Starcat.
 
+## 1.9.0-待发布
+
+### New
+
+- Initial tag taxonomy: When the tag library is empty, analyzes all starred repositories locally with visible phase and progress feedback, then lets you confirm a controlled vocabulary before reviewing repository assignments—no AI provider required.
+- Labs decision engines: Choose Jev or the on-device Laya model for repository grouping and tag reuse. Laya runs inside Starcat through MLX Swift without Python, with model download, runtime testing, and green ready-state indicators.
+
+### Improvements
+
+- Repository header actions: Click the logo to view the owner card, or click the owner or project name to open its GitHub page in your default browser; project-name clicks no longer copy the full repository name.
+- Shared local AI models: App Store and Direct now use one protected model store on this Mac; existing verified downloads migrate automatically, avoiding duplicate multi-gigabyte copies.
+- Batch tag vocabulary control: Jev first reuses existing tags; uncovered repositories are pooled into one AI request with at most five shared candidates, then reclassified after confirmation. Large reviewed batches now apply through chunked transactions with live progress, while Auto Tidy never expands the vocabulary.
+- AI tag review: Shows whether each suggestion came from Jev, LLM, or local analysis, and explains skipped repositories with specific reasons such as taxonomy coverage, vocabulary misses, or confidence thresholds.
+- Labs Jev OpenRouter fallback: Uses a verified OpenRouter configuration for Jev when no TypeSafe key is set; the native key remains preferred, and the LLM still fills gaps when no existing tag fits.
+- MCP paired devices: Shows each device's pairing date and time, making recent pairings easier to distinguish from older records.
+
+### Fixes
+
+- Tag organization window: Opening Background Tasks from the status panel now closes the popover first, and both entry points use the originating main window to avoid attaching to the wrong window.
+- CLI pairing: With the updated CLI, fixes pairing failures on some networks and provides a re-pairing hint when the certificate changes.
+
 ## 1.8.0
 
 ### New

@@ -1,6 +1,363 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "settings.labs.decision.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Decision Engine"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "决策引擎"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.enable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable decision engine"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启用决策引擎"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.enable.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose one typed-decision engine for repository grouping and existing-tag reuse. When disabled or unavailable, Starcat uses your configured AI provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为仓库分组与现有标签复用选择一个类型化决策引擎。关闭或所选引擎不可用时，Starcat 使用已配置的 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.engine" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Implementation"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实现"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.grouping" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use the decision engine for repository grouping"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仓库分组使用决策引擎"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.grouping.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to manually started grouping and background auto-grouping. Starcat still validates candidates and applies your configured confidence threshold before an automatic write."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同时用于手动发起的仓库分组与后台自动分组。任何自动写入前，Starcat 仍会校验候选分组并应用你设置的置信度阈值。"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.tags" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use the decision engine for tag suggestions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标签建议使用决策引擎"
+          }
+        }
+      }
+    },
+"settings.labs.decision.tags.pooled.description" : {
+  "extractionState" : "manual",
+  "localizations" : {
+    "en" : {
+      "stringUnit" : {
+        "state" : "translated",
+        "value" : "Applies to single-repository suggestions, tag-only batches, mixed summary-and-tag tasks, and Auto Tidy. The selected engine first reuses matching existing tags. In manual batches that allow new tags, uncovered repositories are pooled into one AI request; confirm up to five shared tags before reclassification. Auto Tidy never expands the vocabulary."
+      }
+    },
+    "zh-Hans" : {
+      "stringUnit" : {
+        "state" : "translated",
+        "value" : "用于单仓标签建议、纯标签批量、摘要与标签混合任务以及自动整理。所选引擎会优先复用匹配的现有标签；人工批量允许新增时，未覆盖仓库只汇总为一次 AI 请求，确认最多 5 个全局标签后再重新归类。自动整理不会扩充词表。"
+      }
+    }
+  }
+},
+    "settings.labs.decision.tags.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to single-repository suggestions, batch tasks, and Auto Tidy. The selected engine reuses existing tags first; when too few qualify and new tags are allowed, your AI provider generates at most one new tag."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于单仓标签建议、批量任务与自动整理。所选引擎优先复用现有标签；达到阈值的标签不足且允许新增时，再由 AI Provider 生成最多一个新标签。"
+          }
+        }
+      }
+    },
+    "settings.labs.decision.scope.note" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The selected engine only returns decisions and probabilities. Starcat keeps candidate validation, confidence thresholds, and write rules. A runtime failure is surfaced and never silently retried with another engine."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所选引擎只返回决策与概率；候选校验、置信度阈值和写入规则仍由 Starcat 控制。运行时失败会直接展示，不会静默切换到其他引擎重跑。"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Laya Local Model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Laya 本地模型"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.model.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Multilingual FP16 decision model with a 1,024-token context. The model runs entirely inside Starcat through MLX Swift."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持多语言、上下文 1,024 token 的 FP16 决策模型，通过 MLX Swift 完全在 Starcat 进程内运行。"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.status.notInstalled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model not installed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型未安装"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.status.loading" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading model into MLX"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在将模型载入 MLX"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.status.deleting" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deleting model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在删除模型"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.status.ready" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installed and ready"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已安装并可用"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.install" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download Model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载模型"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.delete" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete Model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除模型"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.test" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test Model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试模型"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.test.successFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ready · %1$@ ms · P(demo) = %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型可用 · %1$@ ms · P(demo) = %2$@"
+          }
+        }
+      }
+    },
+    "settings.labs.laya.localOnly.note" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The checkpoint is downloaded from Hugging Face. Inference stays on this Mac and does not require Python, PyTorch, or a remote API key."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checkpoint 从 Hugging Face 下载；推理始终留在本机，不依赖 Python、PyTorch 或远端 API Key。"
+          }
+        }
+      }
+    },
     "settings.labs.intro" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -371,6 +728,329 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "边界：仅手动触发；所有建议仍需你确认后才会写入。Jev 结果携带校准概率（在理由栏显示为 \"Jev P=…\"）。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.enable.unified.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routes repository grouping and tag suggestions through TypeSafe's Jev model — fast, calibrated typed decisions instead of LLM text generation. Falls back to your configured AI provider when disabled or unconfigured."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将仓库分组与标签建议切换到 TypeSafe Jev 模型：使用快速、带校准概率的类型化决策，而非 LLM 文本生成。关闭或未配置时自动回退到已配置的 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.grouping.unified" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Jev for repository grouping"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仓库分组使用 Jev"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.grouping.unified.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to both manually started grouping and background auto-grouping. Jev supplies calibrated probabilities; Starcat validates candidates and applies your configured confidence threshold before any automatic write."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同时用于手动发起的仓库分组与后台自动分组。Jev 提供校准概率；任何自动写入前，Starcat 仍会校验候选分组并应用你设置的置信度阈值。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.tags.unified" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Jev for tag suggestions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标签建议使用 Jev"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.tags.unified.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to single-repository suggestions, tag-only batches, mixed summary-and-tag tasks, and Auto Tidy. Jev first reuses matching existing tags; when too few qualify and new tags are allowed, your AI provider generates at most one new tag."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于单仓标签建议、纯标签批量、摘要与标签混合任务以及自动整理。Jev 会优先复用匹配的现有标签；达到阈值的标签不足且允许新增时，再由 AI Provider 生成最多一个新标签。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.tags.pooled.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Applies to single-repository suggestions, tag-only batches, mixed summary-and-tag tasks, and Auto Tidy. Jev first reuses matching existing tags. In manual batches that allow new tags, uncovered repositories are pooled into one AI request; confirm up to five shared tags before reclassification. Auto Tidy never expands the vocabulary."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于单仓标签建议、纯标签批量、摘要与标签混合任务以及自动整理。Jev 会优先复用匹配的现有标签；人工批量允许新增时，未覆盖仓库只汇总为一次 AI 请求，确认最多 5 个全局标签后再重新归类。自动整理不会扩充词表。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.scope.unified.note" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scope: Jev only supplies decisions and probabilities; Starcat keeps candidate validation, confidence thresholds, and write rules. Manual suggestions require confirmation, while enabled automatic actions can apply results that meet your threshold. Probabilities appear as \"Jev P=…\" in the reason field."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边界：Jev 只提供决策与概率；候选校验、置信度阈值和写入规则仍由 Starcat 控制。手动建议需要确认；启用自动操作时，达到阈值的结果可自动应用。概率会在理由栏显示为 \"Jev P=…\"。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.apiKey.optional" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe API Key (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe API Key（可选）"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.noAvailableRoute" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No usable Jev credential — routing is falling back to your configured AI provider."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可用的 Jev 凭据，当前路由已回退到你配置的 AI Provider。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.openRouter.readyFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenRouter fallback ready · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenRouter fallback 已就绪 · %@"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.openRouter.activeMissingKeyFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Using OpenRouter · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前使用 OpenRouter · %@"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.openRouter.activeFailedFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe test failed; switched to OpenRouter · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe 测试失败，已切换到 OpenRouter · %@"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.openRouter.available.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When the TypeSafe API key is missing or its latest connection test failed, Starcat reuses this verified profile and calls typesafe/jev-1.13 through the OpenRouter Decisions API. The Chat model typesafe/jev-router is not used."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未配置 TypeSafe API Key 或其最近一次连接测试失败时，Starcat 会复用这份已验证的配置，通过 OpenRouter Decisions API 调用 typesafe/jev-1.13；不会使用 Chat 模型 typesafe/jev-router。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.openRouter.unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenRouter fallback is not ready"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenRouter fallback 未就绪"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.openRouter.unavailable.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable and successfully test an OpenRouter provider in AI Services to use it when the TypeSafe key is missing or its test fails."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“AI 服务”中启用并成功测试 OpenRouter 后，TypeSafe Key 缺失或测试失败时即可由它接管 Jev 决策。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.model.openRouterFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenRouter Decisions API · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenRouter Decisions API · %@"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.model.openRouterDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fixed Decisions API model. It is separate from the Chat model list and may not appear there."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "固定的 Decisions API 模型，与 Chat 模型列表相互独立，因此可能不会出现在该列表中。"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.test.openRouterSuccessFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected via OpenRouter · %1$@ · %2$@ ms · P(demo) = %3$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已通过 OpenRouter 连接 · %1$@ · %2$@ ms · P(demo) = %3$@"
+          }
+        }
+      }
+    },
+    "settings.labs.typesafe.test.bothFailedFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe failed: %1$@ OpenRouter fallback also failed: %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TypeSafe 连接失败：%1$@ OpenRouter fallback 也失败：%2$@"
           }
         }
       }
@@ -85530,6 +86210,13 @@
         }
       }
     },
+    "batchAI.panel.applyProgressFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Applying tags %1$d / %2$d" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在应用标签 %1$d / %2$d" } }
+      }
+    },
     "batchAI.panel.cancel" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -86709,6 +87396,74 @@
         }
       }
     },
+    "batchAI.panel.ignoreReason.emptyTagLibrary" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag generation was skipped because the tag library is empty. Build a tag taxonomy in manual organization first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标签库为空，后台自动整理已跳过标签生成；请先在手动整理中建立标签体系。"
+          }
+        }
+      }
+    },
+    "batchAI.panel.ignoreReason.taxonomyUncovered" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The current tag taxonomy did not cover this repository: no confirmed candidate tag matched, so no tag was written."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前标签体系未覆盖：未匹配到你确认的候选标签，因此未写入标签。"
+          }
+        }
+      }
+    },
+    "batchAI.panel.ignoreReason.userSkipped" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You ignored this repository's tag suggestions, so no tag was written."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已忽略本仓库的标签建议，因此未写入标签。"
+          }
+        }
+      }
+    },
+    "batchAI.panel.ignoreReason.vocabularyMiss" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No suitable existing tag matched this repository, so no tag was written."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现有标签库中没有匹配此仓库的合适标签，因此未写入标签。"
+          }
+        }
+      }
+    },
     "batchAI.panel.interruptedByAppExit" : {
       "localizations" : {
         "en" : {
@@ -87812,6 +88567,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "含新增标签 · 待确认"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.modelOrigin.jev" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jev"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jev"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.modelOrigin.laya" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Laya"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Laya"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.modelOrigin.llm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LLM"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LLM"
+          }
+        }
+      }
+    },
+    "batchAI.panel.review.modelOrigin.unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unknown"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来源未知"
           }
         }
       }
@@ -127076,6 +127899,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "點擊倉庫標誌以開啟其 GitHub 專案頁面。"
+          }
+        }
+      }
+    },
+    "gettingStarted.step.repoHomepage.nameDetail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Click the project name to open its GitHub project page."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "点击项目名，打开 GitHub 项目主页。"
           }
         }
       }
@@ -354007,6 +354847,295 @@
         }
       }
     },
+    "settings.mcp.agentSetup.cliLifecyclePrompt" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "# Install, Update, and Verify Starcat CLI\n\n## Goal\n\nThe current AI Agent ensures that the official Starcat CLI is installed, updates an existing installation when a newer stable release is available, and completes read-only diagnostics.\n\nOfficial repository:\n\n```text\n%1$@\n```\n\n## Workflow\n\n### 1. Detect the operating system and locate an existing CLI\n\nDo this before running any installer.\n\nmacOS / Linux:\n\n```bash\ncommand -v starcat || true\n[ -x \"$HOME/.local/bin/starcat\" ] && echo \"$HOME/.local/bin/starcat\" || true\n```\n\nWindows PowerShell:\n\n```powershell\n(Get-Command starcat -ErrorAction SilentlyContinue).Source\n```\n\nRecord the resolved absolute executable path as `CLI_PATH` on macOS/Linux or `$cliPath` on Windows. If more than one installation is found, use the one returned by `command -v` / `Get-Command` and report the duplicate path; do not delete either installation.\n\n### 2. Install only when the CLI is missing\n\nIf no executable was found, select the official installer for the current environment.\n\nmacOS / Linux:\n\n```bash\n%2$@\n```\n\nWindows PowerShell:\n\n```powershell\n%3$@\n```\n\nAfter installation, locate the executable again and store its absolute path. If it is still unavailable, stop and report the installation failure.\n\n### 3. Check and update the installed version\n\nFirst record the current version, then run the official updater. The PATH form of the updater is `%4$@`; prefer the resolved absolute path so a stale shell PATH cannot select another binary.\n\nmacOS / Linux:\n\n```bash\n\"$CLI_PATH\" version\n\"$CLI_PATH\" update\n```\n\nWindows PowerShell:\n\n```powershell\n& $cliPath version\n& $cliPath update\n```\n\n`starcat update` checks the latest stable release and updates only when a newer version exists. If it reports that the installation is managed by Homebrew, use the package manager instead:\n\n```bash\nbrew update\nbrew upgrade starcat\n```\n\nAfter any update attempt, resolve the executable path again and run `version` again. If the updater reports a development build or a network, permission, checksum, or package-manager failure, do not overwrite the installation with another method; stop the update step and report the exact error.\n\n### 4. Run read-only diagnostics\n\nUse the final resolved executable path. For the default macOS/Linux installer path, the command is:\n\n```bash\n\"$HOME/.local/bin/starcat\" doctor\n```\n\nOn Windows, run `& $cliPath doctor`.\n\n### 5. Handle an unpaired CLI\n\nIf diagnostics report that the CLI is not paired:\n\n1. Stop further connection verification.\n2. Report that Starcat CLI is installed and current, but not paired.\n3. Instruct the user to open **Starcat > Settings > MCP**.\n4. Instruct the user to use Starcat's **Copy Pairing Prompt** action.\n5. Do not request a standalone pairing URI or Local API Key.\n\n## Boundaries\n\n- Use only Starcat's official installer, built-in updater, or Homebrew for a Homebrew-managed installation.\n- Do not reinstall over an existing CLI merely to check for updates.\n- Do not call the GitHub Releases API directly; `starcat update` owns version comparison and checksum verification.\n- Do not modify project files or execute Starcat write commands.\n- Do not request a Local API Key or construct a pairing URI.\n\n## Final Report\n\nReport the operating system and CPU architecture, CLI path, version before and after the check, whether installation or update was needed, update result, `starcat doctor` result, and whether device pairing is still required."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "# 安装、更新并验证 Starcat CLI\n\n## 任务目标\n\n当前 AI Agent 确保官方 Starcat CLI 已安装；如果已有安装且存在新的稳定版本，则完成更新，最后执行只读诊断。\n\n官方仓库：\n\n```text\n%1$@\n```\n\n## 执行流程\n\n### 1. 判断操作系统并查找已有 CLI\n\n必须先完成此步骤，再决定是否运行安装脚本。\n\nmacOS / Linux：\n\n```bash\ncommand -v starcat || true\n[ -x \"$HOME/.local/bin/starcat\" ] && echo \"$HOME/.local/bin/starcat\" || true\n```\n\nWindows PowerShell：\n\n```powershell\n(Get-Command starcat -ErrorAction SilentlyContinue).Source\n```\n\n将解析到的绝对可执行文件路径记录为 macOS/Linux 的 `CLI_PATH` 或 Windows 的 `$cliPath`。如果找到多个安装，优先使用 `command -v` / `Get-Command` 返回的路径，并报告重复路径；不要删除任何安装。\n\n### 2. 仅在 CLI 不存在时安装\n\n如果未找到可执行文件，才根据当前环境执行官方安装命令。\n\nmacOS / Linux：\n\n```bash\n%2$@\n```\n\nWindows PowerShell：\n\n```powershell\n%3$@\n```\n\n安装完成后重新查找可执行文件并记录绝对路径。如果仍然找不到，停止并报告安装失败。\n\n### 3. 检查并更新已安装版本\n\n先记录当前版本，再运行官方 updater。PATH 形式的更新命令是 `%4$@`；优先通过已解析的绝对路径执行，避免旧 PATH 选中另一份二进制。\n\nmacOS / Linux：\n\n```bash\n\"$CLI_PATH\" version\n\"$CLI_PATH\" update\n```\n\nWindows PowerShell：\n\n```powershell\n& $cliPath version\n& $cliPath update\n```\n\n`starcat update` 会检查最新稳定版，只在存在新版本时更新。如果它报告当前安装由 Homebrew 管理，则改用包管理器：\n\n```bash\nbrew update\nbrew upgrade starcat\n```\n\n完成更新尝试后，重新解析可执行文件路径并再次执行 `version`。如果 updater 报告开发版本，或出现网络、权限、校验和、包管理器错误，不要改用其他方式覆盖现有安装；停止更新步骤并原样报告错误。\n\n### 4. 执行只读诊断\n\n使用最终解析到的可执行文件绝对路径。对于 macOS/Linux 官方安装器的默认路径，命令是：\n\n```bash\n\"$HOME/.local/bin/starcat\" doctor\n```\n\nWindows 使用 `& $cliPath doctor`。\n\n### 5. 处理未配对状态\n\n如果诊断结果显示 CLI 尚未配对：\n\n1. 停止后续连接验证。\n2. 报告“Starcat CLI 已安装并完成版本检查，但尚未配对”。\n3. 提示用户打开 Starcat 的「设置 → MCP」。\n4. 提示用户使用 Starcat 提供的“复制配对提示词”功能。\n5. 不向用户索取单独的 pairing URI 或 Local API Key。\n\n## 操作边界\n\n- 只使用 Starcat 官方安装脚本、内置 updater；Homebrew 管理的安装只使用 Homebrew 更新。\n- 不要为了检查新版本而覆盖安装已有 CLI。\n- 不直接请求 GitHub Releases API；版本比较和校验和验证统一交给 `starcat update`。\n- 不修改当前项目文件，不执行 Starcat 写入命令。\n- 不索取 Local API Key，不自行构造 pairing URI。\n\n## 完成后报告\n\n报告操作系统和 CPU 架构、CLI 路径、检查前后版本、是否执行安装或更新、更新结果、`starcat doctor` 结果，以及是否仍需完成设备配对。"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.complete.copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Complete Setup Prompt"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制完整配置提示词"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.complete.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Device pairing still requires one confirmation in Starcat. A newly installed MCP server or Skill may require restarting the current AI Agent before it can be loaded."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备配对仍需在 Starcat 中确认一次；新安装的 MCP Server 或 Skill 可能需要重启当前 AI Agent 后才能加载。"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.complete.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ask the current AI Agent to check or update the CLI, pair this device, configure MCP, install or update starcat-skill, and perform read-only verification in sequence."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让当前 AI Agent 依次检查或更新 CLI、完成设备配对、配置 MCP、安装或更新 starcat-skill，并执行只读验证。"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.complete.prompt" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "# Complete Starcat Setup\n\n## Goal\n\nThe current AI Agent completes the Starcat CLI lifecycle, device pairing, user-level MCP registration, `starcat-skill` installation or update, and read-only verification in that order. Reuse valid existing setup instead of duplicating it, and stop rather than overwriting a conflict.\n\nOfficial CLI repository:\n\n```text\n%1$@\n```\n\nOfficial Skill repository:\n\n```text\n%6$@\n```\n\n## Rules before starting\n\n- Detect the operating system, CPU architecture, and current AI Agent before changing anything.\n- Choose exactly one current Agent path. Supported automatic paths are Codex and Claude Code. If the current Agent cannot be identified or does not expose a known user-level MCP and Skill location, stop and report the unsupported step instead of guessing.\n- Modify only the current user's CLI installation and current Agent's user-level MCP / Skill configuration. Do not modify the open project.\n- Never request a Local API Key, access Starcat's database or credential store directly, or create custom HTTP / JSON-RPC requests.\n- The pairing command below contains a five-minute, single-use invitation. Never print it in the final report, persist it, split it, modify it, or reuse it.\n\n## Stage 1 — Locate, install, or update Starcat CLI\n\n### 1. Locate an existing executable before installing\n\nmacOS / Linux:\n\n```bash\ncommand -v starcat || true\n[ -x \"$HOME/.local/bin/starcat\" ] && echo \"$HOME/.local/bin/starcat\" || true\n```\n\nWindows PowerShell:\n\n```powershell\n(Get-Command starcat -ErrorAction SilentlyContinue).Source\n```\n\nStore the selected absolute path as `CLI_PATH` on macOS/Linux or `$cliPath` on Windows. If multiple installations exist, use the one selected by `command -v` / `Get-Command` and report the duplicate; do not delete either copy.\n\n### 2. Install only when no executable exists\n\nmacOS / Linux:\n\n```bash\n%2$@\n```\n\nWindows PowerShell:\n\n```powershell\n%3$@\n```\n\nAfter installation, locate the executable again. If it is still missing, stop and report the failure.\n\n### 3. Check and update the installed version\n\nRecord the current version, then invoke the official updater through the resolved absolute path. Its PATH form is `%4$@`.\n\nmacOS / Linux:\n\n```bash\n\"$CLI_PATH\" version\n\"$CLI_PATH\" update\n```\n\nWindows PowerShell:\n\n```powershell\n& $cliPath version\n& $cliPath update\n```\n\nIf `starcat update` reports a Homebrew-managed installation, run:\n\n```bash\nbrew update\nbrew upgrade starcat\n```\n\nResolve the executable again and record the final version. For a development build or any network, permission, checksum, or package-manager failure, do not switch installers or overwrite the existing binary; stop this stage and report the exact error.\n\n## Stage 2 — Diagnose and pair only when needed\n\nRun `doctor` through the final absolute CLI path. If it reports a healthy paired device, do not consume the invitation and continue to Stage 3. If it reports missing or rejected pairing credentials, execute this complete command exactly once:\n\n```bash\n%5$@\n```\n\nWait while the user returns to Starcat, checks the device information, and confirms pairing. If the invitation expires, was already used, or the user rejects it, stop and ask the user to copy a fresh complete setup prompt. After successful pairing, run `doctor` again. For any other diagnostic failure, stop and report it rather than attempting unrelated repairs.\n\n## Stage 3 — Configure the current Agent's user-level MCP server\n\nUse the final absolute CLI path as the command, `mcp` as its only argument, `stdio` as the transport, and `starcat` as the server name. Never place the invitation, endpoint, API key, or token in MCP configuration.\n\nFor Codex, inspect first:\n\n```bash\ncodex mcp get starcat\n```\n\nIf no `starcat` server exists, add it:\n\n```bash\ncodex mcp add starcat -- \"$CLI_PATH\" mcp\n```\n\nFor Claude Code, inspect first:\n\n```bash\nclaude mcp get starcat\n```\n\nIf no `starcat` server exists, add it at user scope:\n\n```bash\nclaude mcp add -s user starcat -- \"$CLI_PATH\" mcp\n```\n\nOn Windows, pass `$cliPath` as one command argument instead of the shell literal `$CLI_PATH`. If an existing `starcat` entry already has the same absolute command and the single argument `mcp`, reuse it. If it differs, stop and report the conflicting configuration; do not remove or overwrite it automatically. Do not configure both Agents.\n\n## Stage 4 — Install or update starcat-skill\n\nChoose exactly one user-level destination for the current Agent:\n\n- Codex: `$HOME/.codex/skills/starcat-skill`\n- Claude Code: `$HOME/.claude/skills/starcat-skill`\n\nRecord it as `SKILL_PATH`. If the destination does not exist, create only its parent directory and clone `%6$@` into it. If it exists, verify both of these before updating:\n\n```bash\ngit -C \"$SKILL_PATH\" remote get-url origin\ngit -C \"$SKILL_PATH\" status --porcelain\n```\n\nOnly when it is a clean checkout of the official repository, update it with:\n\n```bash\ngit -C \"$SKILL_PATH\" pull --ff-only\n```\n\nIf the destination has a different origin, uncommitted changes, or cannot fast-forward, stop and report the conflict. Never delete, overwrite, reset, clean, or force-update it. Confirm these files exist: `SKILL.md`, `agents/openai.yaml`, `references/commands.md`, and `references/workflows.md`. Then run the final CLI path with `--help` and confirm that `pair` accepts a complete URI argument, `mcp` exists, and statistics commands are available.\n\n## Stage 5 — Reload and verify without writes\n\nReload the current Agent's MCP and Skill registry if it supports an in-session reload. Otherwise, report that CLI, pairing, MCP configuration, and Skill files are complete but a restart is required; do not claim that MCP or the Skill was discovered in this session.\n\nAfter discovery is actually visible:\n\n1. Invoke `$starcat-skill` for a read-only setup verification.\n2. Run `starcat doctor`.\n3. Verify MCP initialization and `tools/list`.\n4. Call `starcat.get_capabilities`.\n5. Call `starcat.search_repos` once with `query = \"starcat setup verification\"`, `scope = all`, and `limit = 2`.\n6. Do not call any write, dry-run write, destructive, summary-generation, or external-search tool.\n\n## Final report\n\nReport one status for each stage: CLI path and version before/after, pairing, MCP registration, Skill installation/update, Agent reload/discovery, and read-only verification. Identify any stopped stage and the exact safe next action. Never include the invitation URI, pairing command, device token, Local API Key, or credentials."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "# 一次完成 Starcat 全部配置\n\n## 任务目标\n\n当前 AI Agent 按顺序完成 Starcat CLI 生命周期管理、设备配对、用户级 MCP 注册、`starcat-skill` 安装或更新，以及只读验收。已有配置正确时直接复用；遇到冲突时停止，不静默覆盖。\n\nCLI 官方仓库：\n\n```text\n%1$@\n```\n\nSkill 官方仓库：\n\n```text\n%6$@\n```\n\n## 开始前规则\n\n- 修改前先识别操作系统、CPU 架构和当前 AI Agent。\n- 只选择一个当前 Agent 路径。自动流程支持 Codex 和 Claude Code；如果无法识别当前 Agent，或该 Agent 没有明确的用户级 MCP 与 Skill 位置，停止并报告不支持的步骤，不自行猜测。\n- 只修改当前用户的 CLI 安装，以及当前 Agent 的用户级 MCP / Skill 配置；不修改当前打开的项目。\n- 不索取 Local API Key，不直接访问 Starcat 数据库或凭据存储，不自行实现 HTTP / JSON-RPC 请求。\n- 下方配对命令包含五分钟、单次有效的 invitation。禁止在最终报告中打印、持久化、拆分、修改或重复使用它。\n\n## 阶段 1 — 查找、安装或更新 Starcat CLI\n\n### 1. 安装前先查找现有可执行文件\n\nmacOS / Linux：\n\n```bash\ncommand -v starcat || true\n[ -x \"$HOME/.local/bin/starcat\" ] && echo \"$HOME/.local/bin/starcat\" || true\n```\n\nWindows PowerShell：\n\n```powershell\n(Get-Command starcat -ErrorAction SilentlyContinue).Source\n```\n\n把选中的绝对路径记录为 macOS/Linux 的 `CLI_PATH` 或 Windows 的 `$cliPath`。如果存在多份安装，使用 `command -v` / `Get-Command` 选中的路径并报告重复路径；不要删除任何一份。\n\n### 2. 仅在不存在 CLI 时安装\n\nmacOS / Linux：\n\n```bash\n%2$@\n```\n\nWindows PowerShell：\n\n```powershell\n%3$@\n```\n\n安装后重新查找可执行文件。如果仍然不存在，停止并报告安装失败。\n\n### 3. 检查并更新已安装版本\n\n先记录当前版本，再通过解析到的绝对路径调用官方 updater；它的 PATH 形式是 `%4$@`。\n\nmacOS / Linux：\n\n```bash\n\"$CLI_PATH\" version\n\"$CLI_PATH\" update\n```\n\nWindows PowerShell：\n\n```powershell\n& $cliPath version\n& $cliPath update\n```\n\n如果 `starcat update` 报告当前安装由 Homebrew 管理，则执行：\n\n```bash\nbrew update\nbrew upgrade starcat\n```\n\n更新后重新解析可执行文件并记录最终版本。如果是开发版本，或发生网络、权限、校验和、包管理器错误，不要切换安装方式或覆盖现有二进制；停止该阶段并原样报告错误。\n\n## 阶段 2 — 诊断，仅在需要时配对\n\n通过最终 CLI 绝对路径执行 `doctor`。如果设备已正常配对，不消耗 invitation，直接进入阶段 3。如果报告缺少配对凭据或凭据被拒绝，只执行一次下面的完整命令：\n\n```bash\n%5$@\n```\n\n等待用户返回 Starcat，核对设备信息并确认配对。如果 invitation 已过期、已使用或用户拒绝，停止并请用户重新复制一份完整配置提示词。配对成功后再次执行 `doctor`。如果是其他诊断错误，停止并报告，不尝试无关修复。\n\n## 阶段 3 — 配置当前 Agent 的用户级 MCP Server\n\n使用最终 CLI 绝对路径作为 command，`mcp` 作为唯一参数，`stdio` 作为 transport，`starcat` 作为 server name。MCP 配置中禁止写入 invitation、endpoint、API Key 或 token。\n\nCodex 先检查：\n\n```bash\ncodex mcp get starcat\n```\n\n如果不存在 `starcat` server，再添加：\n\n```bash\ncodex mcp add starcat -- \"$CLI_PATH\" mcp\n```\n\nClaude Code 先检查：\n\n```bash\nclaude mcp get starcat\n```\n\n如果不存在 `starcat` server，再按用户级添加：\n\n```bash\nclaude mcp add -s user starcat -- \"$CLI_PATH\" mcp\n```\n\nWindows 使用 `$cliPath` 作为单个 command 参数，不要照抄 shell 字面量 `$CLI_PATH`。如果已有 `starcat` 配置使用相同绝对 command 且唯一参数为 `mcp`，直接复用。如果不同，停止并报告冲突；不要自动删除或覆盖。不要同时配置两个 Agent。\n\n## 阶段 4 — 安装或更新 starcat-skill\n\n只为当前 Agent 选择一个用户级目录：\n\n- Codex：`$HOME/.codex/skills/starcat-skill`\n- Claude Code：`$HOME/.claude/skills/starcat-skill`\n\n将其记录为 `SKILL_PATH`。如果目标不存在，只创建父目录并把 `%6$@` clone 到该目录。如果已经存在，更新前先执行：\n\n```bash\ngit -C \"$SKILL_PATH\" remote get-url origin\ngit -C \"$SKILL_PATH\" status --porcelain\n```\n\n仅当它是官方仓库的 clean checkout 时，才执行：\n\n```bash\ngit -C \"$SKILL_PATH\" pull --ff-only\n```\n\n如果 origin 不同、存在未提交改动或无法 fast-forward，停止并报告冲突。禁止删除、覆盖、reset、clean 或强制更新。确认 `SKILL.md`、`agents/openai.yaml`、`references/commands.md`、`references/workflows.md` 均存在。然后通过最终 CLI 路径执行 `--help`，确认 `pair` 接受完整 URI 参数、`mcp` 可用且统计命令存在。\n\n## 阶段 5 — 重新加载并只读验收\n\n如果当前 Agent 支持会话内重新加载 MCP 和 Skill registry，则执行重新加载；否则报告 CLI、配对、MCP 配置与 Skill 文件均已完成，但还需要重启当前 Agent。未观察到发现结果前，不得声称 MCP 或 Skill 已在当前会话加载。\n\n仅在确认已经发现后：\n\n1. 调用 `$starcat-skill` 执行只读配置验收。\n2. 运行 `starcat doctor`。\n3. 验证 MCP `initialize` 和 `tools/list`。\n4. 调用 `starcat.get_capabilities`。\n5. 调用一次 `starcat.search_repos`，参数为 `query = \"starcat setup verification\"`、`scope = all`、`limit = 2`。\n6. 不调用任何写入、写入 dry-run、破坏性、摘要生成或外部搜索工具。\n\n## 完成后报告\n\n分别报告每个阶段的状态：CLI 路径与检查前后版本、配对、MCP 注册、Skill 安装或更新、Agent 重载/发现、只读验收。指出停止的阶段和唯一安全的下一步。禁止包含 invitation URI、配对命令、device token、Local API Key 或任何凭据。"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.complete.sectionTitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Setup"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速配置"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.complete.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Complete All Setup"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一次完成全部配置"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.completeSetup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Complete Setup"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成全部配置"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.configureMCP" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Configure MCP"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置 MCP"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.installCLI" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install CLI"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安装 CLI"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.installSkill" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install Skill"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安装 Skill"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.mcpConfig" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP Config"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP 配置"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.pairDevice" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pair Device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对设备"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.action.verifyCLI" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verify CLI"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证 CLI"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.context.agent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI Agent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI Agent"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.context.targetTerminal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Target Terminal"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目标设备终端"
+          }
+        }
+      }
+    },
+    "settings.mcp.agentSetup.execution.context.terminal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terminal"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "终端"
+          }
+        }
+      }
+    },
     "settings.mcp.agentSetup.mcp.agent.copy" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -357849,6 +358978,23 @@
         }
       }
     },
+    "settings.mcp.batchOrganize.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow one MCP request to add tags and update private notes for up to 100 repositories. All items are validated before writing; local writes must also be enabled."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许单次 MCP 请求为最多 100 个仓库添加标签并更新私有笔记；开始写入前会先校验全部项目，同时还需开启本地写入。"
+          }
+        }
+      }
+    },
     "settings.mcp.batchWrites.help" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -358301,6 +359447,23 @@
         }
       }
     },
+    "settings.mcp.devices.pairedAtFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired on %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对时间：%@"
+          }
+        }
+      }
+    },
     "settings.mcp.devices.revoke" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -358749,6 +359912,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "端點"
+          }
+        }
+      }
+    },
+    "settings.mcp.githubStarWrites.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow paired MCP clients to star and unstar repositories on your GitHub account. Disabled by default."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许已配对的 MCP 客户端在您的 GitHub 账户中 Star 或取消 Star 仓库。默认关闭。"
+          }
+        }
+      }
+    },
+    "settings.mcp.githubStarWrites.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow GitHub Star Changes"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许修改 GitHub Stars"
           }
         }
       }
@@ -371023,6 +372220,108 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "尾號 %@ 的 Mac"
+          }
+        }
+      }
+    },
+    "settings.pro.direct.error.invalidResponse" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The license service returned an unexpected response. Please try again later."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授权服务返回异常响应，请稍后重试。"
+          }
+        }
+      }
+    },
+    "settings.pro.direct.error.licenseNotFound" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This license key was not found. Check that you copied the entire key, or contact support if you have already paid."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到此授权码，请检查是否复制完整；如已付款，请联系支持。"
+          }
+        }
+      }
+    },
+    "settings.pro.direct.error.licenseRejected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This license is no longer active. Check your subscription status or contact support."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此授权已失效，请检查订阅状态或联系支持。"
+          }
+        }
+      }
+    },
+    "settings.pro.direct.error.temporaryServerFailure" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The license service is temporarily unavailable (HTTP %d). Please try again later."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授权服务暂时不可用（HTTP %d），请稍后重试。"
+          }
+        }
+      }
+    },
+    "settings.pro.direct.error.transport" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to connect to the license service. Check your network and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接授权服务，请检查网络后重试。"
+          }
+        }
+      }
+    },
+    "settings.pro.direct.error.unauthorizedClient" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "License service authentication failed. Update Starcat or contact support."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授权服务验证失败，请更新 Starcat 或联系支持。"
           }
         }
       }
@@ -501143,6 +502442,227 @@
         }
       }
     },
+    "batchAI.expansion.candidates.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "One AI request grouped uncovered repositories into a small reusable vocabulary."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 通过一次整批请求，把未覆盖仓库收敛为少量可复用词表。"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.candidates.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shared tag candidates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全局候选标签"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add tags and reclassify"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确认扩词并重新归类"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only confirmed names enter your tag library; repository tags still wait for review."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有确认后的名称会进入标签库；仓库标签仍需在审核页确认。"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.metric.candidates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Candidates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "候选标签"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.metric.uncovered" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uncovered"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未覆盖仓库"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.optionNote" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uncovered repositories are pooled into one AI request; confirm up to 5 shared tags before reclassification."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未覆盖仓库会汇总为一次 AI 请求；确认最多 5 个全局标签后再重新归类。"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retry discovery"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重试概念发现"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.signal.llm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Batch AI"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整批 AI"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.skip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skip expansion"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂不扩词"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Confirm a small vocabulary expansion before repositories are reclassified"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确认少量增量词表后，再重新归类未覆盖仓库"
+          }
+        }
+      }
+    },
+    "batchAI.expansion.validation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select 1–5 candidates with unique, non-empty names."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择 1–5 个名称非空且不重复的候选标签。"
+          }
+        }
+      }
+    },
+    "batchAI.options.allowVocabularyExpansion" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow vocabulary expansion"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许扩充标签库"
+          }
+        }
+      }
+    },
     "batchAI.options.autoApplyEnabledCompactFormat" : {
       "localizations" : {
         "en" : {
@@ -501286,6 +502806,674 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "AI 整理标签"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.back" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Back"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.candidate.deselect" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deselect candidate tag"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消选择候选标签"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.candidate.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag name"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标签名称"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.candidate.select" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select candidate tag"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择候选标签"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.candidates.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Generated locally from repeated repository signals; rename or deselect before continuing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "根据跨仓库重复信号在本地生成；继续前可改名或取消选择。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.candidates.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Candidate taxonomy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "候选标签体系"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create Taxonomy and Review"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建体系并审核"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.empty.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add more repository topics or cached READMEs, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "补充仓库 Topics 或缓存 README 后再试。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.empty.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No reliable candidates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未发现可靠候选"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.error.analysis" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local taxonomy analysis failed. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地标签体系分析失败，请重试。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.error.createTags" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not create the selected taxonomy. No repository tags were applied."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法创建所选标签体系，尚未给任何仓库应用标签。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.error.loadRepositories" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not load repositories for local analysis."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载用于本地分析的仓库。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.error.noCandidates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No repeated repository signals were strong enough to form a taxonomy."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有足够强的跨仓库重复信号可形成标签体系。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.error.noTargetMatches" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The selected taxonomy does not match any repository in this batch."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所选标签体系未匹配本批次中的任何仓库。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.error.startReview" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not open the local tag review. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开本地标签审核，请重试。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.evidence.empty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a candidate to inspect its evidence"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择候选标签以查看依据"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.evidence.globalSupport" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repositories in full library"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全库支持仓库"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.evidence.samples" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sample repositories"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "样例仓库"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.evidence.targetSupport" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repositories in this batch"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本批次支持仓库"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.evidence.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Evidence"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相关性依据"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local analysis only. Repository tags are still applied after per-repository review."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅使用本地分析；仓库标签仍需逐仓审核后才会应用。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.metric.corpus" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repositories analyzed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分析仓库"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.metric.coverage" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Batch coverage"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "批次覆盖"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.metric.readme" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cached READMEs"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缓存 README"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.metric.selected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selected tags"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选标签"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.preflight.local" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your tag library is empty. Start with a local taxonomy first; no AI key is required."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标签库为空，将先在本地建立标签体系，无需配置 AI Key。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.preparing.action" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Building taxonomy…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在生成标签体系…" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.analyzing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Analyzing repository signals…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在分析仓库特征…" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.buildingCandidates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Combining candidate tags…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在整理候选标签…" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.loadingData" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Loading repositories and cached READMEs…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在读取仓库与缓存的 README…" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.local" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local analysis only. No AI provider or API key is used." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全程仅使用本地分析，不会调用 AI Provider，也无需 API Key。" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.progressFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Analyzed %1$d / %2$d repositories" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已分析 %1$d / %2$d 个仓库" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Analyze repositories locally and build a reusable tag taxonomy" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在本地分析仓库并建立可复用的标签体系" } }
+      }
+    },
+    "batchAI.taxonomy.preparing.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Building your tag taxonomy" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在建立标签体系" } }
+      }
+    },
+    "batchAI.taxonomy.signal.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Description"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "描述"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.signal.language" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Language"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语言"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.signal.readme" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "README"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "README"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.signal.topic" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Topic"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Topic"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build a reusable taxonomy from your full Star library"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从全部 Star 仓库建立可复用标签体系"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.suggestionReason" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matched repeated local signals from repository topics, language, description, or cached README."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "匹配了仓库 Topic、语言、描述或缓存 README 中的重复本地信号。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.supportFormat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld repos"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个仓库"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.validation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select at least one unique, non-empty tag that covers this batch."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请至少选择一个名称非空、不重复且能覆盖本批次的标签。"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.metric.mode" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Analysis mode"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分析方式"
+          }
+        }
+      }
+    },
+    "batchAI.taxonomy.summaryAfterSetup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This first pass builds tags locally. Run AI summaries after the taxonomy is established."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首次整理只在本地建立标签体系；完成后可再运行 AI 摘要。"
           }
         }
       }

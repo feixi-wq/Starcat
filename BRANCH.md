@@ -44,6 +44,7 @@
 
 | 分支 | 处理结论 | 清理依据 |
 |---|---|---|
+| `codex/laya-mlx-swift-poc` | 已合并；本地分支与 worktree 保留 | 2026-09-30 以 fast-forward 合入本地 `dev`（HEAD `706f6bff`），`dev` 已包含该提交；未 push，分支/worktree 未清理。 |
 | `feature/anthropic-cc-switch-import` | 已删除 | 2026-09-14 dong4j 确认删除。已以 merge commit（`1341600a`）合入 `dev`，删除前 `merge-base --is-ancestor` 成立、独有提交 0、`git cherry` 为空、diff 为空；`../Starcat-anthropic-cc-switch` worktree 干净后 `git worktree remove`，再 `git branch -d`（HEAD `2ab786f2`）。从未存在远端分支。 |
 | `feature/settings-ui-unify` | 已删除 | 2026-09-14 dong4j 确认删除。已以 merge commit（`a7a4c5c7`）合入 `dev`，删除前 `merge-base --is-ancestor` 成立、独有提交 0、`git cherry` 为空、`../Starcat-settings-ui-unify` worktree 干净后 `git worktree remove`，再 `git branch -d`（HEAD `bb013ab1`）。从未存在远端分支。 |
 | `feature/local-ai` | 已删除 | 2026-09-13 dong4j 确认删除。2026-09-12 已以 merge commit（`84b7e5c5`）合入 `dev`，删除前 `merge-base --is-ancestor` 成立、独有提交 0、`git cherry` 为空、diff 为空；`../Starcat-local-ai` worktree 干净后 `git worktree remove`，再 `git branch -d`（HEAD `d78b6fcb`）。从未存在远端分支。 |
