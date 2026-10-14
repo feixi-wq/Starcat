@@ -41,6 +41,7 @@ private enum ExploreSidebarSelection: Hashable {
     case trendingLanguage(TrendingLanguage)
     case weeklyLanguage(String?)
     case awesomeSource(String?)
+    case linuxDo
 }
 
 /// 探索侧栏图标色：未选中用语义色；明亮主题选中时跟系统蓝底反成白色。
@@ -65,6 +66,7 @@ struct SidebarView: View {
     /// Weekly 已迁移到 Explore,这里只读 ActivityViewModel 已发布的本地分类统计，
     /// 不在 sidebar 里主动触发任何加载。
     @Environment(AppDependencies.self) private var dependencies
+    @Environment(\.scenePhase) private var scenePhase
 
     /// 当前打开/收起 Languages 组的状态。
     @State private var languagesExpanded: Bool = true
@@ -216,6 +218,16 @@ struct SidebarView: View {
             backgroundTaskFooter
         }
         .background(.bar)
+        .task {
+            // 公共来源索引不依赖进入发现页；长期前台使用也按 TTL 低频更新。
+            while !Task.isCancelled {
+                await dependencies.linuxDoStore.refreshProvenance()
+                do { try await Task.sleep(for: .seconds(30 * 60)) } catch { return }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await dependencies.linuxDoStore.refreshProvenance() } }
+        }
         .sheet(isPresented: $showLoginSheet) {
             GithubAuthView()
                 .appLocaleEnvironment()
@@ -850,6 +862,7 @@ struct SidebarView: View {
     private var defaultExploreSidebarSelection: ExploreSidebarSelection {
         switch selectedExploreMode {
         case .discover:
+            if dependencies.linuxDoStore.selectedSource == .linuxDo { return .linuxDo }
             if let selectedDiscoveryTopic {
                 return .topic(selectedDiscoveryTopic)
             }
@@ -874,11 +887,11 @@ struct SidebarView: View {
     private func isExploreSelectionCurrent(_ selection: ExploreSidebarSelection) -> Bool {
         switch selection {
         case .mode(let mode):
-            return selectedExploreMode == mode
+            return selectedExploreMode == mode && (mode != .discover || dependencies.linuxDoStore.selectedSource == .catalog)
         case .topic(let code):
-            return selectedExploreMode == .discover && selectedDiscoveryTopic == code
+            return selectedExploreMode == .discover && dependencies.linuxDoStore.selectedSource == .catalog && selectedDiscoveryTopic == code
         case .platform(let code):
-            return selectedExploreMode == .discover && selectedDiscoveryPlatform == code
+            return selectedExploreMode == .discover && dependencies.linuxDoStore.selectedSource == .catalog && selectedDiscoveryPlatform == code
         case .language(let key):
             return selectedExploreMode != .discover
                 && selectedExploreMode != .trending
@@ -891,10 +904,14 @@ struct SidebarView: View {
         case .awesomeSource(let sourceID):
             return selectedExploreMode == .awesome
                 && dependencies.awesomeStore.selectedSourceID == sourceID
+        case .linuxDo:
+            return selectedExploreMode == .discover && dependencies.linuxDoStore.selectedSource == .linuxDo
         }
     }
 
     private func applyExploreSelection(_ selection: ExploreSidebarSelection) {
+        // 来源不是 topic；返回普通发现时恢复已有主题/平台筛选，不污染 Linux.do 目录。
+        if selection != .linuxDo { dependencies.linuxDoStore.selectedSource = .catalog }
         switch selection {
         case .mode(let mode):
             selectedExploreMode = mode
@@ -922,6 +939,9 @@ struct SidebarView: View {
         case .awesomeSource(let sourceID):
             selectedExploreMode = .awesome
             dependencies.awesomeStore.selectSource(sourceID)
+        case .linuxDo:
+            selectedExploreMode = .discover
+            dependencies.linuxDoStore.selectedSource = .linuxDo
         }
     }
 
@@ -1069,6 +1089,12 @@ struct SidebarView: View {
         Section("nav.trending") {
             ForEach(ExploreMode.allCases) { mode in
                 exploreModeRow(mode)
+                if mode == .discover {
+                    exploreSelectableRow(selection: .linuxDo, count: dependencies.linuxDoStore.provenance?.payload.origins?.count) {
+                        exploreSidebarSystemIcon("bubble.left.and.bubble.right", color: .secondary)
+                    } title: { Text(verbatim: "Linux.do") }
+                    .padding(.leading, 16)
+                }
             }
         }
     }
@@ -1123,7 +1149,7 @@ struct SidebarView: View {
     private var exploreSidebarContent: some View {
         switch selectedExploreMode {
         case .discover:
-            exploreDiscoverySidebarContent
+            if dependencies.linuxDoStore.selectedSource == .catalog { exploreDiscoverySidebarContent }
         case .popular, .newReleases:
             exploreLanguageSidebarContent
         case .trending:

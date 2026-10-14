@@ -250,6 +250,9 @@ final class AppDependencies {
     /// 当前“趋势”仍使用 `trendingRepository`，不从 discovery 新趋势候选切换数据源。
     let discoveryRepository: any DiscoveryRepositoryProtocol
 
+    /// 与用户 Stars、普通 Discovery 和 Awesome 目录隔离的 Linux.do 公共来源缓存。
+    let linuxDoStore: LinuxDoStore
+
     /// Awesome 精选目录、账户订阅、自定义来源和来源证据的本地优先仓储。
     /// 与普通 Discovery bulk 分开，避免用户按需订阅的长清单进入全量探索缓存。
     let awesomeRepository: any AwesomeRepositoryProtocol
@@ -1433,6 +1436,7 @@ final class AppDependencies {
         self.repoStarHistoryRepository = repoStarHistoryRepository
         let discoveryRepo = DiscoveryRepository(api: discoveryAPIInstance, database: db)
         self.discoveryRepository = discoveryRepo
+        self.linuxDoStore = LinuxDoStore(repository: LinuxDoRepository(api: discoveryAPIInstance))
         self.exploreCatalogStore = ExploreCatalogStore(repository: discoveryRepo)
         let awesomeRepository = AwesomeRepository(api: discoveryAPIInstance, database: db)
         self.awesomeRepository = awesomeRepository
@@ -2036,7 +2040,9 @@ final class AppDependencies {
         case .sharing:  await shareAPI.updateBaseURL(target)
         case .wiki:     await wikiAPI.updateBaseURL(target)
         case .recommend: await recommendAPI.updateBaseURL(target)
-        case .discovery: await discoveryAPI.updateBaseURL(target)
+        case .discovery:
+            await discoveryAPI.updateBaseURL(target)
+            await linuxDoStore.providerDidChange()
         case .history: await starHistoryAPI.updateBaseURL(target)
         }
 
@@ -2087,7 +2093,9 @@ final class AppDependencies {
         case .sharing:  await shareAPI.updateAPIKey(resolved)
         case .wiki:     await wikiAPI.updateAPIKey(resolved)
         case .recommend: await recommendAPI.updateAPIKey(resolved)
-        case .discovery: await discoveryAPI.updateAPIKey(resolved)
+        case .discovery:
+            await discoveryAPI.updateAPIKey(resolved)
+            await linuxDoStore.providerDidChange()
         case .history: await starHistoryAPI.updateAPIKey(resolved)
         }
 

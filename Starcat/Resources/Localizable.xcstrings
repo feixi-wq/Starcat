@@ -218244,6 +218244,166 @@
         }
       }
     },
+    "linuxdo.cache.unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to refresh. Previously cached content is kept when available."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法更新；已有缓存将继续保留。"
+          }
+        }
+      }
+    },
+    "linuxdo.catalog.description" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Public projects promoted on Linux.do. Inclusion does not star a repository or add it to your library."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发现 Linux.do 开源推广中的公开项目；浏览不会自动 Star 或加入知识库。"
+          }
+        }
+      }
+    },
+    "linuxdo.catalog.empty" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No projects to display"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无可展示的项目"
+          }
+        }
+      }
+    },
+    "linuxdo.catalog.emptyDescription" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refresh to check for reviewed projects, or adjust your filters."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可刷新查看已审核项目，或调整筛选条件。"
+          }
+        }
+      }
+    },
+    "linuxdo.catalog.recentPromotion" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recent promotions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近推广"
+          }
+        }
+      }
+    },
+    "linuxdo.catalog.search" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search Linux.do projects"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索 Linux.do 项目"
+          }
+        }
+      }
+    },
+    "linuxdo.source.discussions" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Linux.do discussions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Linux.do 讨论"
+          }
+        }
+      }
+    },
+    "linuxdo.source.help" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Promoted on Linux.do"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "曾在 Linux.do 推广"
+          }
+        }
+      }
+    },
+    "linuxdo.source.loading" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading discussions…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载讨论…"
+          }
+        }
+      }
+    },
+    "linuxdo.source.noTopics" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No discussion links available."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无可用的讨论链接。"
+          }
+        }
+      }
+    },
     "list.exitMultiSelectMode" : {
       "localizations" : {
         "ar" : {

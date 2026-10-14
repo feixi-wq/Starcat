@@ -386,6 +386,7 @@ struct UnifiedRepoRow: View {
                 ArchivedBadge(iconOnly: true)
             }
             sceneBadgeChip
+            LinuxDoSourceBadge(repoID: card.ghRepoId)
             if showReadStatusBadge,
                card.isStarred,
                let readStatus = card.readStatus,

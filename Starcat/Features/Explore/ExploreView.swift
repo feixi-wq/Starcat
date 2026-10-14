@@ -49,12 +49,18 @@ struct ExploreView: View {
             case .awesome:
                 awesomeContent
             case .discover, .popular, .newReleases:
-                discoveryContent
+                if selectedMode == .discover && dependencies.linuxDoStore.selectedSource == .linuxDo {
+                    LinuxDoView(store: dependencies.linuxDoStore, selectedRepoID: $selectedDiscoveryRepoID, selectedRepo: $selectedDiscoveryRepo, onRepoCountChange: onRepoCountChange)
+                } else {
+                    discoveryContent
+                }
             }
         }
         .task {
             ensurePersistentChildViewModels()
         }
+        .onChange(of: selectedDiscoveryTopic) { _, _ in dependencies.linuxDoStore.selectedSource = .catalog }
+        .onChange(of: selectedDiscoveryPlatform) { _, _ in dependencies.linuxDoStore.selectedSource = .catalog }
         .onChange(of: selectedMode) { _, mode in
             switch mode {
             case .trending:

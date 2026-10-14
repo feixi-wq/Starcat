@@ -180,6 +180,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
                     if let headerSourceBadge, headerSourceBadge.isVisible {
                         RepoDetailHeaderSourceBadgeView(badge: headerSourceBadge)
                     }
+                    LinuxDoSourceBadge(repoID: repo.id, interactive: true)
                 }
                 badgeRow
                 inlineTopicsRow
