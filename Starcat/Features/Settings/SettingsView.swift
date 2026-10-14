@@ -1247,6 +1247,23 @@ struct SettingsView: View {
         let updateController = dependencies.directUpdateController
 
         return Section {
+            Picker("settings.pro.direct.updates.channel", selection: Binding(
+                get: { updateController.updateChannel },
+                set: { updateController.selectUpdateChannel($0) }
+            )) {
+                Text("settings.pro.direct.updates.channel.stable")
+                    .tag(DirectUpdateChannel.stable)
+                Text("settings.pro.direct.updates.channel.development")
+                    .tag(DirectUpdateChannel.development)
+            }
+
+            if updateController.updateChannel == .development {
+                Text("settings.pro.direct.updates.channel.development.help")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Toggle("settings.pro.direct.updates.autoCheck", isOn: Binding(
                 get: { updateController.automaticallyChecksForUpdates },
                 set: { updateController.automaticallyChecksForUpdates = $0 }
