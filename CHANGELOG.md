@@ -2,6 +2,12 @@
 
 Release notes for the Mac App Store edition of Starcat.
 
+## 2.0.0-待发布
+
+### New
+
+- Linux.do discovery: Browse verified open-source projects promoted on Linux.do, see provenance badges across repository lists, and open original discussions from repository details.
+
 ## 1.9.0
 
 ### New
