@@ -186,6 +186,9 @@ private struct ExploreDiscoveryListView: View {
     @State private var libraryStateMap: [Int64: LibraryState] = [:]
     @State private var wikiAvailabilityMap: [Int64: Bool] = [:]
     @State private var rowRevealRevision = 0
+    @State private var isQuickSearchExpanded = false
+    @State private var quickSearchDraft = ""
+    @State private var quickSearchQuery = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -214,7 +217,8 @@ private struct ExploreDiscoveryListView: View {
                 language: mode == .discover ? nil : selectedLanguage,
                 topic: mode == .discover ? selectedTopic : nil,
                 platform: mode == .discover ? selectedPlatform : nil,
-                sort: currentSort
+                sort: currentSort,
+                searchQuery: quickSearchQuery
             )
             guard !Task.isCancelled,
                   viewModel.publishedQueryIdentity == requestedIdentity
@@ -254,6 +258,9 @@ private struct ExploreDiscoveryListView: View {
         .onChange(of: settings.interestedLanguages) { _, languages in
             viewModel.interestedLanguages = languages
         }
+        .onChange(of: mode) { _, _ in
+            resetQuickSearch()
+        }
         .starcatRefreshCommand(
             pane: .list,
             identity: "explore-\(queryIdentity)-\(viewModel.isRefreshing)-\(viewModel.isLoading)",
@@ -265,7 +272,17 @@ private struct ExploreDiscoveryListView: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 10) {
+        QuickSearchToolbarContent(
+            isExpanded: $isQuickSearchExpanded,
+            draft: $quickSearchDraft,
+            committedQuery: quickSearchQuery,
+            placeholder: "list.quickSearch.placeholder",
+            onSubmit: { query in
+                quickSearchQuery = QuickSearchTextMatcher.normalized(query)
+                quickSearchDraft = quickSearchQuery
+            },
+            onClear: { quickSearchQuery = "" }
+        ) {
             UnifiedSortMenu(
                 selection: sortBinding,
                 options: ExploreSortOption.options(for: mode),
@@ -313,6 +330,7 @@ private struct ExploreDiscoveryListView: View {
                 topic: mode == .discover ? selectedTopic : nil,
                 platform: mode == .discover ? selectedPlatform : nil,
                 sort: currentSort,
+                searchQuery: quickSearchQuery,
                 showsRefreshIndicator: true
             )
             guard viewModel.publishedQueryIdentity == requestedIdentity else { return }
@@ -464,7 +482,8 @@ private struct ExploreDiscoveryListView: View {
                         language: mode == .discover ? nil : selectedLanguage,
                         topic: mode == .discover ? selectedTopic : nil,
                         platform: mode == .discover ? selectedPlatform : nil,
-                        sort: currentSort
+                        sort: currentSort,
+                        searchQuery: quickSearchQuery
                     )
                 }
             }
@@ -488,7 +507,8 @@ private struct ExploreDiscoveryListView: View {
                 language: mode == .discover ? nil : selectedLanguage,
                 topic: mode == .discover ? selectedTopic : nil,
                 platform: mode == .discover ? selectedPlatform : nil,
-                sort: currentSort
+                sort: currentSort,
+                searchQuery: quickSearchQuery
             )
         }
         .scrollContentBackground(.hidden)
@@ -501,6 +521,7 @@ private struct ExploreDiscoveryListView: View {
                 topic: mode == .discover ? selectedTopic : nil,
                 platform: mode == .discover ? selectedPlatform : nil,
                 sort: currentSort,
+                searchQuery: quickSearchQuery,
                 showsRefreshIndicator: true
             )
             guard viewModel.publishedQueryIdentity == requestedIdentity else { return }
@@ -707,8 +728,15 @@ private struct ExploreDiscoveryListView: View {
             topic: mode == .discover ? selectedTopic : nil,
             platform: mode == .discover ? selectedPlatform : nil,
             sort: currentSort,
+            searchQuery: quickSearchQuery,
             interestedLanguages: Set(settings.interestedLanguages.map { $0.lowercased() })
         )
+    }
+
+    private func resetQuickSearch() {
+        isQuickSearchExpanded = false
+        quickSearchDraft = ""
+        quickSearchQuery = ""
     }
 
     private var hasPublishedCurrentQuery: Bool {

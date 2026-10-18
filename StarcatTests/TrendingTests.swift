@@ -739,7 +739,8 @@ struct TrendingTests {
             wikiKnownRepoIDs: [keep.ghRepoId],
             wikiAvailableRepoIDs: [keep.ghRepoId],
             healthAvailableRepoIDs: [keep.ghRepoId],
-            openSSFAvailableRepoIDs: [keep.ghRepoId]
+            openSSFAvailableRepoIDs: [keep.ghRepoId],
+            searchQuery: ""
         ))
 
         #expect(vm.displayedRepos.map(\.fullName) == [keep.fullName])
@@ -759,7 +760,8 @@ struct TrendingTests {
             wikiKnownRepoIDs: [drop.ghRepoId],
             wikiAvailableRepoIDs: [],
             healthAvailableRepoIDs: [],
-            openSSFAvailableRepoIDs: []
+            openSSFAvailableRepoIDs: [],
+            searchQuery: ""
         ))
 
         #expect(vm.displayedRepos.map(\.fullName) == [drop.fullName])

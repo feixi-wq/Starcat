@@ -71,6 +71,7 @@ final class ExploreDiscoveryViewModel {
         topic: String?,
         platform: String?,
         sort: ExploreSortOption,
+        searchQuery: String = "",
         showsRefreshIndicator: Bool = false
     ) async {
         let queryIdentity = Self.queryIdentity(
@@ -79,6 +80,7 @@ final class ExploreDiscoveryViewModel {
             topic: topic,
             platform: platform,
             sort: sort,
+            searchQuery: searchQuery,
             interestedLanguages: Set(self.interestedLanguages.map { $0.lowercased() })
         )
         let requestID = UUID()
@@ -120,6 +122,7 @@ final class ExploreDiscoveryViewModel {
                 topic: topic,
                 platform: platform,
                 sort: sort,
+                searchQuery: searchQuery,
                 bumpRevision: true,
                 requestID: requestID
             )
@@ -165,6 +168,7 @@ final class ExploreDiscoveryViewModel {
                 topic: topic,
                 platform: platform,
                 sort: sort,
+                searchQuery: searchQuery,
                 bumpRevision: true,
                 requestID: requestID
             )
@@ -197,6 +201,7 @@ final class ExploreDiscoveryViewModel {
                     topic: topic,
                     platform: platform,
                     sort: sort,
+                    searchQuery: searchQuery,
                     requestID: requestID
                 )
             }
@@ -250,7 +255,8 @@ final class ExploreDiscoveryViewModel {
         language: String?,
         topic: String?,
         platform: String?,
-        sort: ExploreSortOption
+        sort: ExploreSortOption,
+        searchQuery: String = ""
     ) async {
         let queryIdentity = Self.queryIdentity(
             mode: mode,
@@ -258,6 +264,7 @@ final class ExploreDiscoveryViewModel {
             topic: topic,
             platform: platform,
             sort: sort,
+            searchQuery: searchQuery,
             interestedLanguages: Set(self.interestedLanguages.map { $0.lowercased() })
         )
         guard publishedQueryIdentity == queryIdentity else { return }
@@ -302,6 +309,7 @@ final class ExploreDiscoveryViewModel {
         topic: String?,
         platform: String?,
         sort: ExploreSortOption,
+        searchQuery: String = "",
         interestedLanguages: Set<String> = []
     ) -> String {
         // 「其他」分类的过滤结果依赖感兴趣语言，identity 必须纳入，避免命中脏快照。
@@ -314,6 +322,7 @@ final class ExploreDiscoveryViewModel {
             mode == .discover ? (topic ?? "__all__") : "__topic_unused__",
             mode == .discover ? (platform ?? "__all__") : "__platform_unused__",
             sort.normalized(for: mode).id,
+            QuickSearchTextMatcher.normalized(searchQuery),
         ].joined(separator: "|")
     }
 
@@ -324,6 +333,7 @@ final class ExploreDiscoveryViewModel {
         topic: String?,
         platform: String?,
         sort: ExploreSortOption,
+        searchQuery: String,
         bumpRevision: Bool,
         requestID: UUID
     ) async {
@@ -335,6 +345,7 @@ final class ExploreDiscoveryViewModel {
             topic: topic,
             platform: platform,
             sort: sort,
+            searchQuery: searchQuery,
             bumpRevision: bumpRevision,
             requestID: requestID
         )
@@ -351,6 +362,7 @@ final class ExploreDiscoveryViewModel {
         topic: String?,
         platform: String?,
         sort: ExploreSortOption,
+        searchQuery: String,
         requestID: UUID
     ) async {
         clearPreparedSnapshots()
@@ -361,6 +373,7 @@ final class ExploreDiscoveryViewModel {
             topic: topic,
             platform: platform,
             sort: sort,
+            searchQuery: searchQuery,
             bumpRevision: true,
             requestID: requestID
         )
@@ -377,6 +390,7 @@ final class ExploreDiscoveryViewModel {
         topic: String?,
         platform: String?,
         sort: ExploreSortOption,
+        searchQuery: String,
         bumpRevision: Bool,
         requestID: UUID
     ) async {
@@ -391,6 +405,7 @@ final class ExploreDiscoveryViewModel {
                 topic: topic,
                 platform: platform,
                 sort: sort,
+                searchQuery: searchQuery,
                 interestedLanguages: interested
             )
         }
@@ -403,6 +418,7 @@ final class ExploreDiscoveryViewModel {
             topic: topic,
             platform: platform,
             sort: sort,
+            searchQuery: searchQuery,
             interestedLanguages: Set(self.interestedLanguages.map { $0.lowercased() })
         )
         let prepared = PreparedSnapshot(filteredRepos: filtered)
@@ -453,6 +469,7 @@ final class ExploreDiscoveryViewModel {
         topic: String?,
         platform: String?,
         sort: ExploreSortOption,
+        searchQuery: String,
         interestedLanguages: Set<String>
     ) -> [DiscoveryRepoDTO] {
         var filtered = sourceRepos
@@ -482,6 +499,18 @@ final class ExploreDiscoveryViewModel {
             }
         case .trending, .weekly, .awesome:
             break
+        }
+
+        filtered = filtered.filter { repo in
+            QuickSearchTextMatcher.matches(
+                searchQuery,
+                candidates: [
+                    repo.fullName,
+                    repo.description,
+                    repo.language,
+                    repo.topics.joined(separator: " "),
+                ]
+            )
         }
 
         filtered.sort(by: makeLocalSorter(sort.normalized(for: mode), mode: mode))

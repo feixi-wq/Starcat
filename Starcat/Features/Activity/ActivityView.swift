@@ -71,6 +71,8 @@ struct ActivityView: View {
     @State private var showClearAnnouncementConfirmation = false
     @State private var libraryStateMap: [Int64: LibraryState] = [:]
     @State private var wikiAvailabilityMap: [Int64: Bool] = [:]
+    @State private var isQuickSearchExpanded = false
+    @State private var quickSearchDraft = ""
 
     init(
         viewModel: Binding<ActivityViewModel?>,
@@ -141,6 +143,7 @@ struct ActivityView: View {
             await observeLibraryStateChanges()
         }
         .onChange(of: selectedCategory) { _, newCategory in
+            resetQuickSearch(viewModel)
             if newCategory == .notification || newCategory == .undoStar {
                 selectedItem = nil
                 return
@@ -371,7 +374,18 @@ struct ActivityView: View {
 
     /// 本地聚合分类顶部栏：时间排序 + 刷新时间 + 刷新按钮（公告 / 关注额外清空）。
     private func activityFilterBar(_ viewModel: ActivityViewModel) -> some View {
-        HStack(spacing: 10) {
+        QuickSearchToolbarContent(
+            isExpanded: $isQuickSearchExpanded,
+            draft: $quickSearchDraft,
+            committedQuery: viewModel.quickSearchQuery,
+            placeholder: "list.quickSearch.activityPlaceholder",
+            onSubmit: { query in
+                let normalizedQuery = QuickSearchTextMatcher.normalized(query)
+                viewModel.changeQuickSearchQuery(to: normalizedQuery)
+                quickSearchDraft = normalizedQuery
+            },
+            onClear: { viewModel.changeQuickSearchQuery(to: "") }
+        ) {
             UnifiedSortMenu(
                 selection: activitySortBinding(viewModel),
                 options: Array(ActivityTimeSort.allCases),
@@ -411,6 +425,13 @@ struct ActivityView: View {
         .onChange(of: selectedCategory) { _, _ in
             restoreTimeSortPreferenceIfNeeded(viewModel)
         }
+    }
+
+    /// 活动分类相互独立；切换分类时恢复完整列表，避免搜索条件静默带到新分类。
+    private func resetQuickSearch(_ viewModel: ActivityViewModel?) {
+        isQuickSearchExpanded = false
+        quickSearchDraft = ""
+        viewModel?.changeQuickSearchQuery(to: "")
     }
 
     private func clearActivityButton(help: LocalizedStringKey, action: @escaping () -> Void) -> some View {

@@ -17,6 +17,8 @@ struct LinuxDoView: View {
     @Environment(AuthSession.self) private var authSession
     @State private var model = LinuxDoListModel()
     @State private var search = ""
+    @State private var quickSearchDraft = ""
+    @State private var isQuickSearchExpanded = false
     @State private var recentPromotionFirst = true
     @State private var libraryStates: [Int64: LibraryState] = [:]
     @State private var wikiAvailability: [Int64: Bool] = [:]
@@ -25,8 +27,18 @@ struct LinuxDoView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("linuxdo.catalog.description").font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    TextField("linuxdo.catalog.search", text: $search).textFieldStyle(.roundedBorder)
+                QuickSearchToolbarContent(
+                    isExpanded: $isQuickSearchExpanded,
+                    draft: $quickSearchDraft,
+                    committedQuery: search,
+                    placeholder: "list.quickSearch.placeholder",
+                    onSubmit: { query in
+                        let normalizedQuery = QuickSearchTextMatcher.normalized(query)
+                        search = normalizedQuery
+                        quickSearchDraft = normalizedQuery
+                    },
+                    onClear: { search = "" }
+                ) {
                     Picker("linuxdo.catalog.recentPromotion", selection: $recentPromotionFirst) {
                         Text("linuxdo.catalog.recentPromotion").tag(true)
                         Text("explore.sort.stars").tag(false)
@@ -61,6 +73,7 @@ struct LinuxDoView: View {
             await store.refreshCatalog()
         }
         .task(id: queryIdentity) { rebuildList() }
+        .onDisappear { resetQuickSearch() }
         .task(id: signalIdentity) {
             let repos = store.repositories
             let ids = repos.map(\.repoID)
@@ -148,5 +161,12 @@ struct LinuxDoView: View {
         if let id = selectedRepoID, let repo = model.rows.first(where: { $0.repoID == id }) { selectedRepo = repo; return }
         selectedRepo = settings.openFirstDetailOnCategoryChange ? model.rows.first : nil
         selectedRepoID = selectedRepo?.repoID
+    }
+
+    /// 离开 Linux.do 分类时清除搜索，下一次进入应恢复完整目录而不是沿用旧条件。
+    private func resetQuickSearch() {
+        isQuickSearchExpanded = false
+        quickSearchDraft = ""
+        search = ""
     }
 }

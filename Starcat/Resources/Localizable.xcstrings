@@ -222896,6 +222896,70 @@
         }
       }
     },
+    "list.quickSearch.activityPlaceholder" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick search this activity list"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速搜索当前活动"
+          }
+        }
+      }
+    },
+    "list.quickSearch.empty" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No matching results"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有匹配结果"
+          }
+        }
+      }
+    },
+    "list.quickSearch.open" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick Search"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速搜索"
+          }
+        }
+      }
+    },
+    "list.quickSearch.placeholder" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quick search repositories"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速搜索仓库"
+          }
+        }
+      }
+    },
     "list.repoCountFormat" : {
       "extractionState" : "stale",
       "localizations" : {

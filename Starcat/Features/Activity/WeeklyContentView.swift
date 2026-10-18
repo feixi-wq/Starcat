@@ -62,6 +62,8 @@ struct WeeklyContentView: View {
     @State private var libraryStateMap: [Int64: LibraryState] = [:]
     @State private var wikiAvailabilityMap: [Int64: Bool] = [:]
     @State private var isFilterPopoverPresented = false
+    @State private var isQuickSearchExpanded = false
+    @State private var quickSearchDraft = ""
 
     init(
         viewModel: WeeklyContentViewModel? = nil,
@@ -99,8 +101,14 @@ struct WeeklyContentView: View {
         }
         .task(id: selectedLanguage ?? "") {
             guard let viewModel else { return }
+            resetQuickSearch(viewModel)
             syncExternalLanguage(to: viewModel)
             applyWeeklyDetailSelectionPolicy(from: viewModel.items)
+        }
+        .onDisappear {
+            if let viewModel {
+                resetQuickSearch(viewModel)
+            }
         }
     }
 
@@ -187,7 +195,17 @@ struct WeeklyContentView: View {
     /// 期号筛选目前没有用 picker 暴露——后端 `/issues` 还在补，列表也不强需要；
     /// 后续要做时增加一个 Menu 即可，结构上已经在 ViewModel 留了 `selectedIssue`。
     private func filterBar(_ viewModel: WeeklyContentViewModel) -> some View {
-        HStack(spacing: 10) {
+        QuickSearchToolbarContent(
+            isExpanded: $isQuickSearchExpanded,
+            draft: $quickSearchDraft,
+            committedQuery: viewModel.quickSearchQuery,
+            placeholder: "list.quickSearch.placeholder",
+            onSubmit: { query in
+                viewModel.changeQuickSearchQuery(to: query)
+                quickSearchDraft = viewModel.quickSearchQuery
+            },
+            onClear: { viewModel.changeQuickSearchQuery(to: "") }
+        ) {
             filterPopoverButton(viewModel)
 
             UnifiedSortMenu(
@@ -206,6 +224,12 @@ struct WeeklyContentView: View {
                 isDisabled: !authSession.state.isAuthenticated
             )
         }
+    }
+
+    private func resetQuickSearch(_ viewModel: WeeklyContentViewModel) {
+        isQuickSearchExpanded = false
+        quickSearchDraft = ""
+        viewModel.changeQuickSearchQuery(to: "")
     }
 
     /// Weekly 筛选是多条件组合选择，不能用原生 Menu。
@@ -867,6 +891,8 @@ final class WeeklyContentViewModel {
     /// 排序当前值；setter 由 `changeSort(to:)` 控制以保证副作用统一。
     private(set) var selectedSort: WeeklyFeedSort = .defaultOrder
     private(set) var selectedLanguage: String = ""
+    /// 已提交的快速搜索词；输入草稿留在 View，避免每次击键都重跑全量派生。
+    private(set) var quickSearchQuery = ""
     /// 设置页「感兴趣语言」镜像。「其他」分类的本地过滤依赖它，由 View onChange 同步。
     var interestedLanguages: [String] = [] {
         didSet {
@@ -916,7 +942,8 @@ final class WeeklyContentViewModel {
         hideArchivedRepos ||
         hideForkRepos ||
         selectedStarsFilter != .all ||
-        selectedPushedRecency != .all
+        selectedPushedRecency != .all ||
+        !quickSearchQuery.isEmpty
     }
 
     /// 语言下拉数据源（含 count，供 `LanguagePickerMenu` 渲染图标 + 名称 + 数量）。
@@ -987,6 +1014,7 @@ final class WeeklyContentViewModel {
         let sourceRevision: Int
         /// 「其他」分类的排除集合（排序拼接）；非「其他」时为空串。
         let interestedLanguages: String
+        let searchQuery: String
     }
 
     init(
@@ -1234,6 +1262,13 @@ final class WeeklyContentViewModel {
         reapplyFilters()
     }
 
+    func changeQuickSearchQuery(to newValue: String) {
+        let normalized = QuickSearchTextMatcher.normalized(newValue)
+        guard normalized != quickSearchQuery else { return }
+        quickSearchQuery = normalized
+        reapplyFilters()
+    }
+
     private func reapplyFilters() {
         if dataSource == .local {
             if usesPagedCache {
@@ -1440,6 +1475,7 @@ final class WeeklyContentViewModel {
         let pushedRecency = selectedPushedRecency
         let language = selectedLanguage
         let interestedLanguages = Set(self.interestedLanguages.map { $0.lowercased() })
+        let searchQuery = quickSearchQuery
         let sort = selectedSort
         let now = Date()
         localDerivationCountForTesting &+= 1
@@ -1454,6 +1490,7 @@ final class WeeklyContentViewModel {
                 pushedRecency: pushedRecency,
                 language: language,
                 interestedLanguages: interestedLanguages,
+                searchQuery: searchQuery,
                 sort: sort,
                 now: now
             )
@@ -1510,7 +1547,8 @@ final class WeeklyContentViewModel {
             language: selectedLanguage.lowercased(),
             sort: selectedSort.rawValue,
             sourceRevision: bulkSourceRevision,
-            interestedLanguages: interestedKey
+            interestedLanguages: interestedKey,
+            searchQuery: quickSearchQuery
         )
     }
 
@@ -1551,6 +1589,7 @@ final class WeeklyContentViewModel {
         pushedRecency: WeeklyPushedRecencyFilter,
         language: String,
         interestedLanguages: Set<String>,
+        searchQuery: String,
         sort: WeeklyFeedSort,
         now: Date
     ) -> [WeeklyFeedItem] {
@@ -1574,6 +1613,15 @@ final class WeeklyContentViewModel {
                     guard item.language?.caseInsensitiveCompare(language) == .orderedSame else { continue }
                 }
             }
+            guard QuickSearchTextMatcher.matches(
+                searchQuery,
+                candidates: [
+                    item.fullName,
+                    item.description,
+                    item.language,
+                    item.card.topics.joined(separator: " ")
+                ]
+            ) else { continue }
             filtered.append(item)
         }
         guard !Task.isCancelled else { return [] }
@@ -1621,6 +1669,7 @@ final class WeeklyContentViewModel {
             starsFilter: selectedStarsFilter,
             pushedRecency: selectedPushedRecency,
             language: selectedLanguage,
+            searchQuery: quickSearchQuery,
             sort: selectedSort,
             page: page,
             pageSize: Self.localPageSize,

@@ -514,6 +514,9 @@ struct RepoListView: View {
     @State private var gitHubStarListOAuthRestrictedRepo: Repo?
     /// 列表顶栏「同步于」文案；会话内跟 `SyncManager.state`，冷启动读 DB `last_sync_at`。
     @State private var lastSyncedAt: Date?
+    /// Manage 仓库卡片分类共用快速搜索；草稿与已提交查询分离，避免每次输入都触发 FTS。
+    @State private var isManageQuickSearchExpanded = false
+    @State private var manageQuickSearchDraft = ""
     /// 列表计数由独立观察对象承载，避免计数发布让整个 RepoListView 根层重算。
     @State private var navigationMetrics = RepoListNavigationMetrics()
     /// 摘要存在状态与导航计数同样局部观察，避免摘要生成后重算整个页面根视图。
@@ -1632,31 +1635,48 @@ struct RepoListView: View {
                 lastSyncedAt = at
             }
         }
+        .onChange(of: viewModel.selection) { _, _ in
+            resetManageQuickSearch()
+        }
     }
 
-    /// Manage 列表顶栏：排序 + 同步于 + Stars 同步 + 多选；仅仓库列表分类使用。
+    /// Manage 仓库卡片列表共用顶栏：可切换快速搜索，折叠时保留原排序 / 同步 / 多选布局。
     private func manageFilterBar(sortOption: Binding<RepoSortOption>) -> some View {
-        HStack(spacing: 10) {
-            UnifiedSortMenu(
-                selection: sortOption,
-                options: RepoSortOption.manageOptions,
-                displayName: { $0.displayName },
-                systemImage: { $0.systemImage },
-                dividerBefore: { $0.isManageSpecificSort && $0 == RepoSortOption.manageOptions.first(where: \.isManageSpecificSort) }
-            )
-
-            Spacer()
-
-            if let lastSyncedAt {
-                Text(String(format: String.l10n("list.lastSyncedFormat"), relativeDate(lastSyncedAt)))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        QuickSearchToolbarContent(
+            isExpanded: $isManageQuickSearchExpanded,
+            draft: $manageQuickSearchDraft,
+            committedQuery: viewModel.searchQuery,
+            placeholder: "list.quickSearch.placeholder",
+            onSubmit: { query in
+                viewModel.submitSearch(query)
+                manageQuickSearchDraft = viewModel.searchQuery
+            },
+            onClear: {
+                if !viewModel.searchQuery.isEmpty {
+                    viewModel.submitSearch("")
+                }
             }
-            StarsSyncButton()
-            MultiSelectButton(
-                isActive: dependencies.manageMultiSelectionStore.isActive,
-                action: toggleManageMultiSelection
-            )
+        ) {
+                UnifiedSortMenu(
+                    selection: sortOption,
+                    options: RepoSortOption.manageOptions,
+                    displayName: { $0.displayName },
+                    systemImage: { $0.systemImage },
+                    dividerBefore: { $0.isManageSpecificSort && $0 == RepoSortOption.manageOptions.first(where: \.isManageSpecificSort) }
+                )
+
+                Spacer()
+
+                if let lastSyncedAt {
+                    Text(String(format: String.l10n("list.lastSyncedFormat"), relativeDate(lastSyncedAt)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                StarsSyncButton()
+                MultiSelectButton(
+                    isActive: dependencies.manageMultiSelectionStore.isActive,
+                    action: toggleManageMultiSelection
+                )
         }
         .padding(.horizontal, ManageListFilterBarMetrics.horizontalPadding)
         .padding(.top, ManageListFilterBarMetrics.topPadding)
@@ -1669,6 +1689,12 @@ struct RepoListView: View {
         .onChange(of: viewModel.sortOption) { _, newValue in
             settings.repoSortOption = newValue
         }
+    }
+
+    /// 分类切换时不保留试用入口的瞬时 UI 状态；查询本身由既有 selection 流程负责清理。
+    private func resetManageQuickSearch() {
+        manageQuickSearchDraft = ""
+        isManageQuickSearchExpanded = false
     }
 
     /// Manage 从单选切入多选时，把当前可见仓库接续为第一项，避免卡片选中态突然消失。

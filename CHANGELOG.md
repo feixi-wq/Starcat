@@ -7,6 +7,7 @@ Release notes for the Mac App Store edition of Starcat.
 ### New
 
 - Linux.do discovery: Browse verified open-source projects promoted on Linux.do, see provenance badges across repository lists, and open original discussions from repository details.
+- Quick search across lists: Expand the middle-column search field to quickly find repositories and activity items across Manage, Explore, Trending, Weekly, Awesome, Linux.do, notifications, and Undo Star.
 
 ## 1.9.0
 

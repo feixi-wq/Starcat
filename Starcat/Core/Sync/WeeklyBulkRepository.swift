@@ -115,6 +115,7 @@ struct WeeklyBulkCacheQuery: Sendable {
     let starsFilter: WeeklyStarsFilter
     let pushedRecency: WeeklyPushedRecencyFilter
     let language: String
+    let searchQuery: String
     let sort: WeeklyFeedSort
     let page: Int
     let pageSize: Int
@@ -405,6 +406,18 @@ actor WeeklyBulkRepository: WeeklyBulkRepositoryProtocol {
                 clauses.append("lower(language) = lower(?)")
                 _ = arguments.append(contentsOf: [query.language])
             }
+        }
+        let searchTerm = QuickSearchTextMatcher.normalized(query.searchQuery)
+        if !searchTerm.isEmpty {
+            // 缓存分页必须先搜索再 LIMIT，否则只会命中当前已加载页，结果会随滚动变化。
+            clauses.append("""
+                (lower(full_name) LIKE lower(?)
+                    OR lower(COALESCE(description, '')) LIKE lower(?)
+                    OR lower(COALESCE(language, '')) LIKE lower(?)
+                    OR lower(COALESCE(topics_json, '')) LIKE lower(?))
+                """)
+            let pattern = "%\(searchTerm)%"
+            _ = arguments.append(contentsOf: [pattern, pattern, pattern, pattern])
         }
 
         guard !clauses.isEmpty else { return ("", arguments) }

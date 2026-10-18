@@ -45,6 +45,9 @@ struct TrendingView: View {
     @State private var showLoginSheet: Bool = false
     @State private var libraryStateMap: [Int64: LibraryState] = [:]
     @State private var wikiAvailabilityMap: [Int64: Bool] = [:]
+    @State private var isQuickSearchExpanded = false
+    @State private var quickSearchDraft = ""
+    @State private var quickSearchQuery = ""
     @Binding private var selectedLanguage: TrendingLanguage
 
     /// 当前选中的 Trending repo ID（驱动 README 加载）。
@@ -164,6 +167,7 @@ struct TrendingView: View {
             }
         }
         .onChange(of: selectedLanguage) { _, language in
+            resetQuickSearch()
             clearTrendingDetailSelection()
             Task {
                 await viewModel.selectLanguage(language)
@@ -255,7 +259,8 @@ struct TrendingView: View {
             healthAvailableRepoIDs: healthFilter == .unknown
                 ? []
                 : Set(dependencies.repoHealthStore.snapshots.keys),
-            openSSFAvailableRepoIDs: openSSFAvailableRepoIDs
+            openSSFAvailableRepoIDs: openSSFAvailableRepoIDs,
+            searchQuery: quickSearchQuery
         )
     }
 
@@ -324,7 +329,17 @@ struct TrendingView: View {
     /// 约束：周期仍然是趋势列表的数据范围，变化时要清空当前详情选择；排序只调整当前
     /// 范围内的展示顺序，二者保持独立文案，给后续全局筛选重构留出清晰边界。
     private var toolbarView: some View {
-        HStack(spacing: 10) {
+        QuickSearchToolbarContent(
+            isExpanded: $isQuickSearchExpanded,
+            draft: $quickSearchDraft,
+            committedQuery: quickSearchQuery,
+            placeholder: "list.quickSearch.placeholder",
+            onSubmit: { query in
+                quickSearchQuery = QuickSearchTextMatcher.normalized(query)
+                quickSearchDraft = quickSearchQuery
+            },
+            onClear: { quickSearchQuery = "" }
+        ) {
             trendingPeriodMenu
             trendingSortMenu
 
@@ -343,6 +358,12 @@ struct TrendingView: View {
         .padding(.horizontal, 14)
         .padding(.top, 8)
         .padding(.bottom, 6)
+    }
+
+    private func resetQuickSearch() {
+        isQuickSearchExpanded = false
+        quickSearchDraft = ""
+        quickSearchQuery = ""
     }
 
     private var trendingPeriodMenu: some View {

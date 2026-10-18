@@ -19,6 +19,8 @@ struct AwesomeView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AuthSession.self) private var authSession
     @State private var searchText = ""
+    @State private var quickSearchDraft = ""
+    @State private var isQuickSearchExpanded = false
     @State private var selectedSection: String?
     @State private var sort: AwesomeSortOption = .original
     @State private var libraryStateMap: [Int64: LibraryState] = [:]
@@ -55,6 +57,7 @@ struct AwesomeView: View {
             await fillVisiblePageIfNeeded()
         }
         .onChange(of: store.selectedSourceID) { _, _ in
+            resetQuickSearch()
             selectedSection = nil
             sort = .original
             dependencies.exploreMultiSelectionStore.clearSelection()
@@ -67,12 +70,18 @@ struct AwesomeView: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("awesome.search.placeholder", text: $searchText)
-                .textFieldStyle(.plain)
-
+        QuickSearchToolbarContent(
+            isExpanded: $isQuickSearchExpanded,
+            draft: $quickSearchDraft,
+            committedQuery: searchText,
+            placeholder: "list.quickSearch.placeholder",
+            onSubmit: { query in
+                let normalizedQuery = QuickSearchTextMatcher.normalized(query)
+                searchText = normalizedQuery
+                quickSearchDraft = normalizedQuery
+            },
+            onClear: { searchText = "" }
+        ) {
             if store.selectedSourceID != nil {
                 Picker("awesome.section.title", selection: $selectedSection) {
                     Text("awesome.section.all").tag(String?.none)
@@ -109,6 +118,13 @@ struct AwesomeView: View {
         }
         .padding(.horizontal, ManageListFilterBarMetrics.horizontalPadding)
         .padding(.vertical, 9)
+    }
+
+    /// 切换 Awesome 数据源时不能沿用上一个来源的搜索条件，避免新列表看起来像空数据。
+    private func resetQuickSearch() {
+        isQuickSearchExpanded = false
+        quickSearchDraft = ""
+        searchText = ""
     }
 
     @ViewBuilder

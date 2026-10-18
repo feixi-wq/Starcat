@@ -257,6 +257,7 @@ struct WeeklyBulkRepositoryTests {
             starsFilter: .all,
             pushedRecency: .all,
             language: "",
+            searchQuery: "",
             sort: .defaultOrder,
             page: 1,
             pageSize: 20,
@@ -305,6 +306,7 @@ struct WeeklyBulkRepositoryTests {
             starsFilter: .min1000,
             pushedRecency: .days30,
             language: "Swift",
+            searchQuery: "",
             sort: .starsDesc,
             page: 1,
             pageSize: 1,
@@ -324,12 +326,30 @@ struct WeeklyBulkRepositoryTests {
             starsFilter: query.starsFilter,
             pushedRecency: query.pushedRecency,
             language: query.language,
+            searchQuery: query.searchQuery,
             sort: query.sort,
             page: 2,
             pageSize: 1,
             now: query.now
         )))
         #expect(secondPage.items.isEmpty)
+
+        let searchedPage = try #require(await repo.cachedPage(query: WeeklyBulkCacheQuery(
+            source: .all,
+            coverage: .all,
+            hideArchived: false,
+            hideForks: false,
+            starsFilter: .all,
+            pushedRecency: .all,
+            language: "",
+            searchQuery: "OWNER/C",
+            sort: .starsDesc,
+            page: 1,
+            pageSize: 20,
+            now: Date()
+        )))
+        #expect(searchedPage.filteredTotal == 1)
+        #expect(searchedPage.items.map(\.fullName) == ["owner/c"])
     }
 
     @Test("fetchBulk 整批替换：第二次拉新数据，旧行被全部清掉")
