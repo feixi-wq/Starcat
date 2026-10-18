@@ -448,6 +448,8 @@ final class AppDependencies {
 
     /// star / unstar 唯一权威服务（写入 registry 的唯一路径）。
     let starActionService: StarActionService
+    /// GitHub unstar 成功后统一删除单仓库私有整理、派生分析与可选知识库数据。
+    let repositoryUnstarCleanupService: RepositoryUnstarCleanupService
 
     /// owner 卡片（详情页 hero owner 名入口弹出）的数据与关注动作服务。
     ///
@@ -1282,6 +1284,20 @@ final class AppDependencies {
             entitlementGate: self.entitlementGate
         )
 
+        let repositoryUnstarCleanupService = RepositoryUnstarCleanupService(
+            database: db,
+            cancelAISession: { [weak sessionStore = self.repoAIInsightSessionStore] repoID in
+                await sessionStore?.remove(repoID: repoID)
+            },
+            prepareKnowledgeIndexRemoval: { [weak ragIndexBuilder = self.knowledgeRAGIndexBuilder] repoID in
+                try await ragIndexBuilder?.prepareRepositoryRemoval(repoID: repoID)
+            },
+            finishKnowledgeIndexRemoval: { [weak ragIndexBuilder = self.knowledgeRAGIndexBuilder] repoID in
+                ragIndexBuilder?.finishRepositoryRemoval(repoID: repoID)
+            }
+        )
+        self.repositoryUnstarCleanupService = repositoryUnstarCleanupService
+
         // Star 写入核心必须先于 MCP 门面装配：MCP 的 star/unstar 只能复用这条业务路径，
         // 才能同步维护本地缓存、Undo 历史、活动账本和 Home 刷新。
         let registry = StarredRegistry()
@@ -1297,6 +1313,7 @@ final class AppDependencies {
             userNameProvider: { [weak session] in
                 session?.state.user?.login
             },
+            cleanupService: repositoryUnstarCleanupService,
             homeRefresher: nil,
             activityRepository: self.userRepoActivityRepository
         )
@@ -1573,6 +1590,14 @@ final class AppDependencies {
         )
         self.repositoryInsightsContextCoordinator = repositoryInsightsContextCoordinator
         aiInsight.setRepositoryInsightsContextProvider(repositoryInsightsContextCoordinator)
+        repositoryUnstarCleanupService.attachKnowledgeArtifactCleanup {
+            [repositoryInsightsCache, knowledgeBaseMetadataSnapshotCache, readmeAvailability = self.readmeAvailability]
+            repo in
+            try await repositoryInsightsContextCoordinator.deleteArtifact(for: repo)
+            await repositoryInsightsCache.clearTransientState()
+            await knowledgeBaseMetadataSnapshotCache.removeAll()
+            readmeAvailability.clearNotFound(repoId: repo.id)
+        }
         let healthService = RepoHealthService(
             repository: healthRepo,
             releaseRepository: releaseRecordRepo,

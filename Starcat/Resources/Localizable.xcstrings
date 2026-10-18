@@ -403306,6 +403306,265 @@
         }
       }
     },
+    "repo.unstarData.ai.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI summaries and repository conversations" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 摘要与仓库问答记录" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "AI 摘要與倉庫問答記錄" } }
+      }
+    },
+    "repo.unstarData.ai.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI-generated content" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 生成内容" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "AI 生成內容" } }
+      }
+    },
+    "repo.unstarData.analysis.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Knowledge search data, README, health, security, release, and Wiki analysis" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "知识库搜索内容、README、健康度、安全评分、Release 与 Wiki 分析" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "知識庫搜尋內容、README、健康度、安全評分、Release 與 Wiki 分析" } }
+      }
+    },
+    "repo.unstarData.analysis.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local analysis data" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地分析数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "本機分析資料" } }
+      }
+    },
+    "repo.unstarData.choiceSection" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "You can choose" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "你可以选择" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "你可以選擇" } }
+      }
+    },
+    "repo.unstarData.deleteChoice.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove all related data from your Starcat library and free local storage." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "彻底从 Starcat 知识库中移除所有相关数据，释放本地存储空间。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "徹底從 Starcat 知識庫中移除所有相關資料，釋放本機儲存空間。" } }
+      }
+    },
+    "repo.unstarData.deleteChoice.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete local data too" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "一并删除本地数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "一併刪除本機資料" } }
+      }
+    },
+    "repo.unstarData.deleteAction" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unstar and Delete Local Data" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 并删除本地数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 並刪除本機資料" } }
+      }
+    },
+    "repo.unstarData.deleteSection" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The following local data will be deleted" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将删除以下本地数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "將刪除以下本機資料" } }
+      }
+    },
+    "repo.unstarData.irreversibleTitle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deletion cannot be undone" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除后无法恢复" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "刪除後無法復原" } }
+      }
+    },
+    "repo.unstarData.irreversible" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Once deleted, this local data cannot be recovered. Re-adding the repository later will require downloading and analyzing it again." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "一旦删除，这些本地数据将无法恢复。以后重新加入知识库时，需要重新获取和分析这些内容。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "一旦刪除，這些本機資料將無法復原。日後重新加入知識庫時，需要重新取得並分析這些內容。" } }
+      }
+    },
+    "repo.unstarData.keep.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove the GitHub Star but keep local data for viewing and analysis later." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 GitHub Star，但保留本地数据，方便以后再次查看和分析。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 GitHub Star，但保留本機資料，方便日後再次查看和分析。" } }
+      }
+    },
+    "repo.unstarData.keep.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Keep local data" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保留本地数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "保留本機資料" } }
+      }
+    },
+    "repo.unstarData.messageFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ will be removed from your GitHub Stars, and its local data in the Starcat library will also be handled." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 将同时从你的 GitHub Star 中移除，并处理在 Starcat 知识库中的本地数据。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "%@ 將同時從你的 GitHub Star 中移除，並處理在 Starcat 知識庫中的本機資料。" } }
+      }
+    },
+    "repo.unstarData.personal.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Notes, tags, and reading status" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "笔记、标签与阅读状态" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "筆記、標籤與閱讀狀態" } }
+      }
+    },
+    "repo.unstarData.personal.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Personal organization data" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "个人整理数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "個人整理資料" } }
+      }
+    },
+    "repo.unstarData.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unstar and Handle Local Data?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 并处理本地数据？" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 並處理本機資料？" } }
+      }
+    },
+    "repo.unstarData.unstarOnly" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unstar" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star" } }
+      }
+    },
+    "repo.unstarData.cleanupFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The GitHub Star was removed, but some local data could not be deleted. Please try again later." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "GitHub Star 已取消，但部分本地数据未能删除，请稍后重试。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "GitHub Star 已取消，但部分本機資料未能刪除，請稍後再試。" } }
+      }
+    },
+    "repo.unstarData.confirmStarOnly" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unstar and Keep in Knowledge Base" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star，保留知识库" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star，保留知識庫" } }
+      }
+    },
+    "repo.unstarData.confirmWithKnowledge" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unstar and Remove from Knowledge Base" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 并移出知识库" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 並移出知識庫" } }
+      }
+    },
+    "repo.unstarData.knowledge.index.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Search fragments, semantic index, and external search copies" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "搜索片段、语义索引与外部搜索副本" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "搜尋片段、語意索引與外部搜尋副本" } }
+      }
+    },
+    "repo.unstarData.knowledge.index.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Knowledge search index" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "知识检索索引" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "知識檢索索引" } }
+      }
+    },
+    "repo.unstarData.knowledge.section" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Also deleted when removed from the library" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "同时移出知识库时还会删除" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "同時移出知識庫時還會刪除" } }
+      }
+    },
+    "repo.unstarData.knowledge.sources.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "README, Wiki, releases, history, and repository insights cache" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "README、Wiki、Release、历史记录与仓库洞察缓存" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "README、Wiki、Release、歷史記錄與倉庫洞察快取" } }
+      }
+    },
+    "repo.unstarData.knowledge.sources.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Knowledge sources and analysis" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "知识来源与分析内容" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "知識來源與分析內容" } }
+      }
+    },
+    "repo.unstarData.message.library" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ will be removed from your GitHub Stars. You can choose whether to remove it from your Starcat library too." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 将从你的 GitHub Star 中移除。你还可以决定是否同时将它移出 Starcat 知识库。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "%@ 將從你的 GitHub Star 中移除。你還可以決定是否同時將它移出 Starcat 知識庫。" } }
+      }
+    },
+    "repo.unstarData.message.starOnly" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ will be removed from your GitHub Stars, and the Star-related local data below will be deleted." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 将从你的 GitHub Star 中移除，并删除下列与 Star 相关的本地数据。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "%@ 將從你的 GitHub Star 中移除，並刪除下列與 Star 相關的本機資料。" } }
+      }
+    },
+    "repo.unstarData.star.ai.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI summaries, repository conversations, and generated analysis" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 摘要、仓库问答记录与生成的分析内容" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "AI 摘要、倉庫問答記錄與產生的分析內容" } }
+      }
+    },
+    "repo.unstarData.star.ai.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI-generated content" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 生成内容" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "AI 生成內容" } }
+      }
+    },
+    "repo.unstarData.star.analysis.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Health, OpenSSF security score, and semantic-search vector cache" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "健康度、OpenSSF 安全评分与语义搜索向量缓存" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "健康度、OpenSSF 安全評分與語意搜尋向量快取" } }
+      }
+    },
+    "repo.unstarData.star.analysis.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local analysis data" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地分析数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "本機分析資料" } }
+      }
+    },
+    "repo.unstarData.star.personal.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Notes, tags, reading status, pins, and Star-list organization" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "笔记、标签、阅读状态、置顶与 Star 列表整理" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "筆記、標籤、閱讀狀態、置頂與 Star 清單整理" } }
+      }
+    },
+    "repo.unstarData.star.personal.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Personal organization data" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "个人整理数据" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "個人整理資料" } }
+      }
+    },
+    "repo.unstarData.star.section" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Always deleted when you unstar" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 时将删除" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "取消 Star 時將刪除" } }
+      }
+    },
+    "repo.unstarData.warning.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Personal organization data cannot be restored. Re-starring or re-adding the repository will download and rebuild the caches and analysis again." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "个人整理数据删除后无法恢复；以后重新 Star 或重新加入知识库时，可重建的缓存与分析会重新获取和生成。" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "個人整理資料刪除後無法復原；日後重新 Star 或重新加入知識庫時，可重建的快取與分析會重新取得和產生。" } }
+      }
+    },
+    "repo.unstarData.warning.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Deletion cannot be undone" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除后无法撤销" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "刪除後無法復原" } }
+      }
+    },
     "repo.unstar" : {
       "localizations" : {
         "ar" : {
