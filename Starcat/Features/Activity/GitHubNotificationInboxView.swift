@@ -760,14 +760,12 @@ private struct GitHubNotificationSegmentMenu: View {
             }
             .pickerStyle(.inline)
         } label: {
+            // 与共享排序菜单一致，只保留 Menu 自带的系统下拉指示器。
             HStack(spacing: 8) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .foregroundStyle(.secondary)
                 Text(verbatim: selection.displayTitle(locale: locale))
                     .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             .accessibilityLabel(GitHubNotificationMapper.copy(locale, zh: "筛选", en: "Filter"))
             .accessibilityValue(selection.displayTitle(locale: locale))
