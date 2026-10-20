@@ -325,18 +325,14 @@ struct GitHubStarListAIGroupingSheet: View {
     private var resultToolbar: some View {
         @Bindable var store = presentation
         return HStack(spacing: 8) {
-            Picker("githubStarLists.aiGrouping.filter.label", selection: $store.filter) {
-                filterLabel(.actionable, snapshot: store.snapshot).tag(GitHubStarListAIResultFilter.actionable)
-                filterLabel(.suggestions, snapshot: store.snapshot).tag(GitHubStarListAIResultFilter.suggestions)
-                filterLabel(.applied, snapshot: store.snapshot).tag(GitHubStarListAIResultFilter.applied)
-                filterLabel(.applyFailed, snapshot: store.snapshot).tag(GitHubStarListAIResultFilter.applyFailed)
-                filterLabel(.all, snapshot: store.snapshot).tag(GitHubStarListAIResultFilter.all)
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.regular)
-            .labelsHidden()
-            // 分段控件按内容宽度贴左，不要拉满整行把每个 tab 撑出大块留白。
-            .fixedSize(horizontal: true, vertical: false)
+            CountedSegmentedControl(
+                items: [GitHubStarListAIResultFilter.actionable, .suggestions, .applied, .applyFailed, .all],
+                selection: $store.filter,
+                totalCount: store.snapshot.totalCount,
+                title: { LocalizedStringKey($0.tabTitleKey) },
+                count: { store.snapshot.count(for: $0) },
+                accessibilityLabel: "githubStarLists.aiGrouping.filter.label"
+            )
 
             Spacer(minLength: 8)
 
@@ -609,14 +605,5 @@ struct GitHubStarListAIGroupingSheet: View {
     /// 重试是当前失败分类的上下文操作，不能在其它 Tab 里处理用户看不见的项目。
     private func shouldShowRetryAll(for filter: GitHubStarListAIResultFilter) -> Bool {
         filter == .analysisFailed || filter == .applyFailed || filter == .automaticallyIgnored
-    }
-
-    private func filterLabel(
-        _ filter: GitHubStarListAIResultFilter,
-        snapshot: GitHubStarListAIGroupingPresentationSnapshot
-    ) -> some View {
-        // 单个 Text 让标题和数字成为一个原生 segment，而不是两个可分别命中的子视图。
-        Text(verbatim: "\(String.l10n(filter.tabTitleKey))  \(snapshot.count(for: filter).formatted(.number.locale(locale)))")
-            .monospacedDigit()
     }
 }
