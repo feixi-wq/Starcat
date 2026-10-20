@@ -34,7 +34,8 @@ struct RepoLicenseFilterSection: View {
                         RepoLicenseFilterChip(
                             title: key == RepoLicenseFilter.unknownKey
                                 ? String.l10n("list.filter.license.unknown") : RepoLicenseFilter.displayName(for: key),
-                            isSelected: selection.selections.contains(key)
+                            isSelected: selection.selections.contains(key),
+                            category: RepoLicenseCategory.category(for: key)
                         ) {
                             // 沿用既有绑定从当前集合切换，不引入第二份选择状态。
                             let selected = binding(for: key)

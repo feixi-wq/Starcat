@@ -58,4 +58,31 @@ struct RepoLicenseFilterPresentationTests {
         #expect(RepoLicenseFilterSection.viewportHeight(for: 72) == 72)
         #expect(RepoLicenseFilterSection.viewportHeight(for: 600) == RepoLicenseFilterSection.maximumContentHeight)
     }
+
+    @Test("分类配色和选中态均不改变胶囊尺寸", arguments: RepoLicenseCategory.allCases, [ColorScheme.light, .dark])
+    func categoryColorsKeepChipSize(category: RepoLicenseCategory, colorScheme: ColorScheme) throws {
+        let normal = try size(of: RepoLicenseFilterChip(title: "MIT", isSelected: false, category: category, action: {})
+            .environment(\.colorScheme, colorScheme), width: 236)
+        let selected = try size(of: RepoLicenseFilterChip(title: "MIT", isSelected: true, category: category, action: {})
+            .environment(\.colorScheme, colorScheme), width: 236)
+        let all = try size(of: RepoLicenseFilterChip(title: "MIT", isSelected: false, action: {})
+            .environment(\.colorScheme, colorScheme), width: 236)
+        #expect(normal == selected)
+        #expect(normal == all)
+    }
+
+    @Test("首次选中与清空最后一项不增减浮层高度", arguments: [ColorScheme.light, .dark])
+    func resetFooterReservesStableSpace(colorScheme: ColorScheme) throws {
+        let active = try size(of: UnifiedFilterPopoverContent(isAnyFilterActive: true, onReset: {}) {
+            Text(verbatim: "Filter content")
+        }.environment(\.colorScheme, colorScheme), width: 260)
+        let inactive = try size(of: UnifiedFilterPopoverContent(isAnyFilterActive: false, onReset: {}) {
+            Text(verbatim: "Filter content")
+        }.environment(\.colorScheme, colorScheme), width: 260)
+        let noReset = try size(of: UnifiedFilterPopoverContent(isAnyFilterActive: false, onReset: nil) {
+            Text(verbatim: "Filter content")
+        }.environment(\.colorScheme, colorScheme), width: 260)
+        #expect(active == inactive)
+        #expect(noReset.height < inactive.height)
+    }
 }

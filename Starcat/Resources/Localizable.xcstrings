@@ -219630,6 +219630,41 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部许可证" } }
       }
     },
+    "list.filter.license.category.networkCopyleft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Network copyleft: source-sharing duties may apply to modified network services; not a legal assessment." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络 Copyleft：修改后的网络服务可能适用源码提供义务；不代表法律结论。" } }
+      }
+    },
+    "list.filter.license.category.permissive" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Permissive: attribution and other conditions may still apply; not a legal assessment." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "宽松型：仍可能需要署名并遵守其他条款；不代表法律结论。" } }
+      }
+    },
+    "list.filter.license.category.strongCopyleft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Strong copyleft: source-sharing duties may apply; not a legal assessment." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "强 Copyleft：可能适用源码提供义务；不代表法律结论。" } }
+      }
+    },
+    "list.filter.license.category.unclassified" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unclassified: review the original license; not a commercial-use assessment." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法确定分类：请查看许可证原文；不代表商用许可判定。" } }
+      }
+    },
+    "list.filter.license.category.weakCopyleft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Weak copyleft: duties may apply to files or libraries; not a legal assessment." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "弱 Copyleft：文件或库可能适用开源义务；不代表法律结论。" } }
+      }
+    },
     "list.filter.license.title" : {
       "extractionState" : "manual",
       "localizations" : {

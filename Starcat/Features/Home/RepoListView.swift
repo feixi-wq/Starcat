@@ -1243,7 +1243,7 @@ struct RepoListView: View {
         Divider()
         RepoLicenseFilterSection(
             options: selectedPage == .manage
-                ? (viewModel.sidebarFacetCounts?.licenses ?? [])
+                ? viewModel.sidebarLicenseOptions
                 : navigationMetrics.licenseOptions,
             selection: globalFilterBinding(\.licenseFilter)
         )

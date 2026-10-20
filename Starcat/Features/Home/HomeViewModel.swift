@@ -605,6 +605,20 @@ final class HomeViewModel {
         return sidebarFacetSnapshot?.counts
     }
 
+    /// 许可证候选来自完整来源，不依赖当前筛选后的计数。
+    /// 计数必须在条件改变时立即失效，但不能因此把仍有效的标签清空再异步补回，
+    /// 否则标签墙会收缩、重排并丢失滚动位置。这里只放宽候选项的展示有效性，
+    /// 不复用旧计数；切换分类、搜索或真实数据版本后仍拒绝旧来源。
+    var sidebarLicenseOptions: [String] {
+        let query = sidebarFacetQuery
+        guard let snapshot = sidebarFacetSnapshot,
+              snapshot.query.selection == query.selection,
+              snapshot.query.scope == query.scope,
+              snapshot.query.searchQuery == query.searchQuery,
+              snapshot.query.dataRevision == query.dataRevision else { return [] }
+        return snapshot.counts.licenses
+    }
+
     /// 复用仍有效的标签计数，避免每次勾选都经历「数字 → 占位 → 同一个数字」。
     /// 无标签范围只禁用交互，数字仍展示全账号 Star 标签总量，避免置灰时误显示为 0。
     var sidebarTagCounts: [String: Int]? {
