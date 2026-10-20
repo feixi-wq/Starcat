@@ -111,6 +111,12 @@ struct GitHubNotificationInboxView: View {
         }
     }
 
+    private var toolbarSyncDescription: String? {
+        lastFetchedAt.map {
+            String(format: String.l10n("activity.notification.lastSynced"), RelativeTimeText.pastEvent($0, locale: locale))
+        }
+    }
+
     /// 只保留类型下拉 + 同步行，和星标中栏 `manageFilterBar` 同高。
     /// 总数 / 未读走系统 `navigationSubtitle`（面包屑下一行），不要再叠 `通知 42` 标题。
     @ViewBuilder
@@ -135,9 +141,10 @@ struct GitHubNotificationInboxView: View {
                 }
 
             Spacer(minLength: 8)
+                .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
-            if let lastFetchedAt {
-                Text(String(format: String.l10n("activity.notification.lastSynced"), RelativeTimeText.pastEvent(lastFetchedAt, locale: locale)))
+            if let text = toolbarSyncDescription {
+                AdaptiveToolbarStatusText(text: text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -147,7 +154,7 @@ struct GitHubNotificationInboxView: View {
             SyncIconButton(
                 isRefreshing: inbox.isSyncing,
                 disabled: inbox.isSyncing,
-                tooltip: String.l10n("activity.refresh")
+                tooltip: AdaptiveToolbarStatusText.refreshTooltip(action: String.l10n("activity.refresh"), status: toolbarSyncDescription)
             ) {
             Task {
                 await inbox.sync(forceOrganizationIssues: true)

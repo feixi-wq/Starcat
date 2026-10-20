@@ -1659,6 +1659,10 @@ struct RepoListView: View {
         }
     }
 
+    private var manageSyncDescription: String? {
+        lastSyncedAt.map { String(format: String.l10n("list.lastSyncedFormat"), relativeDate($0)) }
+    }
+
     /// Manage 仓库卡片列表共用顶栏：可切换快速搜索，折叠时保留原排序 / 同步 / 多选布局。
     private func manageFilterBar(sortOption: Binding<RepoSortOption>) -> some View {
         QuickSearchToolbarContent(
@@ -1685,13 +1689,14 @@ struct RepoListView: View {
                 )
 
                 Spacer()
+                    .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
-                if let lastSyncedAt {
-                    Text(String(format: String.l10n("list.lastSyncedFormat"), relativeDate(lastSyncedAt)))
+                if let text = manageSyncDescription {
+                    AdaptiveToolbarStatusText(text: text)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                StarsSyncButton()
+                StarsSyncButton(statusDescription: manageSyncDescription)
                 MultiSelectButton(
                     isActive: dependencies.manageMultiSelectionStore.isActive,
                     action: toggleManageMultiSelection

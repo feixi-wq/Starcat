@@ -301,9 +301,10 @@ private struct ExploreDiscoveryListView: View {
             )
 
             Spacer()
+                .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
             if let text = formattedFreshness {
-                Text(text)
+                AdaptiveToolbarStatusText(text: text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -311,7 +312,7 @@ private struct ExploreDiscoveryListView: View {
             SyncIconButton(
                 isRefreshing: viewModel.isRefreshing,
                 disabled: viewModel.isRefreshing || viewModel.isLoading,
-                tooltip: String.l10n("explore.refresh.tooltip")
+                tooltip: AdaptiveToolbarStatusText.refreshTooltip(action: String.l10n("explore.refresh.tooltip"), status: formattedFreshness)
             ) {
                 refreshCurrentDiscoveryList()
             }

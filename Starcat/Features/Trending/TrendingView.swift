@@ -344,6 +344,7 @@ struct TrendingView: View {
             trendingSortMenu
 
             Spacer()
+                .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
             HStack(spacing: 8) {
                 freshnessIndicator
@@ -456,7 +457,7 @@ struct TrendingView: View {
     @ViewBuilder
     private var freshnessIndicator: some View {
         if let text = viewModel.formattedFreshness {
-            Text(text)
+            AdaptiveToolbarStatusText(text: text, isRequired: viewModel.isStale)
                 .font(.caption)
                 .foregroundStyle(viewModel.isStale ? Color.orange : Color.secondary)
                 .help(absoluteFreshnessHelpText)

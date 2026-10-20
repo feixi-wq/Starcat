@@ -394,9 +394,10 @@ struct ActivityView: View {
             )
 
             Spacer()
+                .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
-            if let last = viewModel.lastRefreshedAt {
-                Text(String(format: String.l10n("activity.lastRefreshedFormat"), relativeDate(last)))
+            if let text = activityFreshnessDescription(viewModel) {
+                AdaptiveToolbarStatusText(text: text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -528,11 +529,15 @@ struct ActivityView: View {
         return RepoCardInlineMetadata(systemImage: "calendar", text: Self.absoluteDate(date))
     }
 
+    private func activityFreshnessDescription(_ viewModel: ActivityViewModel) -> String? {
+        viewModel.lastRefreshedAt.map { String(format: String.l10n("activity.lastRefreshedFormat"), relativeDate($0)) }
+    }
+
     private func activityRefreshButton(_ viewModel: ActivityViewModel) -> some View {
         SyncIconButton(
             isRefreshing: viewModel.isRefreshing,
             disabled: viewModel.isRefreshing,
-            tooltip: String.l10n("activity.refresh")
+            tooltip: AdaptiveToolbarStatusText.refreshTooltip(action: String.l10n("activity.refresh"), status: activityFreshnessDescription(viewModel))
         ) {
             refreshCurrentActivityList(viewModel)
         }

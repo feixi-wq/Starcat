@@ -62,6 +62,10 @@ struct LinuxDoView: View {
         }
     }
 
+    private var catalogFreshnessDescription: String? {
+        store.catalog.map { RelativeTimeText.pastEvent($0.checkedAt, locale: locale) }
+    }
+
     /// 与普通发现共用控件和间距；Spacer 让搜索 / 排序靠左，更新状态 / 操作靠右。
     private var filterBar: some View {
         QuickSearchToolbarContent(
@@ -88,9 +92,10 @@ struct LinuxDoView: View {
             )
 
             Spacer()
+                .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
-            if let catalog = store.catalog {
-                Text(RelativeTimeText.pastEvent(catalog.checkedAt, locale: locale))
+            if let text = catalogFreshnessDescription {
+                AdaptiveToolbarStatusText(text: text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -98,7 +103,7 @@ struct LinuxDoView: View {
             SyncIconButton(
                 isRefreshing: store.isRefreshingCatalog,
                 disabled: store.isRefreshingCatalog,
-                tooltip: String.l10n("explore.refresh.tooltip")
+                tooltip: AdaptiveToolbarStatusText.refreshTooltip(action: String.l10n("explore.refresh.tooltip"), status: catalogFreshnessDescription)
             ) {
                 Task { await store.refreshCatalog(force: true) }
             }
