@@ -188,6 +188,7 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
         let presentation = ExploreNavigationPresentation.make(
             mode: selectedExploreMode,
             discoverySource: linuxDoStore.selectedSource,
+            linuxDoLanguage: linuxDoStore.selectedLanguage,
             trendingLanguage: selectedTrendingLanguage,
             discoveryLanguage: selectedDiscoveryLanguage,
             discoveryTopic: selectedDiscoveryTopic,
@@ -219,7 +220,7 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
             // Linux.do 是独立目录，不能沿用普通 Discover 的 total，否则标题会显示
             // 与当前列表无关的全站发现数量。
             if linuxDoStore.selectedSource == .linuxDo {
-                return (metrics.linuxDoRepoCount, nil)
+                return (metrics.linuxDoRepoCount, linuxDoStore.repositories.count)
             }
             let total = exploreCatalogStore.total(for: .discover)
             let current: Int
@@ -2363,6 +2364,7 @@ struct RepoListView: View {
         let presentation = ExploreNavigationPresentation.make(
             mode: selectedExploreMode,
             discoverySource: dependencies.linuxDoStore.selectedSource,
+            linuxDoLanguage: dependencies.linuxDoStore.selectedLanguage,
             trendingLanguage: selectedTrendingLanguage,
             discoveryLanguage: selectedDiscoveryLanguage,
             discoveryTopic: selectedDiscoveryTopic,

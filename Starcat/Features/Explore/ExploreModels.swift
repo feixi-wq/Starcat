@@ -109,6 +109,7 @@ struct ExploreNavigationPresentation: Equatable {
     static func make(
         mode: ExploreMode,
         discoverySource: DiscoverySource = .catalog,
+        linuxDoLanguage: String? = nil,
         trendingLanguage: TrendingLanguage,
         discoveryLanguage: String?,
         discoveryTopic: String?,
@@ -123,9 +124,10 @@ struct ExploreNavigationPresentation: Equatable {
             // Linux.do 是 Discover 下的独立来源，不继承普通目录的 topic / platform
             // 面包屑和“已筛选”语义。
             if discoverySource == .linuxDo {
+                let language = TrendingLanguage(linuxDoLanguage ?? "")
                 return ExploreNavigationPresentation(
-                    thirdLevelTitle: "Linux.do",
-                    isFiltered: false
+                    thirdLevelTitle: language.rawValue.isEmpty ? "Linux.do" : "Linux.do › \(language.localizedDisplayName)",
+                    isFiltered: !language.rawValue.isEmpty
                 )
             }
             let topicTitle = discoveryTopic.map { code in

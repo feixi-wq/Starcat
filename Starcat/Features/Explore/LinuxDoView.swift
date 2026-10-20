@@ -178,6 +178,7 @@ struct LinuxDoView: View {
     /// 全局基础筛选在本地完整快照上执行；分页边界使用筛选后集合，不会因隐藏尾行而断页。
     private var filteredRepositories: [DiscoveryRepoDTO] {
         store.repositories.filter { repo in
+            guard LinuxDoStore.matchesLanguage(repo.language, selection: store.selectedLanguage, interestedLanguages: settings.interestedLanguages) else { return false }
             guard settings.starFilter.matches(isStarred: dependencies.starredRegistry.contains(ghRepoId: repo.repoID)) else { return false }
             if settings.hideArchived && repo.isArchived || settings.hideForks && repo.isFork { return false }
             if !settings.globalFilterLanguages.isEmpty && !settings.globalFilterLanguages.contains(where: { $0.caseInsensitiveCompare(repo.language ?? "") == .orderedSame }) { return false }
@@ -193,7 +194,8 @@ struct LinuxDoView: View {
     }
 
     private var queryIdentity: String {
-        "\(store.providerID):\(store.catalog?.payload.revision ?? -1):\(search):\(recentPromotionFirst):\(filteredRepositories.map(\.repoID))"
+        // 显式包含语言身份，两个空分类（或结果相同的分类）之间切换也必须重置分页。
+        "\(store.providerID):\(store.catalog?.payload.revision ?? -1):\(store.selectedLanguage ?? ""):\(search):\(recentPromotionFirst):\(filteredRepositories.map(\.repoID))"
     }
 
     private var signalIdentity: String {

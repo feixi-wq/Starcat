@@ -42,6 +42,7 @@ private enum ExploreSidebarSelection: Hashable {
     case weeklyLanguage(String?)
     case awesomeSource(String?)
     case linuxDo
+    case linuxDoLanguage(String?)
 }
 
 /// 探索侧栏图标色：未选中用语义色；明亮主题选中时跟系统蓝底反成白色。
@@ -864,7 +865,10 @@ struct SidebarView: View {
     private var defaultExploreSidebarSelection: ExploreSidebarSelection {
         switch selectedExploreMode {
         case .discover:
-            if dependencies.linuxDoStore.selectedSource == .linuxDo { return .linuxDo }
+            if dependencies.linuxDoStore.selectedSource == .linuxDo {
+                if let language = dependencies.linuxDoStore.selectedLanguage { return .linuxDoLanguage(language) }
+                return .linuxDo
+            }
             if let selectedDiscoveryTopic {
                 return .topic(selectedDiscoveryTopic)
             }
@@ -908,12 +912,21 @@ struct SidebarView: View {
                 && dependencies.awesomeStore.selectedSourceID == sourceID
         case .linuxDo:
             return selectedExploreMode == .discover && dependencies.linuxDoStore.selectedSource == .linuxDo
+        case .linuxDoLanguage(let key):
+            return selectedExploreMode == .discover
+                && dependencies.linuxDoStore.selectedSource == .linuxDo
+                && dependencies.linuxDoStore.selectedLanguage == key
         }
     }
 
     private func applyExploreSelection(_ selection: ExploreSidebarSelection) {
         // 来源不是 topic；返回普通发现时恢复已有主题/平台筛选，不污染 Linux.do 目录。
-        if selection != .linuxDo { dependencies.linuxDoStore.selectedSource = .catalog }
+        switch selection {
+        case .linuxDo, .linuxDoLanguage(_):
+            dependencies.linuxDoStore.selectedSource = .linuxDo
+        default:
+            dependencies.linuxDoStore.selectedSource = .catalog
+        }
         switch selection {
         case .mode(let mode):
             selectedExploreMode = mode
@@ -945,6 +958,11 @@ struct SidebarView: View {
             // Linux.do 是 Discover 下的独立来源；先切来源再切模式，保证 Sidebar、
             // 中栏内容和标题在同一轮观察更新中都能识别为 Linux.do。
             dependencies.linuxDoStore.selectedSource = .linuxDo
+            dependencies.linuxDoStore.selectedLanguage = nil
+            selectedExploreMode = .discover
+        case .linuxDoLanguage(let key):
+            // 单选语言只改变 Linux.do 的本地投影，不回写普通发现或全局语言筛选。
+            dependencies.linuxDoStore.selectedLanguage = key
             selectedExploreMode = .discover
         }
     }
@@ -1156,7 +1174,11 @@ struct SidebarView: View {
     private var exploreSidebarContent: some View {
         switch selectedExploreMode {
         case .discover:
-            if dependencies.linuxDoStore.selectedSource == .catalog { exploreDiscoverySidebarContent }
+            if dependencies.linuxDoStore.selectedSource == .catalog {
+                exploreDiscoverySidebarContent
+            } else {
+                linuxDoLanguageSidebarContent
+            }
         case .popular, .newReleases:
             exploreLanguageSidebarContent
         case .trending:
@@ -1313,6 +1335,28 @@ struct SidebarView: View {
             items.append(.other(count: otherCount))
         }
         return items
+    }
+
+    /// 本来源语言统计只读缓存；行样式、偏好分组与折叠行为复用普通探索语言区。
+    private var linuxDoLanguageSidebarContent: some View {
+        Section {
+            exploreLanguageRow(nil, isLinuxDo: true)
+            if trendingLanguagesExpanded {
+                let items = exploreLanguageRowItems(
+                    keysWithCounts: dependencies.linuxDoStore.languages.map { ($0.key, $0.count) },
+                    interestedLanguages: viewModel.interestedLanguages
+                )
+                ForEach(items) { item in
+                    exploreLanguageRow(
+                        DiscoveryLanguageDTO(key: item.key, label: item.label, count: item.count),
+                        isLinuxDo: true
+                    )
+                    .transition(Self.disclosureRowTransition)
+                }
+            }
+        } header: {
+            exploreLanguageSectionHeader
+        }
     }
 
     @ViewBuilder
@@ -1784,7 +1828,9 @@ struct SidebarView: View {
 
                 Spacer(minLength: 8)
 
-                Text(dependencies.exploreCatalogStore.displayLanguages(for: selectedExploreMode).count.formatted())
+                Text((dependencies.linuxDoStore.selectedSource == .linuxDo && selectedExploreMode == .discover
+                    ? dependencies.linuxDoStore.languages.count
+                    : dependencies.exploreCatalogStore.displayLanguages(for: selectedExploreMode).count).formatted())
                     .font(interfaceScale.font(.captionSmall))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -1994,15 +2040,17 @@ struct SidebarView: View {
         }
     }
 
-    private func exploreLanguageRow(_ language: DiscoveryLanguageDTO?) -> some View {
+    private func exploreLanguageRow(_ language: DiscoveryLanguageDTO?, isLinuxDo: Bool = false) -> some View {
         let key = language?.key
         // 「其他」/感兴趣语言由客户端聚合而来，count 优先用 DTO 自带值；
         // 「全部」回退到 catalog total。
-        let count: Int? = language?.count ?? dependencies.exploreCatalogStore.total(for: selectedExploreMode)
+        let count: Int? = language?.count ?? (isLinuxDo
+            ? dependencies.linuxDoStore.repositories.count
+            : dependencies.exploreCatalogStore.total(for: selectedExploreMode))
         // 语言 logo 不是 SF Symbol，不能塞进 systemImage 字符串；仍走 Label icon 槽，
         // 与趋势/周刊语言行、星标主导航同一套 sidebar 图标列对齐。
         return exploreSelectableRow(
-            selection: .language(key),
+            selection: isLinuxDo ? .linuxDoLanguage(key) : .language(key),
             count: count
         ) {
             if let language {
