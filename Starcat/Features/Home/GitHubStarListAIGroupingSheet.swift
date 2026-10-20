@@ -273,18 +273,16 @@ struct GitHubStarListAIGroupingSheet: View {
 
     private var progressSummary: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(String(
-                format: String.l10n("githubStarLists.aiGrouping.progressFormat"),
-                locale: locale,
-                presentation.snapshot.analyzedCount,
-                presentation.snapshot.analysisTotalCount
-            ))
+            Text(verbatim: progressSummaryText)
             .font(interfaceScale.font(.caption))
             .foregroundStyle(.secondary)
             .monospacedDigit()
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(Text(verbatim: progressSummaryText))
             ProgressView(
-                value: Double(presentation.snapshot.analyzedCount),
-                total: Double(max(presentation.snapshot.analysisTotalCount, 1))
+                value: Double(session.isApplying ? session.applicationProgress?.processedRepositoryCount ?? 0 : presentation.snapshot.analyzedCount),
+                total: Double(max(session.isApplying ? session.applicationProgress?.totalRepositoryCount ?? 1 : presentation.snapshot.analysisTotalCount, 1))
             )
             HStack(spacing: 18) {
                 metricButton(
@@ -320,6 +318,18 @@ struct GitHubStarListAIGroupingSheet: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
+    }
+
+    /// 应用与分析使用不同分母；远端刷新期间没有应用计数时不能继续显示已分析的 100%。
+    private var progressSummaryText: String {
+        if session.isApplying {
+            guard let progress = session.applicationProgress else { return AIOrganizationBannerText.l10n("aiOrganization.banner.preparingApplication") }
+            return String(format: AIOrganizationBannerText.l10n("aiOrganization.banner.processedFormat"),
+                          progress.processedRepositoryCount.formatted(.number.locale(locale)),
+                          progress.totalRepositoryCount.formatted(.number.locale(locale)))
+        }
+        return String(format: String.l10n("githubStarLists.aiGrouping.progressFormat"), locale: locale,
+                      presentation.snapshot.analyzedCount, presentation.snapshot.analysisTotalCount)
     }
 
     private var resultToolbar: some View {

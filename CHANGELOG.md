@@ -12,6 +12,8 @@ Release notes for the Mac App Store edition of Starcat.
 
 ### Improvements
 
+- Background organization entry: After closing repository grouping or tag organization, the middle column keeps showing the current phase and processed counts, with direct access to the task or results.
+- Localized organization status: Task states and actions cover all 18 interface languages, stay on one line in narrow columns, and show their full text on hover.
 - License filter chips: Match sidebar tags with wrapping, content-sized height, and bounded scrolling; colors distinguish license obligation types, with full names and category notes on hover.
 
 ### Fixes

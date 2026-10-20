@@ -1551,8 +1551,9 @@ struct RepoListView: View {
                 } else if let error = viewModel.loadError, viewModel.items.isEmpty {
                     emptyState(systemImage: "exclamationmark.triangle", title: "error.loadFailed", subtitleText: error)
                 } else if viewModel.items.isEmpty {
-                    if selectedPage == .manage, viewModel.selection == .githubStarListUngrouped {
-                        // 未分组数量为 0 时仍要露出横幅（按钮灰掉），不能只在有列表时才插入。
+                    if selectedPage == .manage,
+                       viewModel.selection == .githubStarListUngrouped || viewModel.selection == .untagged {
+                        // 分类数量变成 0 也不能隐藏正在应用或待确认的任务入口。
                         listWithOptionalBanner {
                             emptyState(systemImage: emptyImage, title: emptyTitle, subtitle: emptySubtitle)
                         }
@@ -1824,6 +1825,7 @@ struct RepoListView: View {
                 GitHubStarListUngroupedBanner(
                     ungroupedCount: viewModel.githubStarListUngroupedCount,
                     isLoggedIn: authSession.state.user != nil,
+                    session: dependencies.githubStarListAIGroupingSession,
                     onStart: { onStartGitHubStarListAIGrouping?() }
                 )
                 content()
