@@ -78,6 +78,20 @@ struct ExploreDiscoveryViewModelTests {
         #expect(discover.thirdLevelTitle == "\(String.l10n("explore.topic.ai")) · macOS")
         #expect(discover.isFiltered)
 
+        let linuxDo = ExploreNavigationPresentation.make(
+            mode: .discover,
+            discoverySource: .linuxDo,
+            trendingLanguage: .all,
+            discoveryLanguage: nil,
+            discoveryTopic: "ai",
+            discoveryPlatform: "macos",
+            weeklyLanguage: nil,
+            topics: topics,
+            platforms: platforms
+        )
+        #expect(linuxDo.thirdLevelTitle == "Linux.do")
+        #expect(!linuxDo.isFiltered)
+
         let popular = ExploreNavigationPresentation.make(
             mode: .popular,
             trendingLanguage: .all,

@@ -854,8 +854,10 @@ struct SidebarView: View {
             return defaultExploreSidebarSelection
         } set: { newSelection in
             guard let newSelection else { return }
-            exploreListSelection = newSelection
+            // 先提交来源 / 模式，再记录视觉 selection，避免 List 在同一事务中用旧业务状态
+            // 判定新行“已失效”，从而把高亮回退到上一个 Explore 分类。
             applyExploreSelection(newSelection)
+            exploreListSelection = newSelection
         }
     }
 
@@ -940,8 +942,10 @@ struct SidebarView: View {
             selectedExploreMode = .awesome
             dependencies.awesomeStore.selectSource(sourceID)
         case .linuxDo:
-            selectedExploreMode = .discover
+            // Linux.do 是 Discover 下的独立来源；先切来源再切模式，保证 Sidebar、
+            // 中栏内容和标题在同一轮观察更新中都能识别为 Linux.do。
             dependencies.linuxDoStore.selectedSource = .linuxDo
+            selectedExploreMode = .discover
         }
     }
 
@@ -1089,11 +1093,14 @@ struct SidebarView: View {
         Section("nav.trending") {
             ForEach(ExploreMode.allCases) { mode in
                 exploreModeRow(mode)
-                if mode == .discover {
-                    exploreSelectableRow(selection: .linuxDo, count: dependencies.linuxDoStore.provenance?.payload.origins?.count) {
-                        exploreSidebarSystemIcon("bubble.left.and.bubble.right", color: .secondary)
+                if mode == .weekly {
+                    exploreSelectableRow(
+                        selection: .linuxDo,
+                        count: dependencies.linuxDoStore.provenance?.payload.origins?.count ?? 0
+                    ) {
+                        // 社区来源使用单气泡，复用分类字号与字重，避免独立缩放造成笔画不一致。
+                        exploreSidebarSystemIcon("text.bubble", color: .indigo)
                     } title: { Text(verbatim: "Linux.do") }
-                    .padding(.leading, 16)
                 }
             }
         }

@@ -33,6 +33,8 @@ struct ExploreView: View {
     @Binding var selectedWeeklyLanguage: String?
 
     let onRepoCountChange: (Int) -> Void
+    /// Linux.do 使用独立数量槽，避免视图切换期间的迟到回调覆盖普通 Discover 数量。
+    let onLinuxDoRepoCountChange: (Int) -> Void
 
     @Environment(AppDependencies.self) private var dependencies
 
@@ -50,7 +52,12 @@ struct ExploreView: View {
                 awesomeContent
             case .discover, .popular, .newReleases:
                 if selectedMode == .discover && dependencies.linuxDoStore.selectedSource == .linuxDo {
-                    LinuxDoView(store: dependencies.linuxDoStore, selectedRepoID: $selectedDiscoveryRepoID, selectedRepo: $selectedDiscoveryRepo, onRepoCountChange: onRepoCountChange)
+                    LinuxDoView(
+                        store: dependencies.linuxDoStore,
+                        selectedRepoID: $selectedDiscoveryRepoID,
+                        selectedRepo: $selectedDiscoveryRepo,
+                        onRepoCountChange: onLinuxDoRepoCountChange
+                    )
                 } else {
                     discoveryContent
                 }

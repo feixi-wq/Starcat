@@ -28,11 +28,17 @@ import Observation
 @Observable
 private final class RepoListNavigationMetrics {
     private(set) var trendingRepoCount = 0
+    private(set) var linuxDoRepoCount = 0
     private(set) var activityItemCount = 0
 
     func applyTrendingRepoCount(_ count: Int) {
         guard trendingRepoCount != count else { return }
         trendingRepoCount = count
+    }
+
+    func applyLinuxDoRepoCount(_ count: Int) {
+        guard linuxDoRepoCount != count else { return }
+        linuxDoRepoCount = count
     }
 
     func applyActivityItemCount(_ count: Int) {
@@ -105,6 +111,7 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     let listVisibilityBadge: GitHubStarListVisibilityBadge?
     let metrics: RepoListNavigationMetrics
     let exploreCatalogStore: ExploreCatalogStore
+    let linuxDoStore: LinuxDoStore
     let trendingLanguageStore: TrendingLanguageStore
     let weeklyLanguageStore: WeeklyLanguageStore
     let weeklySelectionService: WeeklySelectionService
@@ -119,8 +126,11 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
             .background {
                 if selectedPage == .trending, !countText.isEmpty {
                     TitlebarSubtitleAccessoryAttacher(subtitle: countText) {
-                        ExploreModeInfoButton(mode: selectedExploreMode)
-                            .id(selectedExploreMode)
+                        ExploreModeInfoButton(
+                            mode: selectedExploreMode,
+                            discoverySource: linuxDoStore.selectedSource
+                        )
+                        .id("\(selectedExploreMode.rawValue):\(linuxDoStore.selectedSource.rawValue)")
                     }
                     .frame(width: 0, height: 0)
                     .accessibilityHidden(true)
@@ -177,6 +187,7 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     private var exploreRepoCountSubtitle: String {
         let presentation = ExploreNavigationPresentation.make(
             mode: selectedExploreMode,
+            discoverySource: linuxDoStore.selectedSource,
             trendingLanguage: selectedTrendingLanguage,
             discoveryLanguage: selectedDiscoveryLanguage,
             discoveryTopic: selectedDiscoveryTopic,
@@ -205,6 +216,11 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     private var exploreRepoCounts: (current: Int, total: Int?) {
         switch selectedExploreMode {
         case .discover:
+            // Linux.do 是独立目录，不能沿用普通 Discover 的 total，否则标题会显示
+            // 与当前列表无关的全站发现数量。
+            if linuxDoStore.selectedSource == .linuxDo {
+                return (metrics.linuxDoRepoCount, nil)
+            }
             let total = exploreCatalogStore.total(for: .discover)
             let current: Int
             if selectedDiscoveryTopic != nil, selectedDiscoveryPlatform != nil {
@@ -740,6 +756,7 @@ struct RepoListView: View {
                 listVisibilityBadge: listVisibilityBadge,
                 metrics: navigationMetrics,
                 exploreCatalogStore: dependencies.exploreCatalogStore,
+                linuxDoStore: dependencies.linuxDoStore,
                 trendingLanguageStore: dependencies.trendingLanguageStore,
                 weeklyLanguageStore: dependencies.weeklyLanguageStore,
                 weeklySelectionService: dependencies.weeklySelectionService,
@@ -1411,7 +1428,8 @@ struct RepoListView: View {
                     selectedDiscoveryRepoID: $selectedDiscoveryRepoID,
                     selectedDiscoveryRepo: $selectedDiscoveryRepo,
                     selectedWeeklyLanguage: $selectedWeeklyLanguage,
-                    onRepoCountChange: { navigationMetrics.applyTrendingRepoCount($0) }
+                    onRepoCountChange: { navigationMetrics.applyTrendingRepoCount($0) },
+                    onLinuxDoRepoCountChange: { navigationMetrics.applyLinuxDoRepoCount($0) }
                 )
                 .transition(.opacity)
             } else if selectedPage == .activity {
@@ -2344,6 +2362,7 @@ struct RepoListView: View {
     private var exploreNavigationTitle: Text {
         let presentation = ExploreNavigationPresentation.make(
             mode: selectedExploreMode,
+            discoverySource: dependencies.linuxDoStore.selectedSource,
             trendingLanguage: selectedTrendingLanguage,
             discoveryLanguage: selectedDiscoveryLanguage,
             discoveryTopic: selectedDiscoveryTopic,

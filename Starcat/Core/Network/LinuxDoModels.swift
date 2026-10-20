@@ -82,11 +82,9 @@ struct LinuxDoPayload: Codable, Sendable {
         }
     }
 
+    /// Go 的 RFC3339 快照通常不带小数秒；复用双格式解析，避免拒绝有效目录和来源索引。
     static func date(_ value: String) -> Date? {
-        if let date = ISO8601DateFormatter.shared.date(from: value) { return date }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value)
+        ISO8601DateFormatter.githubDate(from: value)
     }
 }
 

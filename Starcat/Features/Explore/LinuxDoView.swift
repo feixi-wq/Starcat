@@ -15,6 +15,7 @@ struct LinuxDoView: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AppSettings.self) private var settings
     @Environment(AuthSession.self) private var authSession
+    @Environment(\.locale) private var locale
     @State private var model = LinuxDoListModel()
     @State private var search = ""
     @State private var quickSearchDraft = ""
@@ -25,46 +26,9 @@ struct LinuxDoView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("linuxdo.catalog.description").font(.caption).foregroundStyle(.secondary)
-                QuickSearchToolbarContent(
-                    isExpanded: $isQuickSearchExpanded,
-                    draft: $quickSearchDraft,
-                    committedQuery: search,
-                    placeholder: "list.quickSearch.placeholder",
-                    onSubmit: { query in
-                        let normalizedQuery = QuickSearchTextMatcher.normalized(query)
-                        search = normalizedQuery
-                        quickSearchDraft = normalizedQuery
-                    },
-                    onClear: { search = "" }
-                ) {
-                    Picker("linuxdo.catalog.recentPromotion", selection: $recentPromotionFirst) {
-                        Text("linuxdo.catalog.recentPromotion").tag(true)
-                        Text("explore.sort.stars").tag(false)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    SyncIconButton(isRefreshing: store.isRefreshingCatalog, disabled: store.isRefreshingCatalog, tooltip: String.l10n("explore.refresh.tooltip")) {
-                        Task { await store.refreshCatalog(force: true) }
-                    }
-                    MultiSelectButton(isActive: dependencies.exploreMultiSelectionStore.isActive, action: { dependencies.exploreMultiSelectionStore.toggle() }, isDisabled: !authSession.state.isAuthenticated)
-                }
-            }
-            .padding(12)
+            filterBar
             Divider()
-            if store.failed.contains(.catalog) {
-                Text("linuxdo.cache.unavailable").font(.caption).foregroundStyle(.secondary).padding(8)
-            }
-            if store.catalog == nil && store.isRefreshingCatalog {
-                RepoSkeletonListView(rowCount: 10)
-            } else if model.rows.isEmpty {
-                ContentUnavailableView {
-                    Label("linuxdo.catalog.empty", systemImage: "bubble.left.and.bubble.right")
-                } description: { Text("linuxdo.catalog.emptyDescription") }
-            } else {
-                repoList
-            }
+            catalogContent
         }
         .task {
             selectedRepoID = nil
@@ -95,6 +59,95 @@ struct LinuxDoView: View {
         }
         .starcatRefreshCommand(pane: .list, identity: "linuxdo-\(queryIdentity)", title: String.l10n("commands.actions.refreshCurrentList"), isEnabled: !store.isRefreshingCatalog) {
             Task { await store.refreshCatalog(force: true) }
+        }
+    }
+
+    /// 与普通发现共用控件和间距；Spacer 让搜索 / 排序靠左，更新状态 / 操作靠右。
+    private var filterBar: some View {
+        QuickSearchToolbarContent(
+            isExpanded: $isQuickSearchExpanded,
+            draft: $quickSearchDraft,
+            committedQuery: search,
+            placeholder: "list.quickSearch.placeholder",
+            onSubmit: { query in
+                let normalizedQuery = QuickSearchTextMatcher.normalized(query)
+                search = normalizedQuery
+                quickSearchDraft = normalizedQuery
+            },
+            onClear: { search = "" }
+        ) {
+            // 仅将原有两种排序适配到共享菜单，不改变 Linux.do 的本地排序规则。
+            UnifiedSortMenu(
+                selection: Binding<ExploreSortOption>(
+                    get: { recentPromotionFirst ? .recommended : .stars },
+                    set: { recentPromotionFirst = $0 == .recommended }
+                ),
+                options: [.recommended, .stars],
+                displayName: { $0 == .recommended ? "linuxdo.catalog.recentPromotion" : $0.titleKey },
+                systemImage: { $0 == .recommended ? "clock" : $0.systemImage }
+            )
+
+            Spacer()
+
+            if let catalog = store.catalog {
+                Text(RelativeTimeText.pastEvent(catalog.checkedAt, locale: locale))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            SyncIconButton(
+                isRefreshing: store.isRefreshingCatalog,
+                disabled: store.isRefreshingCatalog,
+                tooltip: String.l10n("explore.refresh.tooltip")
+            ) {
+                Task { await store.refreshCatalog(force: true) }
+            }
+            MultiSelectButton(
+                isActive: dependencies.exploreMultiSelectionStore.isActive,
+                action: { dependencies.exploreMultiSelectionStore.toggle() },
+                isDisabled: !authSession.state.isAuthenticated
+            )
+        }
+        .padding(.horizontal, ManageListFilterBarMetrics.horizontalPadding)
+        .padding(.top, ManageListFilterBarMetrics.topPadding)
+        .padding(.bottom, ManageListFilterBarMetrics.bottomPadding)
+    }
+
+    @ViewBuilder
+    private var catalogContent: some View {
+        if store.catalog == nil && store.isRefreshingCatalog {
+            RepoSkeletonListView(rowCount: 10)
+        } else if store.catalog == nil && store.failed.contains(.catalog) {
+            // 没有缓存时，加载失败就是当前页面的主状态；不要再叠加“空目录”，
+            // 否则用户会误以为服务成功返回了 0 条数据。
+            ContentUnavailableView {
+                Label("error.loadFailed", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("linuxdo.cache.unavailable")
+            } actions: {
+                Button("action.retry") {
+                    Task { await store.refreshCatalog(force: true) }
+                }
+                .disabled(store.isRefreshingCatalog)
+            }
+        } else {
+            // 有旧快照时保留可浏览内容，并把刷新失败降级为非阻断提示。
+            if store.failed.contains(.catalog) {
+                Text("linuxdo.cache.unavailable")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+            }
+            if model.rows.isEmpty {
+                ContentUnavailableView {
+                    Label("linuxdo.catalog.empty", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    // 全自动目录复用已有刷新/筛选提示，不再把正常采集描述为等待审核。
+                    Text("weekly.empty.subtitle")
+                }
+            } else {
+                repoList
+            }
         }
     }
 
