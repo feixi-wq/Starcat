@@ -189,7 +189,7 @@ GitHub 临时限流 / 网络错误保留待核验状态；`404` 也可能涉及�
 |---|---|---|
 | `GET /api/v1/discovery/linuxdo/bulk` | 完整已发布仓库目录、目录 summary、revision、覆盖信息 | 进入 Linux.do 分类或主动刷新；本地筛选、稳定排序与分片显示 |
 | `GET /api/v1/discovery/linuxdo/provenance` | 紧凑的仓库 ID → 帖子数量 / 最近推广与核验时间映射、revision、ETag | 公共来源后台刷新，不依赖该分类是否打开 |
-| `GET /api/v1/discovery/linuxdo/repos/{gh_repo_id}/topics` | 该仓库的有效帖子标题、URL、时间、revision，必要时分页 | 打开来源浮层或详情来源区时按需加载 |
+| `GET /api/v1/discovery/linuxdo/repos/{gh_repo_id}/topics` | 该仓库的有效帖子标题、URL、时间、revision，必要时分页 | 点击详情来源标签且没有可用帖子缓存时按需加载 |
 
 `bulk` 与 `provenance` 是同一批公开关系的两种投影，来自同一发布版本。`provenance` 不含长正文 / 仓库完整信息，避免为了给 Stars 显示徽章先下载全部项目详情。目录 summary 同 bulk 返回，避免额外请求造成计数与列表版本不同。
 
@@ -241,8 +241,8 @@ Linux.do 标识表示“当前收录目录有此仓库的有效推广帖”，�
 - 列表使用小尺寸 Linux.do 标识，tooltip 为“收录于 Linux.do · N 篇推广帖”；文字帮助与 accessibility label 同步，不仅依赖颜色。
 - 标识样式沿用 Starcat 的紧凑行内元信息。官方品牌资源使用范围未确认时先使用文字标识，不用 Linux 企鹅图标冒充站点品牌。
 - 来源较多时保留可识别入口并收起超出项，不覆盖 Stars、知识库、Fork、健康度等不同语义的标记；窄窗口下不挤掉仓库名。
-- 点击来源标识统一打开该仓库的“Linux.do 讨论”浮层；单帖和多帖使用同一动作。点击帖子标题再用系统浏览器打开原帖，不自动切换当前分类或替换 README。
-- 仓库详情增加同名来源区，显示标题、推广时间、最近核验状态与原帖链接；多帖按稳定顺序展开，不只取任意第一篇。
+- 列表来源标签只展示来源；详情页点击 Linux.do 标签直接用默认浏览器打开原帖，不再弹出讨论浮层，不自动切换当前分类或替换 README。
+- 多帖按实际发布时间选最新一篇，同一时刻按帖子 ID 稳定选择，不依赖接口数组顺序。复用已核验的安全 URL 与缓存，无缓存才按需加载；切换仓库或取消请求后不执行迟到跳转。
 - 来源详情加载失败保留 badge 与重试入口，不让来源服务故障阻止 README / 笔记 / Star 操作。收到权威撤回版本时同步更新数量和内容。
 
 遵循 [DESIGN.md](../../../DESIGN.md)、[分页规范](../../5-规范/UI-列表分页加载规范.md)、[颜色规范](../../5-规范/UI-颜色规范.md)、[Focus Ring 规范](../../5-规范/UI-Focus-Ring-规范.md)及 i18n 规则。这里定义的是信息和行为，不是已验收的视觉样板。
@@ -285,7 +285,7 @@ Linux.do 标识表示“当前收录目录有此仓库的有效推广帖”，�
 | LD-1 服务端识别 | 候选、GitHub 核验、复核 / 撤回、幂等任务 | 标注样本通过，错误可追溯，人工决定不被覆盖 |
 | LD-2 公共查询 | 独立目录、来源索引、帖子端点、版本与缓存 | 目录隔离、快照原子发布、失败恢复通过 |
 | LD-3 客户端来源 | 启动期非阻塞缓存、共享匹配与覆盖矩阵 | 未访问新分类的已有 Stars 也能显示，且无逐行联网 |
-| LD-4 分类与详情 | 来源导航、筛选 / 排序、帖子浮层与详情区 | 两类来源不混淆，多帖、分页、错误与离线行为通过 |
+| LD-4 分类与详情 | 来源导航、筛选 / 排序、详情标签直接回链 | 两类来源不混淆，多帖选择、分页、错误与离线行为通过 |
 | LD-5 联合验收 | App Store / Direct、升级、样本复核、请求与内存预算 | 客户端与服务端分别验证；部署与正式发布另行授权 |
 
 实施前尚需确认三项：
@@ -322,8 +322,8 @@ Linux.do 标识表示“当前收录目录有此仓库的有效推广帖”，�
 
 - [LinuxDoRepository](../../../Starcat/Core/Sync/LinuxDoRepository.swift) 使用应用 Caches 下的原子 JSON 快照与有界内存缓存，不迁移用户数据库，不写 CloudKit。30 分钟 TTL、条件请求、同 key 合并、服务 URL/凭证摘要隔离；失败保留旧正文，完整空快照可清空，旧 revision 不覆盖新快照。
 - [LinuxDoStore](../../../Starcat/Features/Explore/LinuxDoStore.swift) 在主窗口启动、回到前台及每 30 分钟更新公共来源索引，列表只按数字 ID 本地匹配。索引 7 天未成功校验或关系 30 天未核验时隐藏标识；帖子缓存落后于已知来源版本时强制重验。
-- [LinuxDoView](../../../Starcat/Features/Explore/LinuxDoView.swift) 位于“探索 → 发现 → Linux.do”，独立搜索、全局筛选、本地分页，默认最近推广，可切换 Stars。继续使用 Discovery 详情与统一仓库卡片。
-- [LinuxDoSourceBadge](../../../Starcat/Shared/Components/LinuxDoSourceBadge.swift) 在主列表共享卡片和详情 Hero 显示来源，与 Weekly 等既有徽章并存；详情点击按需加载多个帖子回链，保留离线缓存和重试入口。未扩展高密度仓库选择弹层。
+- [LinuxDoView](../../../Starcat/Features/Explore/LinuxDoView.swift) 保持独立来源筛选，侧栏入口放在“周刊”下方，使用统一样式的单气泡 `text.bubble` 图标；独立搜索、全局筛选、本地分页，默认最近推广，可切换 Stars。继续使用 Discovery 详情与统一仓库卡片。
+- [LinuxDoSourceBadge](../../../Starcat/Shared/Components/LinuxDoSourceBadge.swift) 在主列表共享卡片和详情 Hero 显示来源，与 Weekly 等既有徽章并存；详情点击直接打开最新帖子，优先缓存，无缓存才按需加载，失败后仍可重试；列表标识不联网。未扩展高密度仓库选择弹层。
 - 首版按 `write-swift` / 原生 UI 技能约束使用 actor 缓存、主线程可观察状态与共享分页/刷新组件；不调整项目 Swift 语言模式或另建启动脚本。
 
 ### 9.3 上线前门禁

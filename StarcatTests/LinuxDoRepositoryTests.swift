@@ -76,6 +76,91 @@ struct LinuxDoRepositoryTests {
         #expect(store.origin(for: 42) == nil)
         #expect(store.providerID == "two")
     }
+
+    /// 接口顺序与帖子 ID 都不代表发布时间；重复点击应复用缓存，离线也可直接回链。
+    @Test(arguments: [false, true]) @MainActor
+    func discussionURLSelectsNewestAndReusesCache(reversed: Bool) async {
+        let older = discussionTopic(301, publishedAt: "2026-10-18T10:00:00+02:00")
+        let newer = discussionTopic(300, publishedAt: "2026-10-18T09:00:00Z")
+        let fixture = await discussionStore(topics: reversed ? [newer, older] : [older, newer])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        #expect(await fixture.store.discussionURL(for: 42) == newer.safeURL)
+        #expect(await fixture.api.calls == 2)
+        await fixture.api.setFailure(true)
+        #expect(await fixture.store.discussionURL(for: 42) == newer.safeURL)
+        #expect(await fixture.api.calls == 2)
+    }
+
+    /// 同一时刻可以有不同 RFC3339 表达，仍按帖子 ID 稳定选择而非依赖数组位置。
+    @Test @MainActor func discussionURLBreaksTimestampTiesByTopicID() async {
+        let newerID = discussionTopic(302, publishedAt: "2026-10-18T10:00:00.000Z")
+        let olderID = discussionTopic(301, publishedAt: "2026-10-18T10:00:00Z")
+        let fixture = await discussionStore(topics: [newerID, olderID])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        #expect(await fixture.store.discussionURL(for: 42) == newerID.safeURL)
+    }
+
+    /// 空快照和断网都不构造猜测链接，也不清除已核验的来源；后续点击仍可重试。
+    @Test(arguments: [false, true]) @MainActor
+    func discussionURLReturnsNilWhenUnavailable(networkFailure: Bool) async {
+        let fixture = await discussionStore(topics: [])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        await fixture.api.setFailure(networkFailure)
+        #expect(await fixture.store.discussionURL(for: 42) == nil)
+        #expect(fixture.store.origin(for: 42) != nil)
+        #expect(fixture.store.failed.contains(.topics(42)) == networkFailure)
+    }
+
+    /// 来源存在也不能绕过远端回链白名单；坏快照不应把浏览器带到任意站点。
+    @Test @MainActor func discussionURLRejectsUnsafeLink() async {
+        let unsafe = LinuxDoTopic(id: 301, url: "https://evil.example/", title: "Spoof", publishedAt: "", verifiedAt: "")
+        let fixture = await discussionStore(topics: [unsafe])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        #expect(await fixture.store.discussionURL(for: 42) == nil)
+        #expect(fixture.store.failed.contains(.topics(42)))
+    }
+
+    /// 服务切换后不能用旧服务的帖子缓存打开链接，也不能为未核验来源偷偷联网。
+    @Test @MainActor func discussionURLDoesNotCrossProviderOrMissingOrigin() async {
+        let fixture = await discussionStore(topics: [discussionTopic(301, publishedAt: "2026-10-18T10:00:00Z")])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        #expect(await fixture.store.discussionURL(for: 99) == nil)
+        #expect(await fixture.api.calls == 1)
+        #expect(await fixture.store.discussionURL(for: 42) != nil)
+        await fixture.api.switchProvider("two")
+        #expect(await fixture.store.discussionURL(for: 42) == nil)
+        #expect(fixture.store.origin(for: 42) == nil)
+        #expect(await fixture.api.calls == 2)
+    }
+
+    /// View 生命周期取消点击后，不能再请求帖子或返回可用于迟到跳转的链接。
+    @Test @MainActor func cancelledDiscussionDoesNotRequestTopics() async {
+        let fixture = await discussionStore(topics: [discussionTopic(301, publishedAt: "2026-10-18T10:00:00Z")])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let request = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await fixture.store.discussionURL(for: 42)
+        }
+        #expect(await request.value == nil)
+        #expect(await fixture.api.calls == 1)
+    }
+
+    /// 每例使用独立目录与模拟 API，验证真实仓储缓存链路而不访问生产服务。
+    @MainActor private func discussionStore(topics: [LinuxDoTopic]) async -> (store: LinuxDoStore, api: LinuxDoAPIFake, directory: URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let api = LinuxDoAPIFake()
+        let verified = ISO8601DateFormatter.shared.string(from: Date())
+        await api.setResponse(LinuxDoResponse(payload: LinuxDoPayload(revision: 1, generatedAt: "", complete: true, origins: [LinuxDoOrigin(repoID: 42, topicCount: max(1, topics.count), verifiedAt: verified)]), etag: "v1"))
+        let store = LinuxDoStore(repository: LinuxDoRepository(api: api, directory: directory))
+        await store.refreshProvenance()
+        await api.setResponse(LinuxDoResponse(payload: LinuxDoPayload(revision: 1, generatedAt: "", complete: true, topics: topics, repoID: 42), etag: "topics-v1"))
+        return (store, api, directory)
+    }
+
+    private func discussionTopic(_ id: Int64, publishedAt: String) -> LinuxDoTopic {
+        LinuxDoTopic(id: id, url: "https://linux.do/t/topic/\(id)", title: "Project", publishedAt: publishedAt, verifiedAt: publishedAt)
+    }
 }
 
 /// 可控异步替身，用短暂挂起制造真实 actor 重入窗口，不依赖外部网络时序。

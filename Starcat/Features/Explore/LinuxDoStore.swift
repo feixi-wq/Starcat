@@ -26,7 +26,6 @@ final class LinuxDoStore {
 
     var repositories: [DiscoveryRepoDTO] { catalog?.payload.repositories ?? [] }
     var isRefreshingCatalog: Bool { loading.contains(.catalog) }
-
     /// 超过七天未验证索引，或三十天未验证关系时，不把历史事实冒充当前来源。
     func origin(for repoID: Int64, now: Date = Date()) -> LinuxDoOrigin? {
         guard let provenance, now.timeIntervalSince(provenance.checkedAt) <= 7 * 86400,
@@ -52,6 +51,30 @@ final class LinuxDoStore {
         }
     }
     func refreshTopics(repoID: Int64, force: Bool = false) async { await load(.topics(repoID), force: force) }
+
+    /// 详情点击优先使用缓存回链；无缓存才加载帖子，不让直接跳转变成每次强制联网。
+    /// await 期间可能切换服务或撤回来源，因此加载后必须重新核对身份与有效来源。
+    func discussionURL(for repoID: Int64) async -> URL? {
+        let identity = await repository.providerIdentity()
+        guard !Task.isCancelled else { return nil }
+        adoptProvider(identity)
+        guard origin(for: repoID) != nil else { return nil }
+        if let url = latestDiscussionURL(for: repoID) { return url }
+        await refreshTopics(repoID: repoID)
+        guard !Task.isCancelled, providerID == identity, origin(for: repoID) != nil else { return nil }
+        return latestDiscussionURL(for: repoID)
+    }
+
+    /// 不依赖接口数组顺序或日期字符串排序；同一发布时间用帖子 ID 稳定决胜。
+    private func latestDiscussionURL(for repoID: Int64) -> URL? {
+        topicSnapshots[repoID]?.payload.topics?
+            .filter { $0.safeURL != nil }
+            .max { lhs, rhs in
+                let left = LinuxDoPayload.date(lhs.publishedAt) ?? .distantPast
+                let right = LinuxDoPayload.date(rhs.publishedAt) ?? .distantPast
+                return left == right ? lhs.id < rhs.id : left < right
+            }?.safeURL
+    }
 
     /// 设置页热切换立即清除 UI 旧身份，再加载新服务的磁盘缓存。旧请求仍由仓储合并收口。
     func providerDidChange() async {
