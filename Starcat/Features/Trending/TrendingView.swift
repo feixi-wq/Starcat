@@ -161,6 +161,7 @@ struct TrendingView: View {
         .onChange(of: settings.interestedLanguages) { _, languages in
             viewModel.interestedLanguages = languages
         }
+        .preference(key: RepoLicenseOptionsPreferenceKey.self, value: viewModel.licenseOptions)
         .onChange(of: trendingFilterSnapshot) { _, filter in
             Task {
                 await viewModel.updateGlobalFilter(filter)
@@ -260,7 +261,8 @@ struct TrendingView: View {
                 ? []
                 : Set(dependencies.repoHealthStore.snapshots.keys),
             openSSFAvailableRepoIDs: openSSFAvailableRepoIDs,
-            searchQuery: quickSearchQuery
+            searchQuery: quickSearchQuery,
+            licenseFilter: settings.licenseFilter
         )
     }
 

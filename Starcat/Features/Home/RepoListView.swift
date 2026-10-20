@@ -30,6 +30,7 @@ private final class RepoListNavigationMetrics {
     private(set) var trendingRepoCount = 0
     private(set) var linuxDoRepoCount = 0
     private(set) var activityItemCount = 0
+    var licenseOptions: [String] = []
 
     func applyTrendingRepoCount(_ count: Int) {
         guard trendingRepoCount != count else { return }
@@ -119,6 +120,7 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     let activityCategoryCountService: ActivityCategoryCountService
 
     @Environment(\.locale) private var locale
+    @Environment(AppSettings.self) private var settings
 
     func body(content: Content) -> some View {
         content
@@ -185,6 +187,13 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     }
 
     private var exploreRepoCountSubtitle: String {
+        // 来源 summary 是未过滤目录总数；许可证激活时分子改用完整派生结果，分母保留来源总量。
+        if settings.licenseFilter.isActive {
+            let current = selectedExploreMode == .discover && linuxDoStore.selectedSource == .linuxDo
+                ? metrics.linuxDoRepoCount : metrics.trendingRepoCount
+            guard let total = exploreRepoCounts.total else { return repoCountSubtitle(current) }
+            return String(format: String.l10n("list.filteredRepoCountFormat"), current, total)
+        }
         let presentation = ExploreNavigationPresentation.make(
             mode: selectedExploreMode,
             discoverySource: linuxDoStore.selectedSource,
@@ -594,6 +603,9 @@ struct RepoListView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .toast(message: $toastMessage, icon: "doc.on.clipboard")
+        .onPreferenceChange(RepoLicenseOptionsPreferenceKey.self) { keys in
+            navigationMetrics.licenseOptions = keys
+        }
         .toast(message: $repoPinToastMessage, icon: "pin.fill")
         .sheet(item: $gitHubStarListOAuthRestrictedRepo) { repo in
             GitHubStarListOAuthRestrictionSheet(repo: repo)
@@ -1194,6 +1206,9 @@ struct RepoListView: View {
         .onChange(of: viewModel.globalFilterLanguages) { _, newValue in
             settings.globalFilterLanguages = AppSettings.normalizedLanguageList(newValue)
         }
+        .onChange(of: viewModel.licenseFilter) { _, filter in
+            settings.globalFilterLicenses = filter.persistedValues
+        }
         .onChange(of: viewModel.wikiAvailabilityFilter) { _, newValue in
             settings.wikiAvailabilityFilter = newValue
         }
@@ -1225,6 +1240,21 @@ struct RepoListView: View {
         libraryFilterSection(selection: globalFilterBinding(\.libraryFilter))
         Divider()
         languageFilterSection()
+        Divider()
+        RepoLicenseFilterSection(
+            options: selectedPage == .manage
+                ? (viewModel.sidebarFacetCounts?.licenses ?? [])
+                : navigationMetrics.licenseOptions,
+            selection: globalFilterBinding(\.licenseFilter)
+        )
+        .task(id: viewModel.sidebarFacetQuery) {
+            if selectedPage == .manage {
+                await viewModel.refreshSidebarFacetCounts()
+            } else if selectedPage == .trending, selectedExploreMode == .awesome {
+                // 选项来自完整来源，不能只展示已经加载的第一页协议。
+                await dependencies.awesomeStore.loadAllRepositoryPages()
+            }
+        }
         Divider()
         availabilityPicker(
             title: "list.filter.wikiAvailability",

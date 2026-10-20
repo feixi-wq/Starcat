@@ -219623,6 +219623,27 @@
         }
       }
     },
+    "list.filter.license.all" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "All Licenses" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部许可证" } }
+      }
+    },
+    "list.filter.license.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "License" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "许可证" } }
+      }
+    },
+    "list.filter.license.unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not Provided or Unrecognized" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未提供或未识别" } }
+      }
+    },
     "list.filter.openSSFAvailability" : {
       "extractionState" : "stale",
       "localizations" : {

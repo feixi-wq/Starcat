@@ -117,7 +117,8 @@ struct ExploreView: View {
         if let weeklyViewModel {
             WeeklyContentView(
                 viewModel: weeklyViewModel,
-                selectedLanguage: $selectedWeeklyLanguage
+                selectedLanguage: $selectedWeeklyLanguage,
+                onRepoCountChange: onRepoCountChange
             )
         } else {
             RepoSkeletonListView(rowCount: 10)
@@ -203,6 +204,7 @@ private struct ExploreDiscoveryListView: View {
             Divider()
             content
         }
+        .preference(key: RepoLicenseOptionsPreferenceKey.self, value: viewModel.licenseOptions)
         .task(id: queryIdentity) {
             restoreSortPreferenceIfNeeded()
             // 恢复偏好可能改变 task identity；先让 SwiftUI 取消旧代际，旧 task 不能继续
@@ -225,7 +227,8 @@ private struct ExploreDiscoveryListView: View {
                 topic: mode == .discover ? selectedTopic : nil,
                 platform: mode == .discover ? selectedPlatform : nil,
                 sort: currentSort,
-                searchQuery: quickSearchQuery
+                searchQuery: quickSearchQuery,
+                licenseFilter: settings.licenseFilter
             )
             guard !Task.isCancelled,
                   viewModel.publishedQueryIdentity == requestedIdentity
@@ -339,6 +342,7 @@ private struct ExploreDiscoveryListView: View {
                 platform: mode == .discover ? selectedPlatform : nil,
                 sort: currentSort,
                 searchQuery: quickSearchQuery,
+                licenseFilter: settings.licenseFilter,
                 showsRefreshIndicator: true
             )
             guard viewModel.publishedQueryIdentity == requestedIdentity else { return }
@@ -491,7 +495,8 @@ private struct ExploreDiscoveryListView: View {
                         topic: mode == .discover ? selectedTopic : nil,
                         platform: mode == .discover ? selectedPlatform : nil,
                         sort: currentSort,
-                        searchQuery: quickSearchQuery
+                        searchQuery: quickSearchQuery,
+                        licenseFilter: settings.licenseFilter
                     )
                 }
             }
@@ -516,7 +521,8 @@ private struct ExploreDiscoveryListView: View {
                 topic: mode == .discover ? selectedTopic : nil,
                 platform: mode == .discover ? selectedPlatform : nil,
                 sort: currentSort,
-                searchQuery: quickSearchQuery
+                searchQuery: quickSearchQuery,
+                licenseFilter: settings.licenseFilter
             )
         }
         .scrollContentBackground(.hidden)
@@ -530,6 +536,7 @@ private struct ExploreDiscoveryListView: View {
                 platform: mode == .discover ? selectedPlatform : nil,
                 sort: currentSort,
                 searchQuery: quickSearchQuery,
+                licenseFilter: settings.licenseFilter,
                 showsRefreshIndicator: true
             )
             guard viewModel.publishedQueryIdentity == requestedIdentity else { return }
@@ -737,6 +744,7 @@ private struct ExploreDiscoveryListView: View {
             platform: mode == .discover ? selectedPlatform : nil,
             sort: currentSort,
             searchQuery: quickSearchQuery,
+            licenseFilter: settings.licenseFilter,
             interestedLanguages: Set(settings.interestedLanguages.map { $0.lowercased() })
         )
     }

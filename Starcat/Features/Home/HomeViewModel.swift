@@ -407,6 +407,7 @@ final class HomeViewModel {
         let library: String
         let language: String
         let selectedLanguages: Set<String>
+        let license: RepoLicenseFilter
         let excludedLanguages: Set<String>
         let healthAvailability: String
         let openSSFAvailability: String
@@ -658,7 +659,7 @@ final class HomeViewModel {
                 for repo in tagRepos {
                     for tagID in repoTagsMap[repo.id] ?? [] { tags[tagID, default: 0] += 1 }
                 }
-                counts = RepoListFacetCounts(languages: languages, tags: tags)
+                counts = RepoListFacetCounts(languages: languages, tags: tags, licenses: RepoLicenseFilter.options(rawItems.map(\.license)))
             }
             guard !Task.isCancelled, sidebarFacetQuery == query else { return }
             sidebarFacetSnapshot = (query, counts)
@@ -953,6 +954,14 @@ final class HomeViewModel {
         }
     }
 
+    /// 许可证在 SQL 分页和完整候选集派生中都生效；修改时按新身份重查。
+    var licenseFilter: RepoLicenseFilter = .all {
+        didSet {
+            guard oldValue != licenseFilter, !isHydratingManageFilters, !isApplyingGlobalFilterState else { return }
+            reloadOrApplyCurrentManageView()
+        }
+    }
+
     /// 设置页「感兴趣的语言」镜像。左侧语言分类与 `.other` 过滤都依赖它；
     /// 由 HomeView 从 AppSettings 单向同步（启动 + onChange），ViewModel 本身不持有 settings。
     /// 变化时只有左侧语言筛选是 `.other` 才 refilter——排除集合变了，列表结果才可能变。
@@ -1234,7 +1243,8 @@ final class HomeViewModel {
             readmeAvailabilityFilter: .unknown,
             indexableSourceAvailabilityFilter: .unknown,
             ragIndexStateFilter: .unknown,
-            insightsRiskFilter: .unknown
+            insightsRiskFilter: .unknown,
+            licenseFilter: licenseFilter
         )
     }
 
@@ -1254,6 +1264,7 @@ final class HomeViewModel {
             || filters.libraryFilter != .all
             || filters.repoLanguageFilter != .all
             || !filters.globalFilterLanguages.isEmpty
+            || filters.licenseFilter.isActive
             || filters.wikiAvailabilityFilter != .unknown
             || filters.healthAvailabilityFilter != .unknown
             || filters.openSSFAvailabilityFilter != .unknown
@@ -1467,6 +1478,7 @@ final class HomeViewModel {
         libraryFilter = filters.libraryFilter
         repoLanguageFilter = filters.repoLanguageFilter
         globalFilterLanguages = filters.globalFilterLanguages
+        licenseFilter = filters.licenseFilter
         wikiAvailabilityFilter = filters.wikiAvailabilityFilter
         healthAvailabilityFilter = filters.healthAvailabilityFilter
         openSSFAvailabilityFilter = filters.openSSFAvailabilityFilter
@@ -2392,6 +2404,7 @@ final class HomeViewModel {
             library: filters.library.rawValue,
             language: filters.language.persistedRawValue,
             selectedLanguages: filters.selectedLanguages,
+            license: filters.license,
             excludedLanguages: filters.excludedLanguages,
             healthAvailability: filters.healthAvailability.rawValue,
             openSSFAvailability: filters.openSSFAvailability.rawValue,
@@ -3753,6 +3766,9 @@ final class HomeViewModel {
 
     private func applyGlobalRepoFilters(to repos: inout [Repo]) {
         let filters = effectiveGlobalFilterState
+        if filters.licenseFilter.isActive {
+            repos.removeAll { !filters.licenseFilter.matches($0.license) }
+        }
         if filters.starFilter != .all {
             repos.removeAll { repo in
                 !filters.starFilter.matches(isStarred: repo.isStarred)

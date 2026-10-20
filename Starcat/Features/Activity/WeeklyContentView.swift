@@ -62,15 +62,18 @@ struct WeeklyContentView: View {
     @State private var libraryStateMap: [Int64: LibraryState] = [:]
     @State private var wikiAvailabilityMap: [Int64: Bool] = [:]
     @State private var isFilterPopoverPresented = false
+    private let onRepoCountChange: (Int) -> Void
     @State private var isQuickSearchExpanded = false
     @State private var quickSearchDraft = ""
 
     init(
         viewModel: WeeklyContentViewModel? = nil,
-        selectedLanguage: Binding<String?>
+        selectedLanguage: Binding<String?>,
+        onRepoCountChange: @escaping (Int) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: viewModel)
         _selectedLanguage = selectedLanguage
+        self.onRepoCountChange = onRepoCountChange
     }
 
     // R-01 §3.1.4 Step 7.3：refreshAngle / reduceMotion 已无外层用途，统一由 SyncIconButton 内部处理。
@@ -89,6 +92,7 @@ struct WeeklyContentView: View {
             let model = ensureViewModel()
             restoreSortPreferenceIfNeeded(model)
             syncExternalLanguage(to: model)
+            model.changeLicenseFilter(to: settings.licenseFilter)
             async let libraryLoad: Void = reloadLibraryStateMap()
             await model.loadInitialIfNeeded()
             await libraryLoad
@@ -133,6 +137,11 @@ struct WeeklyContentView: View {
             syncBindingLanguage(from: viewModel)
             applyWeeklyDetailSelectionPolicy(from: viewModel.items)
         }
+        .preference(key: RepoLicenseOptionsPreferenceKey.self, value: viewModel.licenseOptions)
+        .onChange(of: viewModel.total, initial: true) { _, total in onRepoCountChange(total) }
+        .onChange(of: settings.licenseFilter) { _, filter in
+            viewModel.changeLicenseFilter(to: filter)
+        }
         .onChange(of: viewModel.itemsRevision) { _, _ in
             applyWeeklyDetailSelectionPolicy(from: viewModel.items)
         }
@@ -148,7 +157,7 @@ struct WeeklyContentView: View {
         }
         .starcatRefreshCommand(
             pane: .list,
-            identity: "weekly-\(selectedLanguage ?? "")-\(viewModel.selectedSort.rawValue)-\(viewModel.filterSummaryTitle)-\(viewModel.isLoading)",
+            identity: "weekly-\(selectedLanguage ?? "")-\(viewModel.selectedSort.rawValue)-\(viewModel.filterSummaryTitle)-\(settings.licenseFilter.cacheKey)-\(viewModel.isLoading)",
             title: String.l10n("commands.actions.refreshCurrentList"),
             isEnabled: !viewModel.isLoading
         ) {
@@ -557,7 +566,7 @@ struct WeeklyContentView: View {
                     loadedItemCount: viewModel.items.count,
                     hasMore: viewModel.hasMore,
                     isLoading: viewModel.isLoading || viewModel.isLoadingMore,
-                    identity: "weekly-\(viewModel.itemsRevision)"
+                    identity: "weekly-\(viewModel.itemsRevision)-\(settings.licenseFilter.cacheKey)"
                 ) {
                     await viewModel.loadMoreIfNeeded()
                 }
@@ -582,7 +591,7 @@ struct WeeklyContentView: View {
             loadedItemCount: viewModel.items.count,
             hasMore: viewModel.hasMore,
             isLoading: viewModel.isLoading || viewModel.isLoadingMore,
-            identity: "weekly-\(viewModel.itemsRevision)"
+            identity: "weekly-\(viewModel.itemsRevision)-\(settings.licenseFilter.cacheKey)"
         ) {
             await viewModel.loadMoreIfNeeded()
         }
@@ -895,6 +904,9 @@ final class WeeklyContentViewModel {
     private(set) var selectedLanguage: String = ""
     /// 已提交的快速搜索词；输入草稿留在 View，避免每次击键都重跑全量派生。
     private(set) var quickSearchQuery = ""
+    /// 与分页查询、派生缓存共用的不可变许可证条件。
+    var licenseFilter: RepoLicenseFilter = .all
+    private(set) var licenseOptions: [String] = []
     /// 设置页「感兴趣语言」镜像。「其他」分类的本地过滤依赖它，由 View onChange 同步。
     var interestedLanguages: [String] = [] {
         didSet {
@@ -945,7 +957,7 @@ final class WeeklyContentViewModel {
         hideForkRepos ||
         selectedStarsFilter != .all ||
         selectedPushedRecency != .all ||
-        !quickSearchQuery.isEmpty
+        !quickSearchQuery.isEmpty || licenseFilter.isActive
     }
 
     /// 语言下拉数据源（含 count，供 `LanguagePickerMenu` 渲染图标 + 名称 + 数量）。
@@ -1017,6 +1029,7 @@ final class WeeklyContentViewModel {
         /// 「其他」分类的排除集合（排序拼接）；非「其他」时为空串。
         let interestedLanguages: String
         let searchQuery: String
+        let licenseFilter: RepoLicenseFilter
     }
 
     init(
@@ -1042,11 +1055,14 @@ final class WeeklyContentViewModel {
     func loadInitialIfNeeded() async {
         guard items.isEmpty, !isLoading else { return }
         // 创建 ViewModel 后首帧就会渲染 content；先进入 loading，避免远端周刊未返回前闪出空态。
+        let myGen = generation
         isLoading = true
-        defer { isLoading = false }
+        // 旧首屏查询不得清掉切换许可证后新一轮查询的 loading 状态。
+        defer { if myGen == generation { isLoading = false } }
 
         // Step 1: 尝试从本地缓存读
         if let cached = await bulkRepository.cachedPage(query: makeCacheQuery(page: 1)) {
+            guard myGen == generation, !Task.isCancelled else { return }
             applyPagedCacheSnapshot(cached, page: 1, appending: false, bumpRevision: false)
             // Step 2: TTL 判断
             if isCacheFresh(at: cached.lastFetchedAt) {
@@ -1057,6 +1073,12 @@ final class WeeklyContentViewModel {
             return
         }
 
+        guard myGen == generation, !Task.isCancelled else { return }
+        // 远端老分页不支持 license；不能把未过滤第一页当作筛选结果。
+        if licenseFilter.isActive {
+            await reload()
+            return
+        }
         // Step 3: 缓存未命中 → 老分页拉第一页立刻上屏 + 后台 bulkSync 落盘
         await loadRemotePage()
         Task { await self.silentBulkSync() }
@@ -1271,6 +1293,24 @@ final class WeeklyContentViewModel {
         reapplyFilters()
     }
 
+    /// 立即废弃旧身份；无完整缓存时只走 bulk，不扫描远端分页寻找匹配项。
+    func changeLicenseFilter(to filter: RepoLicenseFilter) {
+        guard filter != licenseFilter else { return }
+        licenseFilter = filter
+        _ = bumpGeneration()
+        if lastBulkFetchedAt == nil && bulkAllItems.isEmpty {
+            // 已显示的远端页未按许可证过滤，不能在 bulk 获取失败后冒充新条件的缓存。
+            replaceVisibleItems(with: [])
+            total = 0
+            hasMore = false
+            // 重新进入首屏路径先查 SQLite；命中有效缓存时不因许可证变化强制联网。
+            isLoading = false
+            Task { await loadInitialIfNeeded() }
+        } else {
+            reapplyFilters()
+        }
+    }
+
     private func reapplyFilters() {
         if dataSource == .local {
             if usesPagedCache {
@@ -1376,6 +1416,7 @@ final class WeeklyContentViewModel {
         bumpRevision: Bool
     ) async {
         bulkAllItems = snapshot.items
+        licenseOptions = RepoLicenseFilter.options(snapshot.items.map { $0.card.licenseSpdx })
         bulkSourceRevision &+= 1
         clearPreparedSnapshots()
         sourceDescriptors = snapshot.sources
@@ -1398,6 +1439,7 @@ final class WeeklyContentViewModel {
         bumpRevision: Bool
     ) {
         lastBulkFetchedAt = snapshot.lastFetchedAt
+        licenseOptions = snapshot.licenseOptions
         sourceDescriptors = snapshot.sources
         dataSource = .local
         usesPagedCache = true
@@ -1478,6 +1520,7 @@ final class WeeklyContentViewModel {
         let language = selectedLanguage
         let interestedLanguages = Set(self.interestedLanguages.map { $0.lowercased() })
         let searchQuery = quickSearchQuery
+        let license = licenseFilter
         let sort = selectedSort
         let now = Date()
         localDerivationCountForTesting &+= 1
@@ -1493,6 +1536,7 @@ final class WeeklyContentViewModel {
                 language: language,
                 interestedLanguages: interestedLanguages,
                 searchQuery: searchQuery,
+                licenseFilter: license,
                 sort: sort,
                 now: now
             )
@@ -1550,7 +1594,8 @@ final class WeeklyContentViewModel {
             sort: selectedSort.rawValue,
             sourceRevision: bulkSourceRevision,
             interestedLanguages: interestedKey,
-            searchQuery: quickSearchQuery
+            searchQuery: quickSearchQuery,
+            licenseFilter: licenseFilter
         )
     }
 
@@ -1592,6 +1637,7 @@ final class WeeklyContentViewModel {
         language: String,
         interestedLanguages: Set<String>,
         searchQuery: String,
+        licenseFilter: RepoLicenseFilter,
         sort: WeeklyFeedSort,
         now: Date
     ) -> [WeeklyFeedItem] {
@@ -1600,7 +1646,8 @@ final class WeeklyContentViewModel {
 
         for (index, item) in source.enumerated() {
             if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            guard sourceFilter.matches(item), coverageFilter.matches(item) else { continue }
+            guard sourceFilter.matches(item), coverageFilter.matches(item),
+                  licenseFilter.matches(item.card.licenseSpdx) else { continue }
             if hideArchived, item.card.isArchived { continue }
             if hideForks, item.card.isFork { continue }
             guard starsFilter.matches(item), pushedRecency.matches(item, now: now) else { continue }
@@ -1675,7 +1722,8 @@ final class WeeklyContentViewModel {
             sort: selectedSort,
             page: page,
             pageSize: Self.localPageSize,
-            now: Date()
+            now: Date(),
+            licenseFilter: licenseFilter
         )
     }
 

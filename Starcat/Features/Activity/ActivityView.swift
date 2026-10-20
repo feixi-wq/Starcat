@@ -121,6 +121,7 @@ struct ActivityView: View {
             // 以前默认分类是「全部」，ensureLoaded 会顺便发布计数；现在默认时间线，
             // 若不在这里读缓存，公告 / 发行版等会一直空白，点进去才出现。
             let model = ensureViewModel()
+            model.changeLicenseFilter(to: settings.licenseFilter)
             if selectedCategory == .notification || selectedCategory == .undoStar {
                 await model.primeSidebarCategoryCountsIfNeeded()
                 return
@@ -142,6 +143,10 @@ struct ActivityView: View {
         .task {
             await observeLibraryStateChanges()
         }
+        .onChange(of: settings.licenseFilter) { _, filter in
+            selectedItem = nil
+            viewModel?.changeLicenseFilter(to: filter)
+        }
         .onChange(of: selectedCategory) { _, newCategory in
             resetQuickSearch(viewModel)
             if newCategory == .notification || newCategory == .undoStar {
@@ -150,6 +155,7 @@ struct ActivityView: View {
             }
             if viewModel == nil {
                 let model = ensureViewModel()
+                model.changeLicenseFilter(to: settings.licenseFilter)
                 Task {
                     await model.ensureLoaded(category: newCategory)
                     applySelectionPolicy(from: model.items)
@@ -242,6 +248,7 @@ struct ActivityView: View {
         } message: {
             Text("activity.announcement.clear.message")
         }
+        .preference(key: RepoLicenseOptionsPreferenceKey.self, value: viewModel.licenseOptions)
         .onAppear {
             reportItemCount(viewModel)
         }

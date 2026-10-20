@@ -105,6 +105,7 @@ struct WeeklyBulkPageSnapshot: Sendable {
     let generatedAt: String?
     let filteredTotal: Int
     let catalogTotal: Int
+    var licenseOptions: [String] = []
 }
 
 struct WeeklyBulkCacheQuery: Sendable {
@@ -120,6 +121,7 @@ struct WeeklyBulkCacheQuery: Sendable {
     let page: Int
     let pageSize: Int
     let now: Date
+    var licenseFilter: RepoLicenseFilter = .all
 }
 
 /// Weekly bulk 数据仓库实现。
@@ -255,7 +257,10 @@ actor WeeklyBulkRepository: WeeklyBulkRepositoryProtocol {
                     lastFetchedAt: lastFetchedAt,
                     generatedAt: meta.generatedAt,
                     filteredTotal: total,
-                    catalogTotal: meta.total
+                    catalogTotal: meta.total,
+                    licenseOptions: RepoLicenseFilter.options(try Row.fetchAll(db,
+                        sql: "SELECT DISTINCT license_spdx FROM weekly_bulk_repos"
+                    ).map { $0["license_spdx"] as String? })
                 )
             }
         } catch {
@@ -384,6 +389,10 @@ actor WeeklyBulkRepository: WeeklyBulkRepositoryProtocol {
             clauses.append("json_array_length(COALESCE(source_types_json, '[]')) = 1")
         }
 
+        if let license = query.licenseFilter.sqlPredicate(column: .weekly) {
+            clauses.append(license.sql)
+            _ = arguments.append(contentsOf: StatementArguments(license.arguments))
+        }
         if query.hideArchived {
             clauses.append("is_archived = 0")
         }

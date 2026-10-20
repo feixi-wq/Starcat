@@ -300,13 +300,14 @@ struct AppSettingsTests {
         #expect(restored.interestedLanguages == ["Go", "swift", "TypeScript"])
     }
 
-    @Test("全局筛选: Star、语言与信号状态可持久化")
+    @Test("全局筛选: Star、语言、许可证与信号状态可持久化")
     func globalFilterStatePersists() {
         let defaults = makeIsolatedDefaults()
         let settings = AppSettings(defaults: defaults)
 
         settings.starFilter = .unstarred
         settings.globalFilterLanguages = AppSettings.normalizedLanguageList(["TypeScript", "Swift"])
+        settings.globalFilterLicenses = [" MIT License ", "Apache-2.0", "mit"]
         settings.wikiAvailabilityFilter = .available
         settings.healthAvailabilityFilter = .missing
         settings.openSSFAvailabilityFilter = .available
@@ -314,6 +315,8 @@ struct AppSettingsTests {
         let restored = AppSettings(defaults: defaults)
         #expect(restored.starFilter == .unstarred)
         #expect(restored.globalFilterLanguages == ["Swift", "TypeScript"])
+        #expect(restored.licenseFilter == RepoLicenseFilter(["MIT", "Apache-2.0"]))
+        #expect(restored.globalFilterLicenses == ["apache-2.0", "mit"])
         #expect(restored.wikiAvailabilityFilter == .available)
         #expect(restored.healthAvailabilityFilter == .missing)
         #expect(restored.openSSFAvailabilityFilter == .available)

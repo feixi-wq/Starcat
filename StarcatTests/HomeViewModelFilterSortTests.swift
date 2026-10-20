@@ -94,6 +94,35 @@ struct HomeViewModelFilterSortTests {
         )
     }
 
+    @Test("许可证全局状态在数据库与内存列表回切一致，重置不保留旧缓存")
+    func licenseGlobalStateAndReset() async throws {
+        let (vm, db, _) = try makeSUT()
+        for id in 1...3 {
+            try await insertRepo(db, id: Int64(id), fullName: "license/repo\(id)", stars: id,
+                                 starredAt: "2026-05-01T00:00:00Z", language: "Swift")
+        }
+        try await db.writer.write { db in
+            try db.execute(sql: "UPDATE repos SET license = 'MIT' WHERE id = 1")
+            try db.execute(sql: "UPDATE repos SET license = 'Apache-2.0' WHERE id = 2")
+        }
+        await vm.reloadItems()
+        vm.licenseFilter = RepoLicenseFilter(["MIT", "Apache-2.0"])
+        await vm.awaitPendingListReloadForTesting()
+        #expect(Set(vm.items.map(\.id)) == [1, 2])
+        #expect(vm.hasActiveFilter)
+        #expect(vm.persistentGlobalFilterState.licenseFilter == vm.licenseFilter)
+        vm.licenseFilter = RepoLicenseFilter([RepoLicenseFilter.unknownKey])
+        await vm.awaitPendingListReloadForTesting()
+        #expect(vm.items.map(\.id) == [3])
+        vm.licenseFilter = RepoLicenseFilter(["MIT", "Apache-2.0"])
+        await vm.awaitPendingListReloadForTesting()
+        #expect(Set(vm.items.map(\.id)) == [1, 2])
+        vm.resetAllFilters()
+        await vm.awaitPendingListReloadForTesting()
+        #expect(!vm.licenseFilter.isActive)
+        #expect(Set(vm.items.map(\.id)) == [1, 2, 3])
+    }
+
     // MARK: - D1 排序
 
     /// 同时包含未 Star 知识库、多标签仓库、库外仓库和无语言仓库，防止计数退回全局 Stars。

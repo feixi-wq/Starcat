@@ -2005,6 +2005,9 @@ struct HomeView: View {
         if viewModel.globalFilterLanguages != settings.globalFilterLanguages {
             viewModel.globalFilterLanguages = settings.globalFilterLanguages
         }
+        if viewModel.licenseFilter != settings.licenseFilter {
+            viewModel.licenseFilter = settings.licenseFilter
+        }
         if viewModel.interestedLanguages != settings.interestedLanguages {
             viewModel.interestedLanguages = settings.interestedLanguages
         }
@@ -2658,6 +2661,7 @@ struct HomeView: View {
         settings.libraryFilter = .all
         settings.repoLanguageFilter = .all
         settings.globalFilterLanguages = []
+        settings.globalFilterLicenses = []
         settings.wikiAvailabilityFilter = .unknown
         settings.healthAvailabilityFilter = .unknown
         settings.openSSFAvailabilityFilter = .unknown
