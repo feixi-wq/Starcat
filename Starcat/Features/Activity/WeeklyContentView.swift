@@ -214,6 +214,7 @@ struct WeeklyContentView: View {
                 displayName: weeklySortTitle,
                 systemImage: weeklySortIcon
             )
+            .controlSize(.regular)
 
             Spacer()
 
@@ -240,7 +241,7 @@ struct WeeklyContentView: View {
         Button {
             isFilterPopoverPresented.toggle()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .foregroundStyle(.secondary)
                 Text("weekly.filter.title")
@@ -251,7 +252,8 @@ struct WeeklyContentView: View {
             }
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        // 与相邻排序菜单使用同一标准尺寸，避免 small 控件的高度和上下留白更小。
+        .controlSize(.regular)
         .fixedSize()
         .help("weekly.filter.title")
         .popover(isPresented: $isFilterPopoverPresented, arrowEdge: .bottom) {
