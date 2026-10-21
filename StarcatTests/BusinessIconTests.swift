@@ -37,6 +37,53 @@ struct BusinessIconTests {
         #expect(image.height == Int(size))
     }
 
+    /// 校验编译后的实际像素，防止 SVG 虽已打包，却为空白或两种含义误用同一图形。
+    @Test("Fork 身份与次数在紧凑尺寸下均非空且图形不同", arguments: [11.0, 14.0], [ColorScheme.light, .dark])
+    func forkGlyphsAreDistinct(size: Double, colorScheme: ColorScheme) throws {
+        let identity = try forkPixels(.forkedRepository, size: size, colorScheme: colorScheme)
+        let count = try forkPixels(.forkCount, size: size, colorScheme: colorScheme)
+        #expect(identity.contains { $0 != 0 })
+        #expect(count.contains { $0 != 0 })
+        #expect(identity != count)
+    }
+
+    /// 身份与数量同时出现时，明暗主题都需通过绿 / 蓝配色辅助区分，且不能改变原计数色。
+    @Test("Forked 身份使用绿色，Fork 次数保持蓝色", arguments: [ColorScheme.light, .dark])
+    func forkColorsStayDistinct(colorScheme: ColorScheme) throws {
+        let identity = try #require(NSColor(
+            StatSemanticColor.forked.resolved(colorScheme: colorScheme)
+        ).usingColorSpace(.sRGB))
+        #expect(identity.greenComponent > identity.redComponent)
+        #expect(identity.greenComponent > identity.blueComponent)
+        #expect(StatSemanticColor.fork.resolved(colorScheme: colorScheme)
+            == Color.fromHex6(colorScheme == .dark ? 0x60A5FA : 0x2563EB))
+    }
+
+    /// 两枚图标占用相同槽位，身份与计数的区别不能让胶囊高度随语义变化。
+    @Test("Fork 徽章复用相同尺寸", arguments: InterfaceScale.allCases)
+    func forkBadgeSizesMatch(scale: InterfaceScale) throws {
+        func renderedSize(_ symbol: BusinessIcon.Symbol) throws -> CGSize {
+            let renderer = ImageRenderer(content: MetaBadge(
+                businessIcon: symbol, text: "12", tint: .blue
+            ).environment(\.starcatInterfaceScale, scale).dynamicTypeSize(.large))
+            renderer.scale = 2
+            let image = try #require(renderer.cgImage)
+            return CGSize(width: image.width, height: image.height)
+        }
+        #expect(try renderedSize(.forkedRepository) == renderedSize(.forkCount))
+    }
+
+    /// 离屏栅格化只读取当前测试视图，不获取屏幕或应用窗口。
+    private func forkPixels(_ symbol: BusinessIcon.Symbol, size: Double, colorScheme: ColorScheme) throws -> Data {
+        let renderer = ImageRenderer(content: BusinessIcon(symbol, pointSize: size)
+            .foregroundStyle(.primary)
+            .environment(\.colorScheme, colorScheme)
+            .dynamicTypeSize(.large))
+        renderer.scale = 2
+        let image = try #require(renderer.cgImage)
+        return try #require(image.dataProvider?.data) as Data
+    }
+
     /// 共享来源和窗口标题必须同源；只测单个资源存在，无法发现另一页仍引用旧图标。
     @Test("主侧栏、Agent 来源和 RAG 设置共享业务语义")
     func navigationMappingsStayConsistent() {

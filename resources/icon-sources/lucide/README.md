@@ -2,6 +2,8 @@
 
 侧栏、设置、详情与 AI / RAG 工作台共用 `BusinessIcon.Symbol` 的业务映射。准确的 SF Symbols 保留；仅为语义缺口引入 Lucide 本地矢量资源，不添加图标运行时依赖或网络加载。
 
+Fork 身份与次数另用 dong4j 确认的定制素材，来源与绘制约束见 [定制 Fork 图标](../custom/README.md)，不属于下面的 Lucide 许可范围。
+
 ## 来源与许可
 
 - 上游仓库：<https://github.com/lucide-icons/lucide>
@@ -24,6 +26,8 @@ SVG 保留上游路径、24×24 设计网格与 2px 圆角描边，仅压缩根�
 | AI 索引 | Lucide `file-search` | 与检索放大镜分离；设置与后台任务同源 |
 | RAG 推理 | Lucide `brain-circuit` | 与模型配置 CPU 分离；设置导航、搜索建议和后端标题同源 |
 | 许可证 | Lucide `scale` | 不再用表示空间坐标的 `scale.3d`；详情徽章与筛选标题同源 |
+| Fork 身份 / 派生来源 | 定制 Y 形三节点 | 卡片标题、来源说明与隐藏 Fork 筛选一致，不与数量共用 |
+| 被 Fork 次数 | 定制双箭头节点 | 卡片、详情、搜索与活动统计一致，保留既有语义色 |
 | 发现 / 趋势 / 热门 / 新发布 / 周刊 | SF `safari` / `chart.line.uptrend.xyaxis` / `flame` / `shippingbox` / `newspaper` | 保留；趋势与发现的 Agent 来源不再错用火焰、星光 |
 | Linux.do | SF `text.bubble` | 保留单气泡；侧栏、说明、空态一致 |
 | Stars / 知识库 / 我的项目 | SF `star.fill` / `heart.fill` / `person.crop.rectangle.stack.fill` | 保留；Agent 知识库选择器与主侧栏一致 |

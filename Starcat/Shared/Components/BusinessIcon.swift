@@ -17,6 +17,9 @@ struct BusinessIcon: View {
         case inference = "BusinessInference"
         case aiIndex = "BusinessAIIndex"
         case license = "BusinessLicense"
+        // Fork 身份与被 Fork 次数不可共用图形，避免把来源关系误读成热度统计。
+        case forkedRepository = "BusinessForkedRepository"
+        case forkCount = "BusinessForkCount"
 
         // 保留准确的系统符号。集中名称使跨页面调用不再各自猜测同一业务的图形。
         case discovery = "safari"
@@ -71,7 +74,8 @@ struct BusinessIcon: View {
         /// 只把嵌入资源作为模板图处理；SF Symbols 继续参与系统的字重与基线排版。
         var isAsset: Bool {
             switch self {
-            case .curatedCollection, .automation, .inference, .aiIndex, .license: return true
+            case .curatedCollection, .automation, .inference, .aiIndex, .license,
+                 .forkedRepository, .forkCount: return true
             default: return false
             }
         }

@@ -1172,16 +1172,15 @@ private struct RepoRawBadgeChip: View {
 struct RepoStatItem: View {
     let label: LocalizedStringKey
     let value: Int
-    let systemImage: String
+    let businessIcon: BusinessIcon.Symbol
     let tint: Color
     @Environment(\.starcatInterfaceScale) private var interfaceScale
 
     var body: some View {
         VStack(alignment: .center, spacing: 2) {
             HStack(spacing: 4) {
-                Image(systemName: systemImage)
+                BusinessIcon(businessIcon, pointSize: 14 * interfaceScale.multiplier)
                     .foregroundStyle(tint)
-                    .font(interfaceScale.font(.bodyEmphasis))
                 Text(value, format: .number)
                     .monospacedDigit()
                     .font(interfaceScale.font(.bodyEmphasis, weight: .medium))

@@ -1278,7 +1278,7 @@ struct RepoListView: View {
             Label("settings.general.hideArchived", systemImage: "archivebox")
         }
         Toggle(isOn: globalFilterBinding(\.hideForks)) {
-            Label("settings.general.hideForks", systemImage: "tuningfork")
+            Label("settings.general.hideForks", businessIcon: .forkedRepository, pointSize: 13)
         }
         if viewModel.selection == .myProjects {
             Toggle(isOn: onlyPrivateProjectsBinding) {
