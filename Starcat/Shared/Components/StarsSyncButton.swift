@@ -35,7 +35,7 @@ struct StarsSyncButton: View {
                 syncManager.cancel()
             } else if case .authenticated(let user) = authSession.state {
                 NotificationCenter.default.post(name: .gettingStartedDidRequestSync, object: nil)
-                syncManager.performFullSync(userID: user.id)
+                syncManager.performFullSync(userID: user.id, trigger: .manual)
             }
         } label: {
             Image(systemName: iconName)

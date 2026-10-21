@@ -43,6 +43,8 @@ final class AppDependencies {
     let oauthService: any GithubOAuthServiceProtocol
     let authSession: AuthSession
     let syncManager: SyncManager
+    /// Stars 完成后的后台工作拥有独立生命周期，不延长主窗口同步状态。
+    @ObservationIgnored private var starsSyncFollowUp: StarsSyncFollowUpCoordinator?
     /// 前台探测外部新增 star，只提示不写库。点击后复用 `syncManager` 增量同步。
     let externalStarInbox: ExternalStarInbox
     /// 主应用唯一的 Widget 快照发布器；负责账户隔离、去抖与 WidgetCenter 刷新。
@@ -1760,16 +1762,42 @@ final class AppDependencies {
 
         // SyncManager 全量 / 增量同步成功完成 → bootstrapper.reload() 同步 registry 到 DB
         // 注：weak 不需要，bootstrapper 与 syncManager 都由 self 强持（生命周期一致）
-        self.syncManager.onSyncCompleted = { [bootstrapper, starListSyncService = self.githubStarListSyncService, session, ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, screensaverRefreshCoordinator = self.screensaverRefreshCoordinator, repositorySpotlightService, externalStarInbox = self.externalStarInbox] in
+        self.syncManager.onSyncCompleted = { [bootstrapper] in
             await bootstrapper.reload()
-            if let login = session.state.user?.login {
+        }
+        // 只有本地 Stars 与注册表属于主同步。网络分组、RAG 和图片快照均为旁路，
+        // 两个独立 lane 合并在途请求；每个 await 后校验账号，切库前还必须取消并等待。
+        let currentStarsAccountID: @MainActor () -> Int64? = {
+            guard let id = session.state.user?.id, db.currentUserId == id else { return nil }
+            return id
+        }
+        let followUp = StarsSyncFollowUpCoordinator(
+            accountIDProvider: currentStarsAccountID,
+            refreshGroups: { [starListSyncService = self.githubStarListSyncService, externalStarInbox = self.externalStarInbox] login in
+                guard !Task.isCancelled else { return false }
+                await externalStarInbox.handleSyncCompleted()
+                guard !Task.isCancelled else { return false }
                 await starListSyncService.sync(login: login)
+                return !Task.isCancelled && starListSyncService.lastErrorMessage == nil
+            },
+            retryMemberships: { [starListSyncService = self.githubStarListSyncService] in
+                _ = await starListSyncService.retryPendingLocalMemberships()
+            },
+            refreshDerivedData: { [ragIndexBuilder = self.knowledgeRAGIndexBuilder, widgetRefreshCoordinator = self.widgetRefreshCoordinator, screensaverRefreshCoordinator = self.screensaverRefreshCoordinator, repositorySpotlightService] userID in
+                guard !Task.isCancelled, currentStarsAccountID() == userID else { return }
+                await ragIndexBuilder.refreshMetadataForKnowledgeRepos()
+                guard !Task.isCancelled, currentStarsAccountID() == userID else { return }
+                await widgetRefreshCoordinator.publishReady()
+                guard !Task.isCancelled, currentStarsAccountID() == userID else { return }
+                await screensaverRefreshCoordinator.publishReady()
+                guard !Task.isCancelled, currentStarsAccountID() == userID else { return }
+                repositorySpotlightService.scheduleRebuild()
             }
-            await ragIndexBuilder.refreshMetadataForKnowledgeRepos()
-            await widgetRefreshCoordinator.publishReady()
-            await screensaverRefreshCoordinator.publishReady()
-            repositorySpotlightService.scheduleRebuild()
-            await externalStarInbox.handleSyncCompleted()
+        )
+        self.starsSyncFollowUp = followUp
+        self.syncManager.onSyncSettled = { [session, followUp] userID, trigger in
+            guard let user = session.state.user, user.id == userID else { return }
+            followUp.schedule(userID: userID, login: user.login, retryPendingMemberships: trigger == .manual)
         }
         self.syncManager.onFullSyncCompleted = { [dataContributionCoordinator] userID, capturedAt in
             // 不 await：快照和上传是严格旁路，SyncManager 的完成态不等待 Collection 服务。
@@ -1916,6 +1944,10 @@ final class AppDependencies {
     func switchUserDatabase(to userId: Int64?) async throws {
         let previousUserId = database.currentUserId
         if previousUserId != userId {
+            await syncManager.cancelAndWait()
+            // 先停止服务拥有的子 Task，再等待协调器退出；反向等待会让旧快照迟迟无法取消。
+            await githubStarListSyncService.resetForAccountChange()
+            await starsSyncFollowUp?.resetForAccountChange()
             // 两套人工 AI 草稿都属于账号作用域。必须在 reopen 前等旧请求退出，随后再从
             // 新账号库恢复；把屏障放在数据库所有者内部，避免 View 生命周期竞态。
             await batchAIQueueService.resetForAccountChange()

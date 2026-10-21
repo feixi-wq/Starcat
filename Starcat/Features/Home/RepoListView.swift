@@ -1646,7 +1646,7 @@ struct RepoListView: View {
             authSession.requestLoginSheet()
             return
         }
-        syncManager.performFullSync(userID: user.id, force: true)
+        syncManager.performFullSync(userID: user.id, force: true, trigger: .manual)
     }
 
     private var isManageRefreshInProgress: Bool {
