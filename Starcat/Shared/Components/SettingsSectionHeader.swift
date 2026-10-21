@@ -18,14 +18,14 @@ import SwiftUI
 struct SettingsSectionHeader: View {
 
     private let title: Text
-    private let systemImage: String
+    private let icon: BusinessIcon
 
     init(
         _ titleKey: LocalizedStringKey,
         systemImage: String
     ) {
         self.title = Text(titleKey)
-        self.systemImage = systemImage
+        self.icon = BusinessIcon(systemImage: systemImage, pointSize: 13, weight: .medium)
     }
 
     init(
@@ -33,13 +33,18 @@ struct SettingsSectionHeader: View {
         systemImage: String
     ) {
         self.title = Text(verbatim: title)
-        self.systemImage = systemImage
+        self.icon = BusinessIcon(systemImage: systemImage, pointSize: 13, weight: .medium)
+    }
+
+    /// 补充矢量图仍占用原来的 20pt 图标列，不另起一套分组标题规格。
+    init(_ titleKey: LocalizedStringKey, businessIcon: BusinessIcon.Symbol) {
+        self.title = Text(titleKey)
+        self.icon = BusinessIcon(businessIcon, pointSize: businessIcon.isAsset ? 16 : 13, weight: .medium)
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(SettingsIconMetrics.smallGlyph)
+            icon
                 .foregroundStyle(.secondary)
                 .frame(width: 20, height: 20)
 

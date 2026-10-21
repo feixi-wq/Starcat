@@ -24,7 +24,7 @@ struct ExploreDiscoveryViewModelTests {
         #expect(ExploreMode(rawValue: "weekly") == .weekly)
         #expect(ExploreMode.weekly.id == "weekly")
         #expect(ExploreMode.weekly.localizedTitle == String.l10n("explore.mode.weekly"))
-        #expect(ExploreMode.weekly.systemImage == "newspaper")
+        #expect(ExploreMode.weekly.businessIcon == .weekly)
         #expect(ExploreMode.weekly.usesDiscoveryAPI == false)
         #expect(ExploreMode.weekly.discoveryListMode == nil)
         #expect(ExploreMode.allCases.contains(.weekly))

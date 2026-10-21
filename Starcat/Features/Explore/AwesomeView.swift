@@ -168,7 +168,7 @@ struct AwesomeView: View {
             RepoSkeletonListView(rowCount: 10)
         } else if store.enabledSources.isEmpty {
             ContentUnavailableView {
-                Label("awesome.empty.noSources.title", systemImage: "sparkles.rectangle.stack")
+                Label("awesome.empty.noSources.title", businessIcon: .curatedCollection, pointSize: 40)
             } description: {
                 Text("awesome.empty.noSources.subtitle")
             } actions: {

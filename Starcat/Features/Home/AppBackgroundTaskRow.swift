@@ -17,8 +17,7 @@ struct AppBackgroundTaskRow: View {
 
     var body: some View {
         let content = HStack(spacing: 8) {
-            Image(systemName: task.id.icon)
-                .font(interfaceScale.font(.body))
+            BusinessIcon(task.id.icon, pointSize: (task.id.icon.isAsset ? 16 : 13) * interfaceScale.multiplier)
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
                 .accessibilityHidden(true)

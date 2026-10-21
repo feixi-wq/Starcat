@@ -911,7 +911,7 @@ struct ReadmeStateView: View {
             // 不被「空态藏 footer」挡在缓存门外（与 loaded 的 cacheFooter 同结构）。
             VStack(spacing: 0) {
                 EmptyStateView(
-                    systemImage: "doc.text",
+                    systemImage: BusinessIcon.Symbol.readme.systemImage,
                     title: "readme.empty",
                     subtitle: "readme.emptyDescription"
                 )

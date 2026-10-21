@@ -407,7 +407,7 @@ private struct ExploreDiscoveryListView: View {
                 )
             } else if viewModel.repos.isEmpty {
                 ExploreEmptyState(
-                    systemImage: mode.systemImage,
+                    businessIcon: mode.businessIcon,
                     titleKey: "explore.empty.title",
                     subtitleKey: "explore.empty.subtitle"
                 )
@@ -804,17 +804,20 @@ private struct IndexedDiscoveryRepo: Identifiable {
 
 private struct ExploreEmptyState: View {
     let systemImage: String
+    let businessIcon: BusinessIcon.Symbol?
     let titleKey: LocalizedStringKey
     let subtitleKey: LocalizedStringKey?
     let subtitleText: String?
 
     init(
-        systemImage: String,
+        systemImage: String = "",
+        businessIcon: BusinessIcon.Symbol? = nil,
         titleKey: LocalizedStringKey,
         subtitleKey: LocalizedStringKey? = nil,
         subtitleText: String? = nil
     ) {
         self.systemImage = systemImage
+        self.businessIcon = businessIcon
         self.titleKey = titleKey
         self.subtitleKey = subtitleKey
         self.subtitleText = subtitleText
@@ -822,9 +825,15 @@ private struct ExploreEmptyState: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
+            Group {
+                if let businessIcon {
+                    BusinessIcon(businessIcon, pointSize: NSFont.preferredFont(forTextStyle: .largeTitle).pointSize)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.largeTitle)
+                }
+            }
+            .foregroundStyle(.secondary)
 
             Text(titleKey)
                 .font(.headline)

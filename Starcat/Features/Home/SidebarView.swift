@@ -1019,9 +1019,11 @@ struct SidebarView: View {
                 } icon: {
                     // 与星标 / 探索 / 活动侧栏一致：未选中保留语义色，明亮选中反白。
                     Image(systemName: topic.systemImage)
+                        .font(interfaceScale.font(.iconSmall, weight: .semibold))
                         .foregroundStyle(
                             SidebarSemanticIconStyle(semanticColor: topic.semanticIconColor)
                         )
+                        .frame(width: 16, height: 16)
                 }
                 .tag(topic)
             }
@@ -1117,7 +1119,7 @@ struct SidebarView: View {
                         count: dependencies.linuxDoStore.provenance?.payload.origins?.count ?? 0
                     ) {
                         // 社区来源使用单气泡，复用分类字号与字重，避免独立缩放造成笔画不一致。
-                        exploreSidebarSystemIcon("text.bubble", color: .indigo)
+                        exploreSidebarBusinessIcon(.linuxDo, color: .indigo)
                     } title: { Text(verbatim: "Linux.do") }
                 }
             }
@@ -1129,7 +1131,7 @@ struct SidebarView: View {
             selection: .mode(mode),
             count: exploreModeCount(mode)
         ) {
-            exploreSidebarSystemIcon(mode.systemImage, color: mode.sidebarIconColor)
+            exploreSidebarBusinessIcon(mode.businessIcon, color: mode.sidebarIconColor)
         } title: {
             HStack(spacing: 4) {
                 Text(mode.titleKey)
@@ -1486,7 +1488,7 @@ struct SidebarView: View {
             // Activity 分类使用系统语义图标，不复用 LanguageIconView，避免渲染出语言 logo。
             // 明亮选中态反白：与探索「发现 / 趋势 / …」同一套 SidebarSemanticIconStyle。
             Image(systemName: category.systemImage)
-                .font(interfaceScale.font(size: 14, weight: .semibold))
+                .font(interfaceScale.font(.iconSmall, weight: .semibold))
                 .foregroundStyle(SidebarSemanticIconStyle(semanticColor: category.iconColor))
                 .frame(width: 16, height: 16)
         }
@@ -2069,6 +2071,17 @@ struct SidebarView: View {
         }
     }
 
+    /// 资产按 16pt 画布、系统图标按既有 13pt 字号绘制，共用原图标列与选中态。
+    private func exploreSidebarBusinessIcon(_ symbol: BusinessIcon.Symbol, color: Color) -> some View {
+        BusinessIcon(
+            symbol,
+            pointSize: (symbol.isAsset ? 16 : 13) * interfaceScale.multiplier,
+            weight: .semibold
+        )
+        .foregroundStyle(ExploreSidebarIconStyle(semanticColor: color))
+        .frame(width: 16, height: 16)
+    }
+
     /// 探索侧栏 SF Symbol：语义色 + 明亮主题选中反白（见 `ExploreSidebarIconStyle`）。
     @ViewBuilder
     private func exploreSidebarSystemIcon(_ name: String, color: Color) -> some View {
@@ -2300,9 +2313,11 @@ struct SidebarView: View {
             }
         } icon: {
             Image(systemName: item.systemImage)
+                .font(interfaceScale.font(.iconSmall, weight: .semibold))
                 .foregroundStyle(
                     SidebarSemanticIconStyle(semanticColor: item.semanticIconColor ?? .secondary)
                 )
+                .frame(width: 16, height: 16)
         }
         .tag(item)
         // HOM-46 优化：鼠标悬停时预取相邻分类数据，降低点击后的感知延迟
@@ -2358,11 +2373,13 @@ struct SidebarView: View {
             }
         } icon: {
             Image(systemName: SidebarItem.myProjects.systemImage)
+                .font(interfaceScale.font(.iconSmall, weight: .semibold))
                 .foregroundStyle(
                     SidebarSemanticIconStyle(
                         semanticColor: SidebarItem.myProjects.semanticIconColor ?? .secondary
                     )
                 )
+                .frame(width: 16, height: 16)
         }
         .tag(SidebarItem.myProjects)
         .onHover { isHovering in
@@ -2497,12 +2514,14 @@ struct SidebarView: View {
         } icon: {
             // 优先 user-defined SF Symbol；否则 fallback "tag.fill"
             // 明亮选中反白，避免彩色 icon 叠在系统蓝底上看不清。
-            Image(systemName: tag.icon ?? "tag.fill")
+            Image(systemName: tag.icon ?? BusinessIcon.Symbol.tags.systemImage)
+                .font(interfaceScale.font(.iconSmall, weight: .semibold))
                 .foregroundStyle(
                     SidebarSemanticIconStyle(
                         semanticColor: Color(hex: tag.color ?? TagColorPalette.defaultHex) ?? .accentColor
                     )
                 )
+                .frame(width: 16, height: 16)
         }
         .tag(item)
         // HOM-46 优化：hover 时预取相邻分类

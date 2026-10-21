@@ -24,15 +24,15 @@ struct AppBackgroundTask: Identifiable, Equatable {
             }
         }
 
-        var icon: String {
+        var icon: BusinessIcon.Symbol {
             switch self {
-            case .grouping: "folder"
-            case .tags: "tag"
-            case .warmup: "shippingbox"
-            case .readme: "doc.text"
-            case .openSSF: "shield.lefthalf.filled"
-            case .health: "heart.text.square"
-            case .indexing: "square.stack.3d.up"
+            case .grouping: .groups
+            case .tags: .tags
+            case .warmup: .repositories
+            case .readme: .readme
+            case .openSSF: .security
+            case .health: .repositoryHealth
+            case .indexing: .aiIndex
             }
         }
     }

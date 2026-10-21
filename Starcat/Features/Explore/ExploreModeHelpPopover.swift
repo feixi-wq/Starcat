@@ -126,10 +126,13 @@ struct ExploreModeHelpPopover: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Image(systemName: isLinuxDo ? "bubble.left.and.bubble.right" : mode.systemImage)
-                .font(interfaceScale.font(.iconSmall, weight: .semibold))
-                .foregroundStyle(isLinuxDo ? .indigo : mode.sidebarIconColor)
-                .accessibilityHidden(true)
+            BusinessIcon(
+                isLinuxDo ? .linuxDo : mode.businessIcon,
+                pointSize: (mode.businessIcon.isAsset && !isLinuxDo ? 16 : 13) * interfaceScale.multiplier,
+                weight: .semibold
+            )
+            .foregroundStyle(isLinuxDo ? .indigo : mode.sidebarIconColor)
+            .accessibilityHidden(true)
             Group {
                 if isLinuxDo {
                     Text(verbatim: "Linux.do")

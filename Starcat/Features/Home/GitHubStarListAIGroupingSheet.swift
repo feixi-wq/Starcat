@@ -119,7 +119,7 @@ struct GitHubStarListAIGroupingSheet: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "sparkles")
+            Image(systemName: BusinessIcon.Symbol.groups.systemImage)
                 .font(interfaceScale.font(.iconLarge))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)

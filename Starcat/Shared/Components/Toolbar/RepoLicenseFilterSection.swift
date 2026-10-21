@@ -9,6 +9,7 @@ import SwiftUI
 
 /// 只负责编辑共享值类型，不在视图里请求网络或读取仓库分页。
 struct RepoLicenseFilterSection: View {
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
     let options: [String]
     @Binding var selection: RepoLicenseFilter
     @State private var contentHeight: CGFloat = 30
@@ -23,7 +24,7 @@ struct RepoLicenseFilterSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("list.filter.license.title", systemImage: "doc.text")
+            Label("list.filter.license.title", businessIcon: .license, pointSize: 13 * interfaceScale.multiplier)
                 .foregroundStyle(.secondary)
             ScrollView {
                 TagChipFlowLayout(spacing: 6, constrainsItemWidth: true) {

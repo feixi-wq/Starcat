@@ -45,15 +45,14 @@ enum ExploreMode: String, CaseIterable, Identifiable, Hashable, Sendable {
         }
     }
 
-    var systemImage: String {
+    var businessIcon: BusinessIcon.Symbol {
         switch self {
-        case .discover: return "safari"
-        case .trending: return "chart.line.uptrend.xyaxis"
-        case .popular: return "flame"
-        case .newReleases: return "shippingbox"
-        case .weekly: return "newspaper"
-        // eyeglasses：Awesome 是「精选清单」阅读入口，和发现的 safari 区分开。
-        case .awesome: return "eyeglasses"
+        case .discover: return .discovery
+        case .trending: return .trending
+        case .popular: return .popular
+        case .newReleases: return .releases
+        case .weekly: return .weekly
+        case .awesome: return .curatedCollection
         }
     }
 
