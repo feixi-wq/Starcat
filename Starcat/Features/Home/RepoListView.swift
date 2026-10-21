@@ -799,7 +799,9 @@ struct RepoListView: View {
                 ToolbarItem(placement: .primaryAction) {
                     AppStatusToolbarButton(
                         lastSyncedAt: lastSyncedAt,
-                        onShowBatchAIPanel: onShowBatchAIPanel
+                        onShowBatchAIPanel: onShowBatchAIPanel,
+                        onShowGitHubGrouping: onStartGitHubStarListAIGrouping,
+                        onShowKnowledgeWorkspace: onOpenKnowledgeRAGWorkspace
                     )
                 }
                 ToolbarItem(placement: .primaryAction) {
