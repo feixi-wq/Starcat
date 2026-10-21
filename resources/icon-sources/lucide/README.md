@@ -13,7 +13,9 @@ Fork 身份与次数另用 dong4j 确认的定制素材，来源与绘制约束�
 - `BusinessInference`：`icons/brain-circuit.svg`
 - `BusinessAIIndex`：`icons/file-search.svg`
 - `BusinessLicense`：`icons/scale.svg`
-- 五项均不在固定提交的 Feather 衍生图标列表内，适用 ISC；随 App 保留完整声明于 `Starcat/Resources/Licenses/Lucide.txt`，并在 About 开源致谢登记。
+- `BusinessEmbedding`：`icons/axis-3d.svg`
+- `BusinessRecommendations`：`icons/scan-search.svg`
+- 七项均不在固定提交的 Feather 衍生图标列表内，适用 ISC；随 App 保留完整声明于 `Starcat/Resources/Licenses/Lucide.txt`，并在 About 开源致谢登记。
 
 SVG 保留上游路径、24×24 设计网格与 2px 圆角描边，仅压缩根元素排版。Asset Catalog 将其作为单色矢量模板编译，不把 24px 设计网格当作显示尺寸。
 
@@ -25,20 +27,23 @@ SVG 保留上游路径、24×24 设计网格与 2px 圆角描边，仅压缩根�
 | AI 自动整理 | Lucide `workflow` | 不再与刷新共用循环箭头；设置导航、搜索建议和配置标题同源 |
 | AI 索引 | Lucide `file-search` | 与检索放大镜分离；设置与后台任务同源 |
 | RAG 推理 | Lucide `brain-circuit` | 与模型配置 CPU 分离；设置导航、搜索建议和后端标题同源 |
-| 许可证 | Lucide `scale` | 不再用表示空间坐标的 `scale.3d`；详情徽章与筛选标题同源 |
+| 许可证 | Lucide `scale` | 不再用空间坐标或认证徽章；详情、筛选、洞察导航和分布区块同源 |
+| Embedding | Lucide `axis-3d` | 用坐标维度区分 MCP 连线；模型能力、本地模型分类与用量统计同源 |
+| 相似仓库推荐 | Lucide `scan-search` | 用匹配检索区分 MCP；详情入口、推荐弹层与推荐服务设置同源 |
+| CodeFlow | SF `flowchart` | 用流程节点区分 MCP；外链菜单、主推入口与面板标题同源 |
 | Fork 身份 / 派生来源 | 定制 Y 形三节点 | 卡片标题、来源说明与隐藏 Fork 筛选一致，不与数量共用 |
 | 被 Fork 次数 | 定制双箭头节点 | 卡片、详情、搜索与活动统计一致，保留既有语义色 |
 | 发现 / 趋势 / 热门 / 新发布 / 周刊 | SF `safari` / `chart.line.uptrend.xyaxis` / `flame` / `shippingbox` / `newspaper` | 保留；趋势与发现的 Agent 来源不再错用火焰、星光 |
 | Linux.do | SF `text.bubble` | 保留单气泡；侧栏、说明、空态一致 |
 | Stars / 知识库 / 我的项目 | SF `star.fill` / `heart.fill` / `person.crop.rectangle.stack.fill` | 保留；Agent 知识库选择器与主侧栏一致 |
-| 智能集合 / 语言 / 分组 / 标签 | 既有筛选 / globe / folder / tag 图标 | 保留用户自选图标；默认业务图标集中命名 |
+| 智能集合 / 语言 / 分组 / 标签 | 既有筛选 / globe / folder / tag 图标 | 保留用户自选图标；洞察的语言、未打标签与侧栏默认图标一致 |
 | 通用 / 通知 / 快捷键 / Pro / 隐私 | 既有 gear / bell / keyboard / crown / shield 图标 | 保留；导航和搜索建议读取同一分类映射 |
 | 模型 / 翻译 / 联网搜索 / MCP / 自建服务 | 既有 CPU / 字符气泡 / globe / 连线 / server 图标 | 保留；不以普通配置图替换供应商品牌标识 |
 | 插件 / 本地工具 / 存储 / 诊断 / 实验室 | 既有 puzzle / hammer / drive / stethoscope / flask 图标 | 保留；设置 Section 的尺寸仍由共享标题组件负责 |
 | 提示词 / RAG 检索 | SF `text.quote` / `magnifyingglass` | 保留；与推理及 AI 索引区分 |
 | README / 笔记 / AI 摘要 / 仓库元数据 | SF `doc.richtext` / `note.text` / `doc.text` / `list.bullet.rectangle` | RAG 引用、命中列表、分片编辑器与详情内容语义同源；摘要不再使用翻译气泡，元数据不再冒充标签 |
 | 代码上下文 | SF `chevron.left.forwardslash.chevron.right` | 设置、RAG 引用和 XML 编辑窗口同源，不再混用大脑、包裹 |
-| 仓库健康 / OpenSSF | SF gauge / checkmark shield | 保留；详情、列表与后台任务一致 |
+| 仓库健康 / OpenSSF | SF gauge / checkmark shield | 详情、列表与后台任务一致；我的洞察及仓库洞察健康度复用仪表盘，OpenSSF 状态图形保留 |
 | AI 标签 / 仓库分组 | SF tag / folder | 工作区标题和后台任务同源；状态用的暂停、失败、上传等图标保留 |
 | Agent 周报 / 分析 / 替代项目 / General / Research | SF newspaper / document search / branch / terminal / books | 保留；Agent 定义集中引用，rail 与执行区继续读取定义 |
 | RAG 问答 | SF `bubble.left.and.text.bubble.right` | 问答窗口标题使用对话语义；已有 R 圆形品牌入口不替换 |

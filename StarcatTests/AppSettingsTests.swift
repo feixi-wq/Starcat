@@ -1517,7 +1517,7 @@ struct AppSettingsTests {
         #expect(AIModelCapability.inferred(from: "tts-1-hd") == .tts)
         #expect(AIModelCapability.inferred(from: "whisper-1") == .asr)
         #expect(AIModelCapability.inferred(from: "deepseek-v4-flash") == .chat)
-        #expect(AIModelCapability.unknown.systemImage == "questionmark.circle")
+        #expect(AIModelCapability.unknown.iconSource == .system("questionmark.circle"))
     }
 
     @Test("AI: effectiveParameters 优先用模型粒度覆盖")

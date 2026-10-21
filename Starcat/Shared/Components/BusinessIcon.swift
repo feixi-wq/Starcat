@@ -17,6 +17,8 @@ struct BusinessIcon: View {
         case inference = "BusinessInference"
         case aiIndex = "BusinessAIIndex"
         case license = "BusinessLicense"
+        case embedding = "BusinessEmbedding"
+        case recommendations = "BusinessRecommendations"
         // Fork 身份与被 Fork 次数不可共用图形，避免把来源关系误读成热度统计。
         case forkedRepository = "BusinessForkedRepository"
         case forkCount = "BusinessForkCount"
@@ -46,6 +48,7 @@ struct BusinessIcon: View {
         case models = "cpu"
         case translation = "character.bubble"
         case mcp = "point.3.connected.trianglepath.dotted"
+        case codeFlow = "flowchart"
         case services = "server.rack"
         case browserExtensions = "puzzlepiece.extension"
         case localTools = "hammer"
@@ -74,7 +77,7 @@ struct BusinessIcon: View {
         /// 只把嵌入资源作为模板图处理；SF Symbols 继续参与系统的字重与基线排版。
         var isAsset: Bool {
             switch self {
-            case .curatedCollection, .automation, .inference, .aiIndex, .license,
+            case .curatedCollection, .automation, .inference, .aiIndex, .license, .embedding, .recommendations,
                  .forkedRepository, .forkCount: return true
             default: return false
             }
@@ -88,9 +91,15 @@ struct BusinessIcon: View {
     }
 
     /// 通用控件仍可传 SF 名称，但资源与系统符号不能在渲染时混用。
-    enum Source {
+    enum Source: Equatable, Sendable {
         case system(String)
         case asset(String)
+
+        /// SVG 画布包含边缘留白；调用方按既有 16pt 素材 / 13pt SF 规则做光学尺寸匹配。
+        var isAsset: Bool {
+            if case .asset = self { return true }
+            return false
+        }
 
         /// 通用徽章和统计项也复用资源解析，不能把资产名称传给 SF Symbols API。
         static func business(_ symbol: Symbol) -> Source {
