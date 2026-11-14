@@ -292,7 +292,7 @@ actor WeeklyAPI {
         if let language = query.language, !language.isEmpty {
             queryItems.append(URLQueryItem(name: "lang", value: language))
         }
-        if let source = query.source.queryValue {
+        if let source = query.source.queryValue ?? query.allowedSources?.joined(separator: ",") {
             queryItems.append(URLQueryItem(name: "source", value: source))
         }
         components?.queryItems = queryItems
@@ -318,7 +318,7 @@ actor WeeklyAPI {
         StarcatGatewayRouting.applyServiceHeader(to: &request, service: .weekly)
 
         do {
-            return try await session.data(for: request)
+            return try await DiagnosticHTTP.data(for: request, using: session, service: "weekly")
         } catch {
             throw WeeklyAPIError.transport(underlying: error)
         }

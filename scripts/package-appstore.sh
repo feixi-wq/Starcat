@@ -101,7 +101,8 @@ verify_release_changelogs() {
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
     fail "无法从最新 git tag 解析 App Store 发布版本；当前 tag: ${tag:-missing}"
 
-  for changelog in "$PROJECT_ROOT/CHANGELOG.md" "$PROJECT_ROOT/CHANGELOG-ZH.md"; do
+  # App Store 渠道 changelog 自 2026-11 起随 starcat-site 同仓维护（Starcat#202）；主仓库根目录只剩指针文件。
+  for changelog in "$PROJECT_ROOT/supports/starcat-site/appstore/CHANGELOG.md" "$PROJECT_ROOT/supports/starcat-site/appstore/CHANGELOG-ZH.md"; do
     [ -f "$changelog" ] || fail "缺少 App Store Changelog: $changelog"
     if grep -Fqx "## ${version}-待发布" "$changelog"; then
       fail "App Store ${version} Changelog 仍标记为待发布: $changelog"
@@ -141,6 +142,8 @@ set +e
   -archivePath "$ARCHIVE_PATH" \
   -skipPackagePluginValidation \
   -skipMacroValidation \
+  -disableAutomaticPackageResolution \
+  -onlyUsePackageVersionsFromResolvedFile \
   "${BUILD_SETTINGS[@]}" \
   clean archive \
   >"$BUILD_LOG" 2>&1
@@ -151,6 +154,8 @@ if [ "$BUILD_EXIT" -ne 0 ]; then
   tail -80 "$BUILD_LOG" >&2
   fail "archive 失败，完整日志: $BUILD_LOG"
 fi
+
+python3 scripts/sync-swift-package-lock.py check
 
 APP_PATH="${ARCHIVE_PATH}/Products/Applications/Starcat.app"
 [ -d "$APP_PATH" ] || fail "archive 中未找到 Starcat.app"

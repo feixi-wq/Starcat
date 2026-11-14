@@ -42,6 +42,7 @@
 import SwiftUI
 
 struct ActivityView: View {
+    @State private var skillPageBudget = RepoSkillPageBudget()
 
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AppSettings.self) private var settings
@@ -205,7 +206,7 @@ struct ActivityView: View {
             } else if let error = viewModel.loadError, viewModel.items.isEmpty {
                 emptyState(systemImage: "exclamationmark.triangle", title: "activity.error.title", subtitleText: error)
             } else if viewModel.items.isEmpty {
-                emptyState(systemImage: selectedCategory.systemImage, title: "activity.empty.title", subtitle: emptySubtitle)
+                emptyState(businessIcon: selectedCategory.symbol, title: "activity.empty.title", subtitle: emptySubtitle)
             } else {
                 activityItemList(viewModel)
             }
@@ -252,8 +253,14 @@ struct ActivityView: View {
         .onAppear {
             reportItemCount(viewModel)
         }
-        .onChange(of: viewModel.filteredItemTotalCount) { _, count in
-            onItemCountChange(count)
+        .onChange(of: viewModel.filteredItemTotalCount) { _, _ in
+            reportItemCount(viewModel)
+        }
+        .onChange(of: dependencies.repoSkillStore.revision) { _, _ in
+            if settings.skillFilter != .any {
+                reportItemCount(viewModel)
+                applySelectionPolicy(from: viewModel.items)
+            }
         }
     }
 
@@ -312,6 +319,21 @@ struct ActivityView: View {
         .task(id: settings.wikiAvailabilityFilter.rawValue) {
             await reloadWikiAvailabilityMap(for: viewModel.items.compactMap(\.repo))
         }
+        .task(id: "\(viewModel.itemsRevision):\(skillCandidates(viewModel.items).map(\.id)):\(selectedCategory):\(settings.skillScanFilterIdentity):\(dependencies.repoSkillStore.paginationRevision)") {
+            guard settings.skillFilter != .any else { return }
+            let scope = "activity:\(selectedCategory):\(viewModel.quickSearchQuery):\(settings.skillScanFilterIdentity)"
+            dependencies.repoSkillStore.enqueue(
+                skillCandidates(viewModel.items),
+                scope: scope
+            )
+            for _ in 0..<20 {
+                guard !Task.isCancelled, globalFilteredItems(viewModel.items).count < 40, viewModel.hasMoreItems else { break }
+                guard skillPageBudget.claim(scope: "\(scope):\(dependencies.repoSkillStore.paginationRevision)") else { break }
+                let count = viewModel.items.count
+                viewModel.loadMoreIfNeeded()
+                if count == viewModel.items.count { break }
+            }
+        }
     }
 
     private func globalFilteredItems(_ items: [ActivityItem]) -> [ActivityItem] {
@@ -321,6 +343,10 @@ struct ActivityView: View {
             }
             return matchesGlobalFilters(repo: repo)
         }
+    }
+
+    private func skillCandidates(_ items: [ActivityItem]) -> [Repo] {
+        items.compactMap(\.repo).filter { matchesGlobalFilters(repo: $0, includingSkill: false) }
     }
 
     private var hasActiveGlobalRepoFilter: Bool {
@@ -334,7 +360,8 @@ struct ActivityView: View {
             || settings.openSSFAvailabilityFilter != .unknown
     }
 
-    private func matchesGlobalFilters(repo: Repo) -> Bool {
+    private func matchesGlobalFilters(repo: Repo, includingSkill: Bool = true) -> Bool {
+        if includingSkill, !settings.skillFilter.matches(dependencies.repoSkillStore.presence(for: repo)) { return false }
         guard settings.starFilter.matches(
             isStarred: dependencies.starredRegistry.contains(ghRepoId: repo.id)
         ) else { return false }
@@ -397,7 +424,7 @@ struct ActivityView: View {
                 selection: activitySortBinding(viewModel),
                 options: Array(ActivityTimeSort.allCases),
                 displayName: { $0.titleKey },
-                systemImage: { $0.systemImage }
+                iconSource: { $0.iconSource }
             )
 
             Spacer()
@@ -581,6 +608,19 @@ struct ActivityView: View {
         .padding()
     }
 
+    /// 分类空态使用 Lucide 业务资产，与侧栏分类图标保持同一图形。
+    private func emptyState(businessIcon: BusinessIcon.Symbol, title: LocalizedStringKey, subtitle: LocalizedStringKey) -> some View {
+        EmptyStateView(
+            systemImage: "",
+            title: title,
+            subtitle: subtitle,
+            spacing: 12,
+            businessIcon: businessIcon
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
     private func emptyState(systemImage: String, title: LocalizedStringKey, subtitleText: String) -> some View {
         EmptyStateView(
             systemImage: systemImage,
@@ -659,6 +699,7 @@ struct ActivityView: View {
     }
 
     private func applySelectionPolicy(from items: [ActivityItem]) {
+        let items = settings.skillFilter == .any ? items : globalFilteredItems(items)
         // 默认只清掉不属于当前分类的旧详情；用户开启偏好后，才在列表稳定后选第一条。
         guard settings.openFirstDetailOnCategoryChange else {
             clearSelectionIfMissing(from: items)
@@ -682,7 +723,7 @@ struct ActivityView: View {
     }
 
     private func reportItemCount(_ viewModel: ActivityViewModel) {
-        onItemCountChange(viewModel.filteredItemTotalCount)
+        onItemCountChange(settings.skillFilter == .any ? viewModel.filteredItemTotalCount : globalFilteredItems(viewModel.items).count)
     }
 
     /// 通知中栏副标题走 CountService；这里只回写总数，避免把未读数塞进「条活动」格式。
@@ -773,7 +814,7 @@ private struct ActivityRowView: View {
                             style: .full
                         )
                     }
-                    MetaBadge(systemImage: item.category.systemImage, text: item.category.localizedTitle, tint: .secondary)
+                    MetaBadge(businessIcon: item.category.symbol, text: item.category.localizedTitle, tint: .secondary)
                     if let date = item.createdAt {
                         RelativeDateBadge(date: date)
                     }
@@ -797,9 +838,13 @@ private struct ActivityRowView: View {
             ZStack {
                 Circle()
                     .fill(item.accentColor.opacity(0.18))
-                Image(systemName: item.category.systemImage)
-                    .font(.system(size: size > 24 ? 17 : 11, weight: .semibold))
-                    .foregroundStyle(item.accentColor)
+                // Lucide 资产画布带留白，SF 17/11 对应约 21/14 做光学匹配。
+                BusinessIcon(
+                    source: item.category.iconSource,
+                    pointSize: size > 24 ? 21 : 14,
+                    weight: .semibold
+                )
+                .foregroundStyle(item.accentColor)
             }
             .frame(width: size, height: size)
         }

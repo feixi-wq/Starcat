@@ -12,6 +12,7 @@ import AppKit
 import SwiftUI
 
 struct AwesomeView: View {
+    @State private var skillPageBudget = RepoSkillPageBudget()
     let store: AwesomeStore
     let onRepoCountChange: (Int) -> Void
 
@@ -59,6 +60,11 @@ struct AwesomeView: View {
         .task(id: filteredDisplayItemIDs) {
             await fillVisiblePageIfNeeded()
         }
+        .task(id: "\(skillCandidates.map(\.id)):\(skillScanScope):\(dependencies.repoSkillStore.paginationRevision)") {
+            guard settings.skillFilter != .any else { return }
+            dependencies.repoSkillStore.enqueue(skillCandidates, scope: skillScanScope)
+            await fillVisiblePageIfNeeded()
+        }
         .onChange(of: store.hasMoreRepositories) { _, hasMore in
             if !hasMore { reportCount() }
         }
@@ -100,14 +106,18 @@ struct AwesomeView: View {
                 .frame(maxWidth: 180)
             }
 
-            Picker("awesome.sort.title", selection: $sort) {
-                ForEach(AwesomeSortOption.allCases) { option in
-                    Text(option.titleKey).tag(option)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(width: 130)
+            // 与其它中栏共用 UnifiedSortMenu：fixedSize 紧贴内容，避免原生 Picker
+            // 定宽后按钮在 frame 内居中、拉大与搜索图标的视觉间距。
+            UnifiedSortMenu(
+                selection: $sort,
+                options: AwesomeSortOption.allCases,
+                displayName: { $0.titleKey },
+                iconSource: { $0.iconSource }
+            )
+
+            // 与其它中栏一致：Spacer 让搜索 / 筛选靠左，同步 / 多选靠右。
+            Spacer()
+                .layoutPriority(AdaptiveToolbarStatusText.spacerPriority)
 
             SyncIconButton(
                 isRefreshing: store.isRefreshing,
@@ -123,7 +133,8 @@ struct AwesomeView: View {
             )
         }
         .padding(.horizontal, ManageListFilterBarMetrics.horizontalPadding)
-        .padding(.vertical, 9)
+        .padding(.top, ManageListFilterBarMetrics.topPadding)
+        .padding(.bottom, ManageListFilterBarMetrics.bottomPadding)
     }
 
     /// 切换 Awesome 数据源时不能沿用上一个来源的搜索条件，避免新列表看起来像空数据。
@@ -311,9 +322,19 @@ struct AwesomeView: View {
     }
 
     private var filteredRepositories: [AwesomeRepositoryItem] {
+        filteredRepositories(includingSkill: true)
+    }
+
+    private var skillCandidates: [Repo] {
+        filteredRepositories(includingSkill: false).map {
+            $0.discoveryDTO.toEphemeralRepo(isStarred: dependencies.starredRegistry.contains(ghRepoId: $0.id))
+        }
+    }
+
+    private func filteredRepositories(includingSkill: Bool) -> [AwesomeRepositoryItem] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = store.repositories.filter { repo in
-            guard matchesGlobalFilters(repo) else { return false }
+            guard matchesGlobalFilters(repo, includingSkill: includingSkill) else { return false }
             let matchesSection = selectedSection == nil || repo.evidence.contains {
                 $0.sectionPath.joined(separator: " / ") == selectedSection
             }
@@ -411,18 +432,27 @@ struct AwesomeView: View {
 
     /// 全局筛选可能让一页 40 条只剩少量结果。继续读取本地页直到凑满一个可滚动首屏，
     /// 否则空结果页没有行可触发预取，用户会误以为整个来源没有匹配仓库。
+    private var skillScanScope: String {
+        "awesome:\(store.selectedSourceID ?? ""):\(searchText):\(selectedSection ?? ""):\(settings.skillScanFilterIdentity)"
+    }
+
     private func fillVisiblePageIfNeeded() async {
         guard !requiresCompleteRepositorySet else { return }
         while filteredRepositories.count < AwesomeStore.repositoryPageSize,
               store.hasMoreRepositories,
               let lastRepositoryID = store.repositories.last?.id,
               !Task.isCancelled {
+            if settings.skillFilter != .any,
+               !skillPageBudget.claim(scope: "\(skillScanScope):\(dependencies.repoSkillStore.paginationRevision)") { return }
+            let count = store.repositories.count
             await store.loadMoreRepositoriesIfNeeded(currentRepositoryID: lastRepositoryID)
+            if count == store.repositories.count { return }
         }
     }
 
-    private func matchesGlobalFilters(_ repo: AwesomeRepositoryItem) -> Bool {
-        AwesomeGlobalFilterPolicy.matches(
+    private func matchesGlobalFilters(_ repo: AwesomeRepositoryItem, includingSkill: Bool = true) -> Bool {
+        if includingSkill, !settings.skillFilter.matches(dependencies.repoSkillStore.presence(repositoryID: repo.id)) { return false }
+        return AwesomeGlobalFilterPolicy.matches(
             repo,
             options: AwesomeGlobalFilterOptions(
                 hideArchived: settings.hideArchived,
@@ -480,6 +510,10 @@ struct AwesomeView: View {
     }
 
     private func reportCount() {
+        if settings.skillFilter != .any {
+            onRepoCountChange(filteredDisplayItems.count)
+            return
+        }
         // 许可证需要完整来源，不能把前 40 条中的命中数冒充完整计数。
         guard !settings.licenseFilter.isActive || !store.hasMoreRepositories else { return }
         if store.hasMoreRepositories, !requiresCompleteRepositorySet {
@@ -609,6 +643,15 @@ private enum AwesomeSortOption: String, CaseIterable, Identifiable, Hashable {
         case .stars: return "awesome.sort.stars"
         case .updated: return "awesome.sort.updated"
         case .name: return "awesome.sort.name"
+        }
+    }
+    // 与 ExploreSortOption 同款图标，保证排序菜单在全 App 内视觉一致。
+    var iconSource: BusinessIcon.Source {
+        switch self {
+        case .original: return .business(.metadata)
+        case .stars: return .business(.stars)
+        case .updated: return .business(.recentUpdate)
+        case .name: return .business(.sortAZ)
         }
     }
 }

@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from appcast_xml_util import SPARKLE_NS, write_appcast_xml
+from release_changelog import release_body
 
 SPARKLE_SHORT_VERSION = f"{{{SPARKLE_NS}}}shortVersionString"
 ET.register_namespace("sparkle", SPARKLE_NS)
@@ -64,26 +65,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def extract_version_section(markdown: str, version: str) -> str | None:
-    """从 `## X.Y.Z` 起切到下一同级版本标题之前。"""
+    """提取目标版本正文，排除版本标题和其他版本内容。"""
 
-    lines = markdown.splitlines()
-    start: int | None = None
-    for index, line in enumerate(lines):
-        match = VERSION_HEADING_RE.match(line.strip())
-        if match and match.group("version") == version:
-            start = index
-            break
-    if start is None:
+    try:
+        # 兼容读取历史工作稿，但只渲染正文，不把待发布标题带进 Sparkle。
+        return release_body(markdown, version, allow_pending=True).strip()
+    except ValueError:
         return None
-
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        match = VERSION_HEADING_RE.match(lines[index].strip())
-        if match:
-            end = index
-            break
-    section = "\n".join(lines[start:end]).strip()
-    return section or None
 
 
 def _inline_to_html(text: str) -> str:
@@ -165,24 +153,37 @@ def section_to_sparkle_html(
 
     # Sparkle 更新窗里的 WebView 边距很紧、底部易裁切最后一行；
     # 因此内边距尤其是 padding-bottom 要留足，行距也不能按网页密度来。
+    # 背景透明以沿用 Sparkle 窗口表面；必须同时声明明暗支持并切换整套前景色，
+    # 否则暗色窗口仍会显示浅色主题的深色正文，链接、代码底色和分隔线也需一起适配。
     return (
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
         "<style>"
+        ":root{"
+        "color-scheme:light dark;"
+        "--text-primary:#1d1d1f;--text-body:#3a3a3c;--link:#0066cc;"
+        "--code-background:rgba(0,0,0,0.04);--separator:rgba(0,0,0,0.08);"
+        "}"
+        "@media (prefers-color-scheme:dark){:root{"
+        "--text-primary:#f5f5f7;--text-body:#dedee3;--link:#64b5ff;"
+        "--code-background:rgba(255,255,255,0.08);"
+        "--separator:rgba(255,255,255,0.16);"
+        "}}"
         "html,body{margin:0;padding:0;background:transparent;}"
         "body{"
         "font:12.5px/1.55 -apple-system,BlinkMacSystemFont,'PingFang SC',"
         "'Helvetica Neue',sans-serif;"
-        "color:#1d1d1f;"
+        "color:var(--text-primary);"
         "padding:10px 14px 22px;"
         "-webkit-font-smoothing:antialiased;"
         "}"
         "h3{"
         "font-size:12px;font-weight:600;letter-spacing:0.01em;"
-        "margin:14px 0 6px;color:#1d1d1f;"
+        "margin:14px 0 6px;color:var(--text-primary);"
         "}"
         "h3:first-child{margin-top:0;}"
-        "p{margin:0 0 10px;color:#3a3a3c;}"
+        "p{margin:0 0 10px;color:var(--text-body);}"
         "p:last-child{margin-bottom:0;}"
         "ul{"
         "margin:0 0 4px;padding:0 0 0 1.15em;"
@@ -190,18 +191,18 @@ def section_to_sparkle_html(
         "}"
         "li{"
         "margin:0 0 8px;padding:0;"
-        "color:#3a3a3c;"
+        "color:var(--text-body);"
         "}"
         "li:last-child{margin-bottom:0;}"
-        "a{color:#0066cc;text-decoration:none;}"
+        "a{color:var(--link);text-decoration:none;}"
         "a:hover{text-decoration:underline;}"
         "code{"
         "font-family:ui-monospace,Menlo,monospace;font-size:11.5px;"
-        "background:rgba(0,0,0,0.04);padding:1px 4px;border-radius:3px;"
+        "background:var(--code-background);padding:1px 4px;border-radius:3px;"
         "}"
         ".more{"
         "margin:14px 0 0;padding-top:10px;"
-        "border-top:1px solid rgba(0,0,0,0.08);"
+        "border-top:1px solid var(--separator);"
         "font-size:12px;"
         "}"
         "</style></head><body>"
@@ -351,8 +352,9 @@ def main() -> None:
     changelog_en_path = resolve_default_changelog(
         args.changelog_en,
         [
-            supports / "starcat-pro" / "CHANGELOG.md",
-            project_root / "CHANGELOG.md",
+            # Direct 渠道 changelog 自 2026-11 起随 starcat-site 同仓维护（Starcat#202）；
+            # 主仓库根目录只剩指针文件，不能作为 appcast 更新说明来源。
+            supports / "starcat-site" / "direct" / "CHANGELOG.md",
         ],
     )
     if changelog_en_path is None:

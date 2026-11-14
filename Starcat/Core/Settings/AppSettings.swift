@@ -169,21 +169,21 @@ enum RepoSortOption: String, CaseIterable, Identifiable {
         }
     }
 
-    /// SF Symbol，用于 Menu Label 视觉提示。
-    var systemImage: String {
+    /// 排序菜单图标来源；推荐排序用 thumbs-up（2026-11-04 决议），与 AI 的 sparkles 区分。
+    var iconSource: BusinessIcon.Source {
         switch self {
-        case .starredAtDesc:                return "sparkles"
-        case .starredAtAsc:                 return "star"
-        case .libraryUpdatedAtDesc:         return "books.vertical"
-        case .nameAsc:                      return "a.square"
-        case .nameDesc:                     return "z.square"
-        case .starsDesc:                    return "star.fill"
-        case .starsAsc:                     return "star"
-        case .updatedDesc, .updatedAsc:     return "clock.arrow.circlepath"
-        case .createdDesc:                  return "calendar.badge.plus"
-        case .createdAsc:                   return "calendar"
-        case .healthScoreDesc:              return "heart.text.square"
-        case .openSSFScoreDesc:             return "checkmark.shield"
+        case .starredAtDesc:                return .business(.thumbsUp)
+        case .starredAtAsc:                 return .business(.stars)
+        case .libraryUpdatedAtDesc:         return .business(.library)
+        case .nameAsc:                      return .business(.sortAZ)
+        case .nameDesc:                     return .business(.sortZA)
+        case .starsDesc:                    return .business(.stars)
+        case .starsAsc:                     return .business(.stars)
+        case .updatedDesc, .updatedAsc:     return .business(.recentUpdate)
+        case .createdDesc:                  return .business(.calendarPlus)
+        case .createdAsc:                   return .business(.calendarDays)
+        case .healthScoreDesc:              return .business(.heart)
+        case .openSSFScoreDesc:             return .business(.security)
         }
     }
 
@@ -629,7 +629,6 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
     case turkish = "tr"
     case vietnamese = "vi"
     case indonesian = "id"
-    case arabic = "ar"
 
     var id: String { rawValue }
 
@@ -671,8 +670,6 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
                 localized = "Tự động"
             case .indonesian:
                 localized = "Otomatis"
-            case .arabic:
-                localized = "تلقائي"
             }
             return localized
         case .simplifiedChinese:  return "简体中文"
@@ -692,7 +689,6 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
         case .turkish:            return "Türkçe"
         case .vietnamese:         return "Tiếng Việt"
         case .indonesian:         return "Bahasa Indonesia"
-        case .arabic:             return "العربية"
         }
     }
 
@@ -734,7 +730,6 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
         case .turkish:            return "Turkish"
         case .vietnamese:         return "Vietnamese"
         case .indonesian:         return "Indonesian"
-        case .arabic:             return "Arabic"
         }
     }
 
@@ -821,8 +816,6 @@ enum ReadmeTranslationLanguage: String, CaseIterable, Identifiable, Codable, Sen
             return .vietnamese
         case "id":
             return .indonesian
-        case "ar":
-            return .arabic
         default:
             return .english
         }
@@ -923,6 +916,11 @@ final class AppSettings {
         didSet { persistJSON(key: Keys.interestedLanguages, value: Self.normalizedLanguageList(interestedLanguages)) }
     }
 
+    /// 长期探索内容偏好，与当前列表筛选分开保存，重置列表不应取消用户的来源选择。
+    var exploreCatalogPreferences: ExploreCatalogPreferences {
+        didSet { persistJSON(key: Keys.exploreCatalogPreferences, value: exploreCatalogPreferences) }
+    }
+
     /// toolbar 全局语言筛选当前选中的语言。空数组表示不过滤语言。
     var globalFilterLanguages: [String] {
         didSet { persistJSON(key: Keys.globalFilterLanguages, value: Self.normalizedLanguageList(globalFilterLanguages)) }
@@ -934,6 +932,21 @@ final class AppSettings {
     }
 
     var licenseFilter: RepoLicenseFilter { RepoLicenseFilter(globalFilterLicenses) }
+
+    var skillFilter: RepoSkillFilter {
+        didSet { persist(key: Keys.skillFilter, value: skillFilter.rawValue) }
+    }
+
+    /// 远端来源按同一组全局条件重建补查范围；翻页和识别结果刷新不重置单批预算。
+    var skillScanFilterIdentity: String {
+        [
+            skillFilter.rawValue, String(hideArchived), String(hideForks),
+            starFilter.rawValue, libraryFilter.rawValue,
+            globalFilterLanguages.sorted().joined(separator: ","), licenseFilter.cacheKey,
+            wikiAvailabilityFilter.rawValue, healthAvailabilityFilter.rawValue,
+            openSSFAvailabilityFilter.rawValue
+        ].joined(separator: "|")
+    }
 
     /// toolbar 全局 Wiki 状态筛选。
     var wikiAvailabilityFilter: RepoSignalAvailabilityFilter {
@@ -1948,6 +1961,9 @@ final class AppSettings {
             key: Keys.interestedLanguages,
             defaults: defaults
         ).map(Self.normalizedLanguageList) ?? []
+        self.exploreCatalogPreferences = Self.decodeJSON(
+            ExploreCatalogPreferences.self, key: Keys.exploreCatalogPreferences, defaults: defaults
+        ) ?? ExploreCatalogPreferences()
         self.globalFilterLanguages = Self.decodeJSON(
             [String].self,
             key: Keys.globalFilterLanguages,
@@ -1958,6 +1974,7 @@ final class AppSettings {
         ) ?? []).persistedValues
         self.wikiAvailabilityFilter = defaults.string(forKey: Keys.wikiAvailabilityFilter)
             .flatMap(RepoSignalAvailabilityFilter.init(rawValue:)) ?? .unknown
+        self.skillFilter = defaults.string(forKey: Keys.skillFilter).flatMap(RepoSkillFilter.init(rawValue:)) ?? .any
         self.healthAvailabilityFilter = defaults.string(forKey: Keys.healthAvailabilityFilter)
             .flatMap(RepoSignalAvailabilityFilter.init(rawValue:)) ?? .unknown
         self.openSSFAvailabilityFilter = defaults.string(forKey: Keys.openSSFAvailabilityFilter)
@@ -2450,8 +2467,10 @@ final class AppSettings {
         libraryFilter = .all
         repoLanguageFilter = .all
         interestedLanguages = []
+        exploreCatalogPreferences = ExploreCatalogPreferences()
         globalFilterLanguages = []
         globalFilterLicenses = []
+        skillFilter = .any
         wikiAvailabilityFilter = .unknown
         healthAvailabilityFilter = .unknown
         openSSFAvailabilityFilter = .unknown
@@ -2580,6 +2599,38 @@ final class AppSettings {
         guard let login = normalizedListPreferenceLogin(login) else { return }
         let prefix = "\(login):"
         listPreferenceValues = listPreferenceValues.filter { !$0.key.hasPrefix(prefix) }
+    }
+
+    /// 用户确认后的完整列表重置；不依赖 HomeView 存活，设置窗口可独立完成持久化。
+    ///
+    /// 账号无效时整次 no-op，避免登出期间误清共享筛选。感兴趣语言是长期候选池，
+    /// 与当前列表语言筛选不同，必须保留；完成持久化后才通知已挂载列表刷新临时状态。
+    @discardableResult
+    func resetListViewPreferences(login: String?) -> Bool {
+        guard let login = normalizedListPreferenceLogin(login) else { return false }
+        resetListPreferences(login: login)
+        repoSortOption = .starredAtDesc
+        hideArchived = false
+        hideForks = false
+        statusFilter = nil
+        starFilter = .all
+        libraryFilter = .all
+        repoLanguageFilter = .all
+        globalFilterLanguages = []
+        globalFilterLicenses = []
+        skillFilter = .any
+        wikiAvailabilityFilter = .unknown
+        healthAvailabilityFilter = .unknown
+        openSSFAvailabilityFilter = .unknown
+        lastManageSelectionRaw = ""
+        lastActivityCategoryRaw = ""
+
+        NotificationCenter.default.post(
+            name: .starcatListPreferencesDidReset,
+            object: self,
+            userInfo: ["login": login]
+        )
+        return true
     }
 
     private func scopedListPreferenceKey(_ key: String, login: String?) -> String? {
@@ -3055,8 +3106,10 @@ final class AppSettings {
         static let libraryFilter = "settings.libraryFilter"
         static let repoLanguageFilter = "settings.repoLanguageFilter"
         static let interestedLanguages = "settings.filters.interestedLanguages.v1"
+        static let exploreCatalogPreferences = "settings.explore.catalogPreferences.v1"
         static let globalFilterLanguages = "settings.filters.global.languages.v1"
         static let globalFilterLicenses = "settings.filters.global.licenses.v1"
+        static let skillFilter = "settings.filters.global.skills.v1"
         static let wikiAvailabilityFilter = "settings.filters.global.wikiAvailability.v1"
         static let healthAvailabilityFilter = "settings.filters.global.healthAvailability.v1"
         static let openSSFAvailabilityFilter = "settings.filters.global.openSSFAvailability.v1"
@@ -3181,8 +3234,10 @@ final class AppSettings {
             libraryFilter,
             repoLanguageFilter,
             interestedLanguages,
+            exploreCatalogPreferences,
             globalFilterLanguages,
             globalFilterLicenses,
+            skillFilter,
             wikiAvailabilityFilter,
             healthAvailabilityFilter,
             openSSFAvailabilityFilter,

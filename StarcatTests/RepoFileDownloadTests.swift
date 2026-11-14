@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import CryptoKit
 import Foundation
 import Testing
 @testable import Starcat
@@ -110,6 +111,37 @@ struct RepoFileTreeBuilderTests {
         size: Int? = nil
     ) -> GitHubGitTreeEntryDTO {
         GitHubGitTreeEntryDTO(path: path, mode: mode, type: type, sha: sha, size: size, url: nil)
+    }
+}
+
+@Suite("RepoFileTypeIcon")
+struct RepoFileTypeIconTests {
+
+    private static let code = BusinessIcon.Source.business(.codeContext)
+
+    @Test("常见扩展名映射到对应类型图标，大小写不敏感")
+    func mapsCommonExtensions() {
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "eslint.config.js") == Self.code)
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "main.SWIFT") == Self.code)
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "README.md") == .business(.file))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "logo.png") == .business(.image))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "dist.tar.gz") == .business(.fileArchive))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "alert.mp3") == .business(.audio))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "demo.mov") == .business(.video))
+    }
+
+    @Test("dotfile 取点号后的整段当扩展名，无扩展名走整名匹配")
+    func mapsDotfilesAndBareNames() {
+        #expect(RepoFileTypeIcon.iconSource(forFileName: ".gitignore") == Self.code)
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "Makefile") == Self.code)
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "Dockerfile") == Self.code)
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "LICENSE") == .business(.file))
+    }
+
+    @Test("未知类型退回默认 doc 图标")
+    func fallsBackToDefault() {
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "data.unknownext") == .business(.file))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "") == .business(.file))
     }
 }
 
@@ -268,6 +300,37 @@ struct RepoFileDownloaderTests {
         #expect(try Data(contentsOf: saved) == payload)
     }
 
+    @Test("校验普通 blob 和 LFS 实物；内容变化后必须失败")
+    func verifiesDownloadedContent() async throws {
+        URLProtocolStub.reset()
+        let payload = Data("verified content".utf8)
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let pointer = Data("version https://git-lfs.github.com/spec/v1\noid sha256:\(digest)\nsize \(payload.count)\n".utf8)
+        let sha = RepoFileDownloader.gitBlobSHA(pointer)
+        URLProtocolStub.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, pointer)
+        }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("skill-verification-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try payload.write(to: file)
+        let downloader = RepoFileDownloader(session: URLProtocolStub.ephemeralSession(), tokenProvider: StubTokenProvider(token: "test"))
+        #expect(try await downloader.verifyDownloadedFile(owner: "o", repo: "r", sha: RepoFileDownloader.gitBlobSHA(payload), fileURL: file))
+        #expect(try await downloader.verifyDownloadedFile(owner: "o", repo: "r", sha: sha, fileURL: file))
+        try Data("modified content".utf8).write(to: file)
+        #expect(try await !downloader.verifyDownloadedFile(owner: "o", repo: "r", sha: sha, fileURL: file))
+    }
+
+    @Test("私仓凭据缺失时不匿名降级")
+    func refusesMissingPrivateCredentials() async throws {
+        URLProtocolStub.reset()
+        let downloader = RepoFileDownloader(session: URLProtocolStub.ephemeralSession(), tokenProvider: RequiredFileToken())
+        await #expect(throws: (any Error).self) {
+            try await downloader.preview(owner: "o", repo: "private", sha: "blob", relativePath: "SKILL.md", hintedSize: nil)
+        }
+        #expect(URLProtocolStub.receivedRequests.isEmpty)
+    }
+
     @Test("超过预览上限的文件不发起网络请求")
     func skipsLargePreview() async throws {
         URLProtocolStub.reset()
@@ -324,6 +387,12 @@ struct RepoFileDownloaderTests {
         }
         return png
     }
+}
+
+/// 验证私仓下载器不会因为授权丢失而切换到匿名链路。
+private struct RequiredFileToken: GitHubTokenProviding {
+    var requiresAuthentication: Bool { true }
+    func currentToken() async -> String? { nil }
 }
 
 @Suite("RepoFileBrowserViewModel")

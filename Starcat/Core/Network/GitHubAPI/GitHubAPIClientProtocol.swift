@@ -26,6 +26,8 @@
 import Foundation
 
 protocol GitHubAPIClientProtocol: Sendable {
+    /// 进程缓存按凭据客户端隔离；切账号还会清空缓存代际，不缓存 token 本身。
+    var fileTreeCacheScope: String { get }
 
     // MARK: - Stars
 
@@ -106,6 +108,9 @@ protocol GitHubAPIClientProtocol: Sendable {
     ///
     /// `ref` 用默认分支或 `HEAD`。截断由 DTO 的 `truncated` 表达，不在这里抛错。
     func repositoryGitTree(owner: String, repo: String, ref: String) async throws -> GitHubGitTreeDTO
+
+    /// 截断递归树时逐级补查；调用方负责预算和完整性，禁止将 tree SHA 当作 commit SHA。
+    func repositoryGitTreeLevel(owner: String, repo: String, ref: String) async throws -> GitHubGitTreeDTO
 
     /// 拉取仓库分支名（文件浏览器切树）。分页由实现方消化，调用方拿到完整列表。
     func repositoryBranches(owner: String, repo: String) async throws -> [GitHubRepoBranchDTO]
@@ -248,6 +253,39 @@ protocol GitHubAPIClientProtocol: Sendable {
         perPage: Int
     ) async throws -> APIResponse<[GitHubOrganizationIssue]>
 
+    // MARK: - Repo Issues（详情页 Issues 浮层，2026-11-01）
+
+    /// 拉取单仓库一页 Issue（`sort=updated`）；实现方必须排除 Pull Request。
+    func repoIssues(
+        owner: String,
+        repo: String,
+        state: GitHubRepoIssueState,
+        page: Int,
+        perPage: Int
+    ) async throws -> APIResponse<[GitHubRepoIssue]>
+
+    /// `/search/issues`。`query` 由调用方拼完整限定词（`repo:` + `is:issue` 必须带上）。
+    func searchIssues(
+        query: String,
+        page: Int,
+        perPage: Int
+    ) async throws -> APIResponse<GitHubRepoIssueSearchResult>
+
+    /// `POST /repos/{owner}/{repo}/issues`。公开仓 `public_repo` 即可；私仓可能 404。
+    func createRepoIssue(
+        owner: String,
+        repo: String,
+        title: String,
+        body: String?
+    ) async throws -> GitHubRepoIssue
+
+    /// 拉取 `.github/ISSUE_TEMPLATE` 下的模板原文（`.md` / `.yml`，跳过 config.yml）。
+    /// 无目录（404）返回空数组；AI 按 Issue 模板生成用（2026-11-01）。
+    func issueTemplates(
+        owner: String,
+        repo: String
+    ) async throws -> [GitHubIssueTemplate]
+
     // MARK: - Security Advisories（Activity 公告与关注 PR-3，2026-06-17）
 
     /// 拉取单个仓库的 Security Advisory 列表（可能为空数组）。
@@ -255,6 +293,11 @@ protocol GitHubAPIClientProtocol: Sendable {
 }
 
 extension GitHubAPIClientProtocol {
+    var fileTreeCacheScope: String { String(reflecting: Self.self) }
+    func repositoryGitTreeLevel(owner: String, repo: String, ref: String) async throws -> GitHubGitTreeDTO {
+        throw NetworkError.clientError(statusCode: 501, message: "Non-recursive git tree is not implemented")
+    }
+
     /// 旧的窄用途 Mock 不需要社交账号；实际调用时明确失败，避免伪造“没有链接”。
     func getUserSocialAccounts(login: String) async throws -> [GitHubSocialAccountDTO] {
         throw NetworkError.clientError(
@@ -440,6 +483,40 @@ extension GitHubAPIClientProtocol {
         perPage: Int
     ) async throws -> APIResponse<[GitHubOrganizationIssue]> {
         throw NetworkError.clientError(statusCode: 501, message: "Organization Issues is not implemented by this client")
+    }
+
+    func repoIssues(
+        owner: String,
+        repo: String,
+        state: GitHubRepoIssueState,
+        page: Int,
+        perPage: Int
+    ) async throws -> APIResponse<[GitHubRepoIssue]> {
+        throw NetworkError.clientError(statusCode: 501, message: "Repo Issues is not implemented by this client")
+    }
+
+    func searchIssues(
+        query: String,
+        page: Int,
+        perPage: Int
+    ) async throws -> APIResponse<GitHubRepoIssueSearchResult> {
+        throw NetworkError.clientError(statusCode: 501, message: "Issue search is not implemented by this client")
+    }
+
+    func createRepoIssue(
+        owner: String,
+        repo: String,
+        title: String,
+        body: String?
+    ) async throws -> GitHubRepoIssue {
+        throw NetworkError.clientError(statusCode: 501, message: "Create repo issue is not implemented by this client")
+    }
+
+    func issueTemplates(
+        owner: String,
+        repo: String
+    ) async throws -> [GitHubIssueTemplate] {
+        throw NetworkError.clientError(statusCode: 501, message: "Issue templates is not implemented by this client")
     }
 
     func forkRelation(owner: String, repo: String, restFallback: Bool) async throws -> GitHubForkRelation {

@@ -15,29 +15,69 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_changelog import release_body
 
 REPOSITORY = "starcat-app/Starcat"
 
 
 def gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """固定通过参数数组调用 gh，避免发布说明或路径被 shell 解释。"""
-    result = subprocess.run(
-        ["gh", *args], capture_output=True, text=True, timeout=900
-    )
+    """每个命令只执行一次，立即显示发布阶段与耗时，失败不隐藏 stdout/stderr。"""
+    actions = {"create": "创建草稿", "upload": "上传附件", "download": "下载核验", "edit": "公开 Release"}
+    label = actions.get(args[1]) if args[0] == "release" else None
+    if label:
+        detail = args[3] if args[1] == "upload" else args[2]
+        if args[1] == "download":
+            detail = args[args.index("--pattern") + 1]
+        print(f"[github-release] 开始 {label}: {detail}", flush=True)
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=900
+        )
+    except subprocess.TimeoutExpired:
+        print("[github-release] 命令超时；先回读草稿/附件状态，禁止直接重建草稿", flush=True)
+        raise
+    if label:
+        state = "完成" if result.returncode == 0 else f"失败 exit={result.returncode}"
+        print(f"[github-release] {state} {label}，耗时 {time.monotonic() - started:.1f}s", flush=True)
     if check and result.returncode:
-        raise RuntimeError(result.stderr.strip() or "GitHub CLI 执行失败")
+        raise RuntimeError(
+            f"GitHub CLI 执行失败 ({result.returncode})\n{result.stdout}{result.stderr}"
+        )
     return result
 
 
 def get_release(tag: str) -> dict | None:
-    """仅把明确的 404 当作缺失；鉴权、网络错误不能触发创建流程。"""
+    """只查询 by-tag 端点；404 仍需查草稿列表，不能直接据此创建 Release。"""
     result = gh("api", f"repos/{REPOSITORY}/releases/tags/{tag}", check=False)
     if result.returncode:
         if "HTTP 404" in result.stderr:
             return None
         raise RuntimeError(result.stderr.strip() or "无法读取 GitHub Release")
     return json.loads(result.stdout)
+
+
+def get_release_or_draft(tag: str) -> dict | None:
+    """本次实测 by-tag 查草稿返回 404；全量列表确认缺失后才允许创建。"""
+    release = get_release(tag)
+    if release is not None:
+        return release
+    result = gh("api", f"repos/{REPOSITORY}/releases?per_page=100", "--paginate", "--slurp")
+    pages = json.loads(result.stdout)
+    matches = [item for page in pages for item in page if item.get("tag_name") == tag]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        identifiers = ", ".join(str(item.get("id", "<unknown>")) for item in matches)
+        raise RuntimeError(
+            f"GitHub 存在多个 tag 为 {tag} 的 Release ({identifiers})；"
+            "停止写操作，先核对草稿归属和附件，禁止删除后盲目重跑"
+        )
+    return matches[0]
 
 
 def file_sha256(path: Path) -> str:
@@ -50,16 +90,8 @@ def file_sha256(path: Path) -> str:
 
 
 def release_notes(changelog: Path, version: str, *, allow_pending: bool = False) -> str:
-    """正式 Release 拒绝待发布标题；开发版 prerelease 可以复用待发布说明。"""
-    heading_suffix = r"(?:-待发布)?" if allow_pending else ""
-    match = re.search(
-        rf"^## {re.escape(version)}{heading_suffix}\s*\n(.*?)(?=^## |\Z)",
-        changelog.read_text(encoding="utf-8"),
-        re.MULTILINE | re.DOTALL,
-    )
-    if not match or not match.group(1).strip():
-        raise ValueError(f"Changelog 缺少正式版本内容: {version}")
-    return match.group(1).strip() + "\n"
+    """正式 Release 拒绝待发布标题；Beta prerelease 可以复用待发布说明。"""
+    return release_body(changelog.read_text(encoding="utf-8"), version, allow_pending=allow_pending)
 
 
 def publish(
@@ -72,12 +104,16 @@ def publish(
     marketing_version: str | None = None,
 ) -> None:
     """上传草稿、回读实际附件并校验摘要，再按指定发布类型公开。"""
-    expected_pattern = r"\d+\.\d+\.\d+(?:-dev\.\d+)?" if prerelease else r"\d+\.\d+\.\d+"
+    expected_pattern = r"\d+\.\d+\.\d+-beta\.[1-9]\d*" if prerelease else r"\d+\.\d+\.\d+"
     if not re.fullmatch(expected_pattern, version):
-        raise ValueError("正式版本必须是 X.Y.Z；开发版本必须是 X.Y.Z-dev.N")
-    marketing_version = marketing_version or version
+        raise ValueError("正式版本必须是 X.Y.Z；Beta 版本必须是 X.Y.Z-beta.N")
+    # tag 使用 Beta 序号，App 与附件仍使用合法的营销版本；两者必须指向同一版本。
+    base_version = version.split("-beta.", 1)[0]
+    marketing_version = marketing_version or base_version
     if not re.fullmatch(r"\d+\.\d+\.\d+", marketing_version):
         raise ValueError("App 营销版本必须是 X.Y.Z")
+    if marketing_version != base_version:
+        raise ValueError("App 营销版本必须与发布版本的 X.Y.Z 一致")
     if dmg.name != f"Starcat-{marketing_version}-arm64.dmg" or checksum.name != dmg.name + ".sha256":
         raise ValueError("DMG/SHA256 文件名必须与目标版本一致")
     digest = file_sha256(dmg)
@@ -87,7 +123,9 @@ def publish(
         raise ValueError("本地 DMG 与 SHA256 不一致，禁止上传")
     notes = release_notes(changelog, marketing_version, allow_pending=prerelease)
     tag = f"v{version}"
-    release = get_release(tag)
+    print(f"[github-release] 查询已有 Release/草稿: {tag}", flush=True)
+    # 续跑也必须查草稿；仅在创建后查列表仍会让首次 404 触发重复创建。
+    release = get_release_or_draft(tag)
     if release and release["prerelease"] != prerelease:
         raise ValueError("目标 tag 的正式版/预发布属性与本次发布策略不一致")
 
@@ -98,13 +136,14 @@ def publish(
             notes_path.write_text(notes, encoding="utf-8")
             create_args = [
                 "release", "create", tag, "--repo", REPOSITORY,
-                "--draft", "--verify-tag", "--title", f"Starcat {version}",
+                "--draft", "--verify-tag", "--title",
+                f"Starcat {marketing_version} Beta {version.rsplit('.', 1)[1]}" if prerelease else f"Starcat {version}",
                 "--notes-file", str(notes_path),
             ]
             if prerelease:
                 create_args.append("--prerelease")
             gh(*create_args)
-            release = get_release(tag)
+            release = get_release_or_draft(tag)
             if release is None:
                 raise RuntimeError("创建草稿后无法回读 Release")
 
@@ -132,7 +171,7 @@ def publish(
         published = get_release(tag)
         if published is None or published["draft"] or published["prerelease"] != prerelease:
             raise RuntimeError("GitHub Release 状态与发布策略不一致，禁止发布 appcast")
-        print(f"GitHub Release 已核验: {published['html_url']}")
+        print(f"GitHub Release 已核验: {published['html_url']}", flush=True)
 
 
 def main() -> None:

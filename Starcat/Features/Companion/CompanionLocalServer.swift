@@ -473,8 +473,6 @@ final class CompanionLocalServer {
             return response(status: 404, body: ["error": "repo_not_found"], origin: origin)
         } catch CompanionActionError.repoNotStarred {
             return response(status: 403, body: ["error": "repo_not_starred"], origin: origin)
-        } catch CompanionActionError.requiresPro {
-            return response(status: 403, body: ["error": "requires_pro"], origin: origin)
         } catch {
             Self.recordInternalFailure(endpoint: "open-action", error: error)
             return response(status: 500, body: ["error": "internal_error"], origin: origin)
@@ -541,6 +539,11 @@ final class CompanionLocalServer {
     }
 
     private func response(status: Int, bodyData: Data, origin: String?) -> Data {
+        DiagnosticLogStore.shared.enqueue(DiagnosticEvent(
+            level: status >= 400 ? .warning : .info,
+            category: "extension", operation: "localResponse", message: "Extension connection result",
+            statusCode: status, phase: "responded", outcome: status >= 400 ? .failed : .succeeded,
+            fields: ["bytes": .integer(bodyData.count)]))
         let reason: String = switch status {
         case 200: "OK"
         case 204: "No Content"

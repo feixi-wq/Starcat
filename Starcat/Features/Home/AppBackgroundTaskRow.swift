@@ -17,14 +17,14 @@ struct AppBackgroundTaskRow: View {
 
     var body: some View {
         let content = HStack(spacing: 8) {
-            BusinessIcon(task.id.icon, pointSize: (task.id.icon.isAsset ? 16 : 13) * interfaceScale.multiplier)
+            BusinessIcon(task.kind.icon, pointSize: (task.kind.icon.isAsset ? 16 : 13) * interfaceScale.multiplier)
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(LocalizedStringKey(task.id.titleKey))
+                Text(verbatim: task.title)
                     .font(interfaceScale.font(.body, weight: .medium))
-                    .help(Text(LocalizedStringKey(task.id.titleKey)))
+                    .help(Text(verbatim: task.title))
                 HStack(spacing: 8) {
                     Text(LocalizedStringKey(task.phase.titleKey))
                         .help(Text(LocalizedStringKey(task.phase.titleKey)))
@@ -32,8 +32,6 @@ struct AppBackgroundTaskRow: View {
                         Text(verbatim: detail)
                             .monospacedDigit()
                             .help(Text(verbatim: detail))
-                            // 仅分数局部 LTR，Arabic 状态与标题仍继承 RTL；数字按界面 locale 格式化。
-                            .environment(\.layoutDirection, isNumericProgress ? .leftToRight : layoutDirection)
                     }
                 }
                 .font(interfaceScale.font(.caption))
@@ -64,14 +62,14 @@ struct AppBackgroundTaskRow: View {
             }
             if task.canCancel {
                 Button(action: onCancel) {
-                    Label("toolbar.backgroundTasks.stop", systemImage: "xmark.circle")
+                    Label(LocalizedStringKey(task.cancelTitleKey), systemImage: "xmark.circle")
                         .labelStyle(.iconOnly)
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
-                .help(Text("toolbar.backgroundTasks.stop"))
+                .help(Text(LocalizedStringKey(task.cancelTitleKey)))
             }
         }
         .padding(.horizontal, 10)
@@ -79,9 +77,4 @@ struct AppBackgroundTaskRow: View {
         .accessibilityElement(children: .contain)
     }
 
-    @Environment(\.layoutDirection) private var layoutDirection
-    private var isNumericProgress: Bool {
-        if case .progress = task.detail { return true }
-        return false
-    }
 }
