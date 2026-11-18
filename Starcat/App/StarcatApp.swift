@@ -65,14 +65,19 @@ struct StarcatApp: App {
         Self.bootstrap()
 
         // 注意：AppDependencies 是 @MainActor，App init 已在 main thread。
+        let startupDiagnostic = DiagnosticOperation(category: "startup", name: "appDependencies")
         do {
-            let resolvedDependencies = try AppDependencies()
+            let resolvedDependencies = try DiagnosticContext.$current.withValue(startupDiagnostic) {
+                try AppDependencies()
+            }
+            startupDiagnostic.finish()
             _dependencies = State(initialValue: resolvedDependencies)
             _startupError = State(initialValue: nil)
             CompanionServiceBootstrapper.startFromStoredConfiguration(dependencies: resolvedDependencies)
         } catch {
-            let friendly = UserFacingError.map(error, operation: String.l10n("diagnostics.operation.startup"), service: "Starcat")
-            friendly.record(level: .critical, category: "startup", operation: "appDependencies")
+            let friendly = UserFacingError.map(error, operation: String.l10n("diagnostics.operation.startup"),
+                service: "Starcat", impact: .blocked, summary: .databaseUnavailable)
+            startupDiagnostic.finish(.failed, error: error, impact: .blocked, summary: .databaseUnavailable)
             _dependencies = State(initialValue: nil)
             _startupError = State(initialValue: friendly)
         }
@@ -188,7 +193,7 @@ struct StarcatApp: App {
             // Release 包整段不存在；菜单标题 / 选项标签都用 verbatim 文本，
             // 不进入 String Catalog——避免"切到英文后调试菜单也变英文"的循环噩梦。
             #if DEBUG
-            DebugMenuCommands(dependencies: dependencies)
+            DebugMenuCommands(dependencies: dependencies, commandRouter: commandRouter)
             #endif
         }
 
@@ -205,6 +210,30 @@ struct StarcatApp: App {
             height: KnowledgeRAGWorkspaceWindowMetrics.defaultContentSize.height
         )
         .defaultLaunchBehavior(.suppressed)
+
+        // Skill 会话在明确打开时才初始化；Scene 注册与 App Store 恢复路径均不得开库或扫描。
+        Window("skills.workspace.title", id: SkillWorkspaceSceneCoordinator.sceneID) {
+            if let dependencies,
+               SkillWorkspaceSceneCoordinator.shared.isAvailable,
+               let viewModel = SkillWorkspaceSceneCoordinator.shared.viewModel {
+                SkillWorkspaceSceneRoot(viewModel: viewModel)
+                    .appHostEnvironment(dependencies)
+            } else {
+                ContentUnavailableView(
+                    "skills.workspace.unavailable.title",
+                    systemImage: "lock",
+                    description: Text("skills.workspace.unavailable.description")
+                )
+                .appLocaleEnvironment()
+            }
+        }
+        .commandsRemoved()
+        .defaultSize(
+            width: SkillWorkspaceWindowMetrics.defaultContentSize.width,
+            height: SkillWorkspaceWindowMetrics.defaultContentSize.height
+        )
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         Window("localai.logs.title", id: LocalAILogWindowSelection.sceneID) {
             LocalAILogWindowView()
@@ -492,9 +521,7 @@ struct StarcatApp: App {
             do {
                 try KeychainManager.shared.ping()
             } catch {
-                DiagnosticLogStore.record(level: .error, visibility: .issue, category: "keychain",
-                    operation: "startup.ping", message: "Keychain self-check failed",
-                    underlying: DiagnosticEvent.summarize(error))
+                // 凭据层已记录实际读写或完整性故障，自检失败不再重复生成同一问题。
                 AppLog.keychain.error("Keychain self-check failed: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -520,6 +547,12 @@ private struct MainWindowOpenFallbackRegistrar: ViewModifier {
                 }
                 AppDelegate.openSettingsWindowFallback = {
                     openWindow(id: "settings")
+                }
+                StatusBarController.shared.openLocalAILogWindow = {
+                    openWindow(id: LocalAILogWindowSelection.sceneID)
+                }
+                StatusBarController.shared.openSkillWorkspaceScene = { sceneID in
+                    openWindow(id: sceneID)
                 }
                 AIWorkspaceSceneCoordinator.shared.registerWindowActions(
                     openAgent: {
@@ -646,6 +679,14 @@ private struct StarcatAppCommands: Commands {
                     }
                 }
                 .disabled(dependencies == nil)
+            }
+
+            if dependencies?.distributionGate.isAvailable(.skillManagement) == true {
+                Button("skills.workspace.title") {
+                    try? SkillWorkspaceSceneCoordinator.shared.openWindow { sceneID in
+                        openWindow(id: sceneID)
+                    }
+                }
             }
 
             Button("localai.logs.title") {
@@ -832,6 +873,7 @@ private enum DebugWindowResizer {
 
 struct DebugMenuCommands: Commands {
     let dependencies: AppDependencies?
+    let commandRouter: StarcatCommandRouter
 
     @AppStorage(DebugFlags.debugProOverrideKey) private var debugProOverride = false
 
@@ -848,6 +890,13 @@ struct DebugMenuCommands: Commands {
                     object: nil
                 )
             }
+
+            Button {
+                commandRouter.showDailyRecommendations()
+            } label: {
+                Text(verbatim: "Show Daily Recommendation Cards")
+            }
+            .disabled(!commandRouter.canShowDailyRecommendations)
 
             Toggle(
                 "Activate Pro",

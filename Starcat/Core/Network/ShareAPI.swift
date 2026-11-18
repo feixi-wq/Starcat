@@ -35,6 +35,7 @@
 //
 
 import Foundation
+import CryptoKit
 
 /// 分享 API 客户端。
 actor ShareAPI {
@@ -52,6 +53,14 @@ actor ShareAPI {
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    /// 旧版按正文和 PNG hash 保存的临时缓存，仅用于迁入长期记录。
+    private let dailyRadarCacheDirectory: URL
+    private let dailyRadarShareDirectory: URL
+    private var dailyRadarShares: [String: DailyRadarShareResponse] = [:]
+    private var dailyRadarShareTasks: [String: Task<DailyRadarShareResponse, Error>] = [:]
+    private let repoShareDirectory: URL
+    private var repoShares: [String: ShareCreateResponse] = [:]
+    private var repoShareTasks: [String: Task<ShareCreateResponse, Error>] = [:]
 
     /// - Parameters:
     ///   - baseURL: 后端裸 host（**不含** `/api` 后缀，R-03.1 起与其它自建后端对齐）；
@@ -62,10 +71,23 @@ actor ShareAPI {
     init(
         baseURL: URL,
         apiKey: String? = nil,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        dailyRadarCacheDirectory: URL? = nil,
+        dailyRadarShareDirectory: URL? = nil,
+        repoShareDirectory: URL? = nil
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
+        // 已发布的链接属于长期记录，放 Application Support，避免清理网络缓存后重复发布。
+        self.repoShareDirectory = repoShareDirectory ??
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Starcat/RepoShares", isDirectory: true)
+        self.dailyRadarCacheDirectory = dailyRadarCacheDirectory ??
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Starcat/DailyRadarShares", isDirectory: true)
+        self.dailyRadarShareDirectory = dailyRadarShareDirectory ??
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Starcat/DailyRadarShares", isDirectory: true)
         if let session {
             self.session = session
         } else {
@@ -87,19 +109,70 @@ actor ShareAPI {
     /// actor 串行化让 URL 切换无需重启 App。
     func updateBaseURL(_ url: URL) {
         self.baseURL = url
+        dailyRadarShares.removeAll()
     }
 
     /// 热更新 API Key（用户在设置页改 key 后由 `AppDependencies` 推送进来）。
     func updateAPIKey(_ key: String?) {
         self.apiKey = key
+        dailyRadarShares.removeAll()
+    }
+
+    /// 在 AI 工作开始前读取已有链接；服务地址参与身份，不跨自定义后端复用。
+    func cachedRepoShare(fullName: String) -> ShareCreateResponse? {
+        let key = repoShareKey(fullName: fullName)
+        if let cached = repoShares[key], cached.isReusable() { return cached }
+        let file = repoShareDirectory.appendingPathComponent(key + ".json")
+        guard let bytes = try? Data(contentsOf: file),
+              let cached = try? decoder.decode(ShareCreateResponse.self, from: bytes),
+              cached.isReusable() else {
+            repoShares[key] = nil
+            return nil
+        }
+        repoShares[key] = cached
+        return cached
+    }
+
+    /// 统计数字与摘要语言变化不改变链接身份，已创建的分享始终复用原公开快照。
+    private func repoShareKey(fullName: String) -> String {
+        let identity = baseURL.absoluteString + "|" + fullName.lowercased()
+        return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 复用本地记录并合并同一仓库正在提交的请求，避免多窗口重复发布。
+    func shareRepo(request: ShareRepoRequest) async throws -> ShareCreateResponse {
+        if let cached = cachedRepoShare(fullName: request.repo.fullName) { return cached }
+        let key = repoShareKey(fullName: request.repo.fullName)
+        if let pending = repoShareTasks[key] { return try await pending.value }
+        let serviceURL = baseURL
+        let credential = apiKey
+        let pending = Task {
+            try await self.createRepoShare(request: request, serviceURL: serviceURL, credential: credential)
+        }
+        repoShareTasks[key] = pending
+        defer { repoShareTasks[key] = nil }
+        let result = try await withTaskCancellationHandler {
+            try await pending.value
+        } onCancel: {
+            pending.cancel()
+        }
+        repoShares[key] = result
+        do {
+            try FileManager.default.createDirectory(at: repoShareDirectory, withIntermediateDirectories: true)
+            try encoder.encode(result).write(to: repoShareDirectory.appendingPathComponent(key + ".json"), options: .atomic)
+        } catch {
+            // 服务端已经发布成功，保留可复制结果；记录落盘失败，避免静默冒充跨重启可恢复。
+            AppLog.network.error("Repo share record persistence failed: \(error.localizedDescription, privacy: .public)")
+        }
+        return result
     }
 
     /// 创建分享链接。
     ///
     /// 网络错误统一抛 `StarcatEnvelopeNetworkError`（详见 StarcatEnvelope.swift）。
     /// 401 时 `error.isUnauthorized == true`，UI 应引导用户去设置页检查 API Key。
-    func shareRepo(request: ShareRepoRequest) async throws -> ShareCreateResponse {
-        let url = AppEndpoints.appendPath(AppEndpoints.Sharing.Paths.share, to: baseURL)
+    private func createRepoShare(request: ShareRepoRequest, serviceURL: URL, credential: String?) async throws -> ShareCreateResponse {
+        let url = AppEndpoints.appendPath(AppEndpoints.Sharing.Paths.share, to: serviceURL)
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -107,7 +180,7 @@ actor ShareAPI {
         urlRequest.setValue("Starcat/1.0", forHTTPHeaderField: "User-Agent")
 
         // R-01 v1.2：后端强制 Bearer Auth；apiKey 为 nil/空时不发头（后端会 401）。
-        if let key = apiKey, !key.isEmpty {
+        if let key = credential, !key.isEmpty {
             urlRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         StarcatGatewayRouting.applyServiceHeader(to: &urlRequest, service: .sharing)
@@ -132,5 +205,150 @@ actor ShareAPI {
             response: response,
             decoder: decoder
         )
+    }
+
+    /// 阅读页只按稳定身份查询，不生成封面、不联网；新版本、语言和服务各自保存链接。
+    func cachedDailyRadarShare(reportID: String, language: String, revision: String) -> DailyRadarShareResponse? {
+        let key = dailyRadarShareKey(reportID: reportID, language: language, revision: revision)
+        if let cached = dailyRadarShares[key] { return cached }
+        let file = dailyRadarShareDirectory.appendingPathComponent(key + ".json")
+        guard let cached = readDailyRadarShare(at: file) else { return nil }
+        dailyRadarShares[key] = cached
+        return cached
+    }
+
+    /// 仅业务上的未发布允许创建。旧服务的路由错误、鉴权失败和超时都继续抛给调用方。
+    func lookupDailyRadarShare(reportID: String, language: String, revision: String) async throws -> DailyRadarShareResponse? {
+        let cacheKey = dailyRadarShareKey(reportID: reportID, language: language, revision: revision)
+        let endpoint = AppEndpoints.appendPath(AppEndpoints.Sharing.Paths.dailyRadarShares, to: baseURL)
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw StarcatEnvelopeNetworkError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "report_id", value: reportID),
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "revision", value: revision),
+        ]
+        // Go 按表单规则解析 query，未转义的加号会被解释为空格。
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let url = components.url else { throw StarcatEnvelopeNetworkError.invalidURL }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        StarcatGatewayRouting.applyServiceHeader(to: &request, service: .sharing)
+        let (data, response) = try await DiagnosticHTTP.data(for: request, using: session, service: "sharing")
+        if (response as? HTTPURLResponse)?.statusCode == 404,
+           let envelope = try? decoder.decode(StarcatErrorEnvelope.self, from: data),
+           envelope.error.code == "DAILY_RADAR_SHARE_NOT_FOUND" {
+            return nil
+        }
+        let found = try StarcatEnvelopeDecoder.decode(
+            DailyRadarShareResponse.self, data: data, response: response, decoder: decoder
+        ).validated()
+        persistDailyRadarShare(found, key: cacheKey)
+        return found
+    }
+
+    /// 旧文件只有响应，无法反查报告身份；仅在确有旧记录时才需要重建旧 hash。
+    func hasLegacyDailyRadarShares() -> Bool {
+        let files = try? FileManager.default.contentsOfDirectory(
+            at: dailyRadarCacheDirectory, includingPropertiesForKeys: nil
+        )
+        return files?.contains { $0.pathExtension == "json" } == true
+    }
+
+    /// 旧版缓存按原快照和封面精确匹配，迁入成功后删除旧文件，全程不重新发布。
+    func cachedDailyRadarShare(request: DailyRadarShareRequest, heroPNG: Data) -> DailyRadarShareResponse? {
+        let report = request.report
+        if let cached = cachedDailyRadarShare(reportID: report.id, language: report.language, revision: report.revision) {
+            return cached
+        }
+        let canonicalEncoder = JSONEncoder()
+        canonicalEncoder.outputFormatting = [.sortedKeys]
+        guard let snapshot = try? canonicalEncoder.encode(request) else { return nil }
+        let identity = [
+            baseURL.absoluteString,
+            SHA256.hash(data: snapshot).map { String(format: "%02x", $0) }.joined(),
+            SHA256.hash(data: heroPNG).map { String(format: "%02x", $0) }.joined()
+        ].joined(separator: "|")
+        let legacyKey = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        let legacyFile = dailyRadarCacheDirectory.appendingPathComponent(legacyKey + ".json")
+        guard let cached = readDailyRadarShare(at: legacyFile) else { return nil }
+        let key = dailyRadarShareKey(reportID: report.id, language: report.language, revision: report.revision)
+        if persistDailyRadarShare(cached, key: key) {
+            try? FileManager.default.removeItem(at: legacyFile)
+        }
+        return cached
+    }
+
+    /// 身份与服务端唯一约束一致；封面绘制升级不影响已有链接。
+    private func dailyRadarShareKey(reportID: String, language: String, revision: String) -> String {
+        let identity = [baseURL.absoluteString, reportID, language, revision].joined(separator: "|")
+        return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func readDailyRadarShare(at file: URL) -> DailyRadarShareResponse? {
+        guard let bytes = try? Data(contentsOf: file) else { return nil }
+        return try? decoder.decode(DailyRadarShareResponse.self, from: bytes).validated()
+    }
+
+    /// 只记录公开响应；落盘失败仍保留可复制的链接，并留下诊断而不是静默丢失重启恢复能力。
+    @discardableResult
+    private func persistDailyRadarShare(_ response: DailyRadarShareResponse, key: String) -> Bool {
+        dailyRadarShares[key] = response
+        do {
+            try FileManager.default.createDirectory(at: dailyRadarShareDirectory, withIntermediateDirectories: true)
+            try encoder.encode(response).write(
+                to: dailyRadarShareDirectory.appendingPathComponent(key + ".json"), options: .atomic
+            )
+            return true
+        } catch {
+            AppLog.network.error("Daily Radar share record persistence failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// 已发布的同一报告版本始终复用原快照；新发布才编码正文并上传 PNG。
+    ///
+    /// actor 在 await 期间允许重入，所以运行中请求也按相同身份合并；Sheet 关闭不会取消另一位
+    /// 等待者的网络请求。服务地址在 await 前参与身份，完成后不会写进另一服务的记录。
+    func shareDailyRadar(request: DailyRadarShareRequest, heroPNG: Data) async throws -> DailyRadarShareResponse {
+        if let cached = cachedDailyRadarShare(request: request, heroPNG: heroPNG) { return cached }
+        let report = request.report
+        let cacheKey = dailyRadarShareKey(reportID: report.id, language: report.language, revision: report.revision)
+        if let pending = dailyRadarShareTasks[cacheKey] { return try await pending.value }
+        let canonicalEncoder = JSONEncoder()
+        canonicalEncoder.outputFormatting = [.sortedKeys]
+        let snapshot = try canonicalEncoder.encode(request)
+        let boundary = "StarcatDailyRadar-" + UUID().uuidString
+        var body = Data()
+        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"request\"\r\nContent-Type: application/json\r\n\r\n".utf8))
+        body.append(snapshot)
+        body.append(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"hero\"; filename=\"hero.png\"\r\nContent-Type: image/png\r\n\r\n".utf8))
+        body.append(heroPNG)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        guard heroPNG.count <= 3_145_728, body.count <= 5_242_880 else { throw DailyRadarShareError.tooLarge }
+        var upload = URLRequest(url: AppEndpoints.appendPath(AppEndpoints.Sharing.Paths.dailyRadarShares, to: baseURL))
+        upload.httpMethod = "POST"
+        upload.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        upload.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let apiKey, !apiKey.isEmpty {
+            upload.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        StarcatGatewayRouting.applyServiceHeader(to: &upload, service: .sharing)
+        upload.httpBody = body
+        let pending = Task {
+            let (data, response) = try await DiagnosticHTTP.data(for: upload, using: session, service: "sharing")
+            return try StarcatEnvelopeDecoder.decode(
+                DailyRadarShareResponse.self, data: data, response: response, decoder: decoder
+            ).validated()
+        }
+        dailyRadarShareTasks[cacheKey] = pending
+        defer { dailyRadarShareTasks[cacheKey] = nil }
+        let result = try await pending.value
+        persistDailyRadarShare(result, key: cacheKey)
+        return result
     }
 }

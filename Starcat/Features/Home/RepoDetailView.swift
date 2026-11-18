@@ -331,6 +331,14 @@ struct ReadmeStateView: View {
     /// loading 阶段短暂保留上一份文档，让同一个 WKWebView 实例留在视图树中。
     /// 骨架是不透明的，保留内容不会被用户看到，也不会接收点击或进入辅助功能树。
     @State private var retainedReadmeDocument: PresentedReadmeDocument?
+    @State private var renderedReadmeDocumentID: String?
+    @State private var failedReadmeDocumentID: String?
+    /// WebKit 失败后即使网络返回相同缓存，也需要新的文档身份重新导航。
+    @State private var readmeRetryGeneration = 0
+    @State private var isReadmeContentVisible = false
+    @State private var isReadmeSkeletonVisible = true
+    /// 链接文档只在当前阅读会话中替换正文，不能写入仓库默认 README 的持久缓存。
+    @State private var markdownNavigation = RepositoryMarkdownNavigation()
 
     /// 非 Manage 的 README 详情页通过显式 repo 开启同一套 Star History DOM 状态机；
     /// Manage 仍由 `ManageDetailContent` 持有，避免同一份 README 产生两个加载器。
@@ -391,39 +399,78 @@ struct ReadmeStateView: View {
         static let contentRevealSeconds = 0.36
     }
 
-    /// README 渲染层的轻量文档快照。
-    ///
-    /// `identity` 使用 scope + 缓存时间 + 字节数：它只用于本地视图更新判定，不承担
-    /// 持久化校验，因此不需要在 SwiftUI body 中反复计算整份 HTML 的 SHA-256。
+    /// README 渲染层的轻量文档快照。身份复用 VM 文档与本地渲染重试序号，
+    /// 不在 SwiftUI body 中反复计算整份 HTML 的 SHA-256。
     private struct PresentedReadmeDocument {
         let html: String
         let cachedAt: Date
         let identity: String
         let baseURL: URL?
+        var target: RepositoryMarkdownLinkTarget? = nil
+    }
+
+    /// 交接任务既跟随文档，也跟随等待结束；终态没有 documentID，不能与 loading 共用身份。
+    /// 只保存短身份与阶段，避免在 body 重算时比较 HTML 或因缓存时间更新而重播过渡。
+    struct HandoffKey: Equatable {
+        enum Phase: Equatable {
+            case waiting
+            case document(String)
+            case resolved
+        }
+
+        let scopeIdentity: String
+        let phase: Phase
+
+        init(scopeIdentity: String, state: ReadmeViewModel.LoadState,
+             documentIdentity: String?, isStateStale: Bool) {
+            self.scopeIdentity = scopeIdentity
+            if isStateStale {
+                phase = .waiting
+            } else {
+                switch state {
+                case .idle, .loading:
+                    phase = .waiting
+                case .loaded:
+                    phase = documentIdentity.map(Phase.document) ?? .waiting
+                case .empty, .requiresLogin, .error:
+                    phase = .resolved
+                }
+            }
+        }
     }
 
     var body: some View {
+        @Bindable var markdownNavigation = markdownNavigation
         let currentDocument = currentReadmeDocument
-        let presentedDocument = currentDocument
-            ?? (showsReadmePlaceholder ? retainedReadmeDocument : nil)
 
         ZStack(alignment: .topLeading) {
-            if let presentedDocument {
+            if let presentedDocument = retainedReadmeDocument {
                 loadedReadmeContent(presentedDocument)
-                    .opacity(showsReadmePlaceholder ? 0 : 1)
-                    .allowsHitTesting(!showsReadmePlaceholder)
-                    .accessibilityHidden(showsReadmePlaceholder)
-                    .transition(readmeContentTransition)
+                    .opacity(isReadmeContentVisible ? 1 : 0)
+                    .blur(radius: reduceMotion || isReadmeContentVisible ? 0 : 10)
+                    .allowsHitTesting(isReadmeContentVisible && presentedDocument.identity == currentDocument?.identity)
+                    .accessibilityHidden(!isReadmeContentVisible || presentedDocument.identity != currentDocument?.identity)
                     .zIndex(0)
             }
 
-            if showsReadmePlaceholder {
+            if isReadmeSkeletonVisible {
                 readmePlaceholder
                     .transition(readmePlaceholderTransition)
                     .zIndex(1)
             }
 
-            if !showsReadmePlaceholder, currentDocument == nil {
+            if let failedReadmeDocumentID, failedReadmeDocumentID == currentDocument?.identity {
+                ContentUnavailableView {
+                    Label("error.loadFailed", systemImage: "exclamationmark.triangle")
+                } actions: {
+                    Button("action.retry", action: retryReadme)
+                    if scopedMarkdownDocument != nil {
+                        Button("readme.document.backToReadme", action: returnToReadme)
+                    }
+                }
+                .transition(readmeContentTransition)
+                .zIndex(1)
+            } else if retainedReadmeDocument == nil, !isReadmeSkeletonVisible, currentDocument == nil {
                 resolvedNonLoadedContent
                     .transition(readmeContentTransition)
                     .zIndex(1)
@@ -432,15 +479,28 @@ struct ReadmeStateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .animation(
-            reduceMotion ? nil : .easeOut(duration: ReadmeRevealTiming.contentRevealSeconds),
-            value: showsReadmePlaceholder
+            .easeOut(duration: reduceMotion ? 0.12 : ReadmeRevealTiming.contentRevealSeconds),
+            value: isReadmeSkeletonVisible
         )
+        .task(id: HandoffKey(
+            scopeIdentity: markdownScopeIdentity,
+            state: presentedReadmeState,
+            documentIdentity: currentDocument?.identity,
+            isStateStale: isStateStaleForScope
+        )) {
+            await handOffReadmeDocument()
+        }
         .task(id: readmeStarHistoryPreloadIdentity) {
             await preloadReadmeStarHistoryIfNeeded()
         }
         .onDisappear {
             cancelReadmeStarHistory()
+            markdownNavigation.reset(scopeIdentity: markdownScopeIdentity)
         }
+        .onChange(of: markdownScopeIdentity, initial: true) { _, identity in
+            markdownNavigation.reset(scopeIdentity: identity)
+        }
+        .toast(message: $markdownNavigation.errorMessage, icon: "exclamationmark.triangle.fill", bottomPadding: 30)
         .toast(
             message: $translationToast,
             icon: "exclamationmark.triangle.fill",
@@ -478,31 +538,23 @@ struct ReadmeStateView: View {
         }
         .starcatRefreshCommand(
             pane: .detail,
-            identity: "\(refreshCommandIdentity)-\(readmeVM.isRefreshing)",
+            identity: "\(refreshCommandIdentity)-\(readmeVM.isRefreshing)-\(isMarkdownRefreshing)",
             title: String.l10n("commands.actions.refreshCurrentDetail"),
-            isEnabled: !readmeVM.isRefreshing,
-            action: onRetry
+            isEnabled: !readmeVM.isRefreshing && !isMarkdownRefreshing,
+            action: retryReadme
         )
         .onChange(of: translationSyncKey, initial: true) { _, _ in
             syncSharedTranslationToCurrentRepo()
         }
-        .onChange(of: readmeDocumentToken, initial: true) { _, _ in
-            if let currentReadmeDocument {
-                retainedReadmeDocument = currentReadmeDocument
-            } else if !showsReadmePlaceholder {
-                // empty / error / requiresLogin 是终态，不再为它们保留旧 WebView。
-                retainedReadmeDocument = nil
-            }
-        }
-        .onChange(of: settings.readmeTranslationLanguage) { _, newLanguage in
-            applyTranslationLanguage(newLanguage)
+        .onChange(of: settings.readmeTranslationLanguage) { _, _ in
+            syncSharedTranslationToCurrentRepo()
         }
         .onChange(of: locale.identifier) { _, _ in
             guard settings.readmeTranslationLanguage == .auto else { return }
-            applyTranslationLanguage(.auto)
+            syncSharedTranslationToCurrentRepo()
         }
-        .onChange(of: settings.readmeTranslationMode) { _, newMode in
-            applyTranslationMode(newMode)
+        .onChange(of: settings.readmeTranslationMode) { _, _ in
+            syncSharedTranslationToCurrentRepo()
         }
     }
 
@@ -517,23 +569,121 @@ struct ReadmeStateView: View {
     }
 
     private var readmePlaceholderTransition: AnyTransition {
-        reduceMotion ? .identity : .opacity
+        .opacity
     }
 
-    /// 内容从略缩小 + 透明淡入，骨架同步 opacity 淡出，形成轻微 crossfade。
+    /// 账号切换也必须丢弃临时文档，不能只用同一仓库的名称判断是否仍为当前会话。
+    private var markdownScopeIdentity: String {
+        "\(refreshCommandIdentity)|database:\(dependencies.databaseScopeRevision)"
+    }
+
+    private var scopedMarkdownDocument: RepositoryMarkdownNavigation.Document? {
+        markdownNavigation.scopeIdentity == markdownScopeIdentity ? markdownNavigation.document : nil
+    }
+
+    private var isMarkdownLoading: Bool {
+        markdownNavigation.scopeIdentity == markdownScopeIdentity && markdownNavigation.isLoading
+    }
+
+    private var isMarkdownRefreshing: Bool {
+        markdownNavigation.scopeIdentity == markdownScopeIdentity && markdownNavigation.isRefreshing
+    }
+
+    /// 复用 README 原有的骨架 / 退场 / ready / 入场状态机，不再创建第二个 WebView。
+    private var presentedReadmeState: ReadmeViewModel.LoadState {
+        if isMarkdownLoading { return .loading }
+        if let document = scopedMarkdownDocument {
+            return .loaded(html: document.html, cachedAt: document.loadedAt)
+        }
+        return state
+    }
+
+    /// 空态和错误内容使用淡化；正文在稳定的 WebView 外层完成模糊与透明度交接。
     private var readmeContentTransition: AnyTransition {
-        guard !reduceMotion else { return .identity }
-        return .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.992, anchor: .topLeading)),
-            removal: .opacity
-        )
+        .opacity
+    }
+
+    /// 请求已在 VM 中立即开始；这里仅等旧页退场再更新 DOM，保持同一个 WKWebView。
+    /// HTML 到达后仅等当前 documentID 的正文 DOM 与布局就绪，不等媒体；取消的任务不得发布旧快照。
+    private func handOffReadmeDocument() async {
+        if retainedReadmeDocument != nil {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                withAnimation(.easeOut(duration: reduceMotion ? 0.06 : 0.12), completionCriteria: .removed) {
+                    isReadmeContentVisible = false
+                } completion: {
+                    continuation.resume()
+                }
+            }
+        }
+        guard !Task.isCancelled else { return }
+        failedReadmeDocumentID = nil
+        if let document = currentReadmeDocument {
+            if retainedReadmeDocument?.identity != document.identity {
+                renderedReadmeDocumentID = nil
+            }
+            retainedReadmeDocument = document
+            updateReadmeVisibility()
+        } else if showsReadmePlaceholder {
+            withAnimation(.easeOut(duration: reduceMotion ? 0.12 : 0.18)) {
+                isReadmeSkeletonVisible = true
+            }
+        } else {
+            // 空内容、登录提示和请求失败都是终态，必须结束骨架并保留重试入口。
+            retainedReadmeDocument = nil
+            renderedReadmeDocumentID = nil
+            withAnimation(.easeOut(duration: reduceMotion ? 0.12 : 0.24)) {
+                isReadmeSkeletonVisible = false
+            }
+        }
+    }
+
+    /// 缓存回切仍在当前 WebView 中时无需再次导航；其余正文必须等待对应 ready。
+    private func updateReadmeVisibility() {
+        let isReady = currentReadmeDocument?.identity == retainedReadmeDocument?.identity
+            && renderedReadmeDocumentID != nil
+            && renderedReadmeDocumentID == retainedReadmeDocument?.identity
+        withAnimation(.easeOut(duration: reduceMotion ? 0.12 : 0.24)) {
+            isReadmeContentVisible = isReady
+            isReadmeSkeletonVisible = !isReady
+        }
+    }
+
+    private func receiveReadmeReady(_ documentID: String) {
+        guard documentID == retainedReadmeDocument?.identity,
+              documentID == currentReadmeDocument?.identity else { return }
+        renderedReadmeDocumentID = documentID
+        failedReadmeDocumentID = nil
+        updateReadmeVisibility()
+    }
+
+    /// 渲染失败不能无限显示骨架；保留宿主并展示可恢复的错误入口。
+    private func receiveReadmeFailure(_ documentID: String) {
+        guard documentID == retainedReadmeDocument?.identity,
+              documentID == currentReadmeDocument?.identity else { return }
+        failedReadmeDocumentID = documentID
+        withAnimation(.easeOut(duration: reduceMotion ? 0.12 : 0.24)) {
+            isReadmeContentVisible = false
+            isReadmeSkeletonVisible = false
+        }
+    }
+
+    /// 重试只刷新当前失败的文档身份，不重建阅读器宿主或同仓库的其它编辑区域。
+    private func retryReadme() {
+        if failedReadmeDocumentID != nil {
+            readmeRetryGeneration += 1
+        }
+        if let target = scopedMarkdownDocument?.target {
+            openMarkdownInCurrentDetail(target, forceRefresh: true)
+        } else {
+            onRetry()
+        }
     }
 
     /// 切换 repo 时 `state` 可能仍停留在上一个 `.loaded`（onChange 晚于 body 一帧）；
     /// 此时只显示不透明骨架，避免叠在旧 WebView 上。
     private var showsReadmePlaceholder: Bool {
         if isStateStaleForScope { return true }
-        switch state {
+        switch presentedReadmeState {
         case .idle, .loading:
             return true
         case .loaded, .empty, .requiresLogin, .error:
@@ -544,12 +694,21 @@ struct ReadmeStateView: View {
     /// 当前 scope 已对齐时才生成可呈现文档，避免 A 仓的延迟结果覆盖 B 仓。
     private var currentReadmeDocument: PresentedReadmeDocument? {
         guard !isStateStaleForScope,
-              case .loaded(let html, let cachedAt) = state
+              case .loaded(let html, let cachedAt) = presentedReadmeState
         else { return nil }
+        if let document = scopedMarkdownDocument {
+            return PresentedReadmeDocument(
+                html: document.html,
+                cachedAt: document.loadedAt,
+                identity: "\(markdownScopeIdentity)|markdown:\(document.identity)|retry:\(readmeRetryGeneration)",
+                baseURL: document.target.contentBaseURL,
+                target: document.target
+            )
+        }
         return PresentedReadmeDocument(
             html: html,
             cachedAt: cachedAt,
-            identity: "\(refreshCommandIdentity)|\(readmeVM.activeDocumentID ?? "unidentified")",
+            identity: "\(markdownScopeIdentity)|\(readmeVM.activeDocumentID ?? "unidentified")|retry:\(readmeRetryGeneration)",
             baseURL: baseURL
         )
     }
@@ -640,6 +799,37 @@ struct ReadmeStateView: View {
         return nil
     }
 
+    /// WebKit 已完成同仓分类与 ⌘ 点击判断；这里只决定应用内的承载位置。
+    private func openRepositoryMarkdown(_ target: RepositoryMarkdownLinkTarget) {
+        guard let context = markdownWindowContext else { return }
+        switch settings.repositoryMarkdownOpenMode {
+        case .browser:
+            NSWorkspace.shared.open(target.browserURL)
+        case .newWindow:
+            ReadmeWindowController.showRepositoryMarkdown(
+                target: target, dependencies: dependencies, readmeAPI: context.readmeAPI
+            )
+        case .currentDetail:
+            openMarkdownInCurrentDetail(target)
+        }
+    }
+
+    private func openMarkdownInCurrentDetail(_ target: RepositoryMarkdownLinkTarget, forceRefresh: Bool = false) {
+        guard let context = markdownWindowContext else { return }
+        markdownNavigation.open(
+            target, scopeIdentity: markdownScopeIdentity, preservingDocument: forceRefresh
+        ) { target in
+            try await context.readmeAPI.fetchRenderedRepositoryMarkdown(
+                owner: target.owner, repo: target.repo, path: target.path, ref: target.ref,
+                forceRefresh: forceRefresh
+            )
+        }
+    }
+
+    private func returnToReadme() {
+        markdownNavigation.reset(scopeIdentity: markdownScopeIdentity)
+    }
+
     private var isStateStaleForScope: Bool {
         switch contentScope {
         case .manage(let repoId):
@@ -688,13 +878,25 @@ struct ReadmeStateView: View {
     }
 
     private var currentReadmeTranslationIdentity: String? {
-        guard let repo = translationControl?.repo else { return nil }
-        return ReadmeTranslationViewModel.readmeIdentity(for: repo)
+        currentTranslationControl?.identity
+    }
+
+    /// 文档翻译沿用现有独立缓存身份，语言版 README 不得与默认 README 共用译文。
+    private var currentTranslationControl: ReadmeTranslationControl? {
+        translationControl(for: currentReadmeDocument?.target)
+    }
+
+    private func translationControl(for target: RepositoryMarkdownLinkTarget?) -> ReadmeTranslationControl? {
+        guard var control = translationControl else { return nil }
+        if let target {
+            control.documentPath = "\(target.ref)/\(target.path)"
+        }
+        return control
     }
 
     /// repo + 已对齐文档的轻量身份。scope 未对齐时不算 loaded，避免用 A 的 HTML 给 B prepare。
     private var translationSyncKey: String {
-        let repoKey = translationControl.map { "\($0.repo.owner)/\($0.repo.name)" } ?? "none"
+        let repoKey = translationControl.map { "\($0.owner)/\($0.name)" } ?? "none"
         return "\(repoKey)|\(readmeDocumentToken)"
     }
 
@@ -702,7 +904,7 @@ struct ReadmeStateView: View {
         let vm = translationVMForBinding
         let language = settings.effectiveReadmeTranslationLanguage
         let mode = settings.readmeTranslationMode
-        guard let control = translationControl else {
+        guard let control = currentTranslationControl else {
             vm.prepare(
                 repo: nil,
                 sourceHtml: nil,
@@ -712,59 +914,35 @@ struct ReadmeStateView: View {
             )
             return
         }
-        let html: String?
-        if !isStateStaleForScope, case .loaded(let value, _) = state {
-            html = value
-        } else {
-            html = nil
-        }
         vm.prepare(
-            repo: control.repo,
-            sourceHtml: html,
+            identity: control.identity,
+            cacheOwner: control.cacheOwner,
+            cacheRepo: control.cacheRepo,
+            sourceHtml: currentReadmeDocument?.html,
             targetLanguage: language,
             mode: mode,
             engine: settings.readmeTranslationEngine
         )
     }
 
-    private func applyTranslationLanguage(_ newLanguage: ReadmeTranslationLanguage) {
-        guard let control = translationControl else { return }
-        let html: String? = {
-            if !isStateStaleForScope, case .loaded(let value, _) = state { return value }
-            return nil
-        }()
-        control.translationVM.changeLanguage(
-            to: newLanguage.resolved(),
-            repo: control.repo,
-            sourceHtml: html,
-            mode: settings.readmeTranslationMode,
-            engine: settings.readmeTranslationEngine
-        )
-    }
-
-    private func applyTranslationMode(_ newMode: ReadmeTranslationMode) {
-        guard let control = translationControl else { return }
-        let html: String? = {
-            if !isStateStaleForScope, case .loaded(let value, _) = state { return value }
-            return nil
-        }()
-        control.translationVM.changeMode(
-            to: newMode,
-            repo: control.repo,
-            sourceHtml: html,
-            targetLanguage: settings.effectiveReadmeTranslationLanguage,
-            engine: settings.readmeTranslationEngine
-        )
-    }
-
     /// 已加载 README 始终占据同一个结构分支；切 repo 时只更新现有 WKWebView 的文档。
     private func loadedReadmeContent(_ document: PresentedReadmeDocument) -> some View {
-        VStack(spacing: 0) {
+        let exportMarkdown: (() -> Void)? = document.target == nil
+            ? { exportReadmeMarkdown(dependencies: dependencies) }
+            : nil
+        let openMarkdown: ((RepositoryMarkdownLinkTarget) -> Void)? = markdownWindowContext == nil
+            ? nil
+            : { openRepositoryMarkdown($0) }
+        let approachingBottom: () -> Void = document.target == nil
+            ? effectiveOnApproachingBottom
+            : {}
+
+        return VStack(spacing: 0) {
             // 两种翻译方式都不替换整份 HTML。WebView 始终持有原始 DOM：
             // 分段模式追加译文，全文模式只替换 Text node，切换时无需重建原生视图。
             let renderedHtml = document.html
             let documentBaseURL = document.baseURL
-            let windowTitle = readmeWindowTitle
+            let windowTitle = document.target?.windowTitle ?? readmeWindowTitle
             let documentKey = document.identity
             let markdownContext = markdownWindowContext
             ReadmeWebView(
@@ -781,27 +959,21 @@ struct ReadmeStateView: View {
                         markdownContext: markdownContext
                     )
                 },
-                onExportMarkdown: { [dependencies] in
-                    exportReadmeMarkdown(dependencies: dependencies)
-                },
+                onExportMarkdown: exportMarkdown,
+                floatingToolbarTrailingPadding: 14,
                 markdownLinkRepositoryOwner: markdownContext?.owner,
                 markdownLinkRepositoryName: markdownContext?.repo,
-                onOpenRepositoryMarkdown: markdownContext.map { context in
-                    { target in
-                        ReadmeWindowController.showRepositoryMarkdown(
-                            target: target,
-                            dependencies: dependencies,
-                            readmeAPI: context.readmeAPI
-                        )
-                    }
-                },
+                onOpenRepositoryMarkdown: openMarkdown,
                 translationRenderState: scopedTranslationRenderState,
                 onTranslationSourceChange: { snapshot in
                     translationSourceDocumentKey = documentKey
                     translationSourceSnapshot = snapshot
                 },
-                starHistoryRenderState: effectiveStarHistoryRenderState,
-                onApproachingBottom: effectiveOnApproachingBottom
+                starHistoryRenderState: document.target == nil ? effectiveStarHistoryRenderState : .empty,
+                onApproachingBottom: approachingBottom,
+                onDocumentReady: receiveReadmeReady,
+                onDocumentFailed: receiveReadmeFailure,
+                allowsSameDocumentAnchors: document.target != nil
             )
             // 与 ActivityReleaseDetailContent 对齐：body slot 必须吃满 Scaffold 剩余
             // 高度，否则 WKWebView 在 VStack 里按零 intrinsic 高度布局 → 闪一下后空白。
@@ -829,6 +1001,7 @@ struct ReadmeStateView: View {
             .padding(.top, 8)
             cacheFooter(
                 cachedAt: document.cachedAt,
+                documentTarget: document.target,
                 sourceHtml: document.html,
                 sourceSnapshot: translationSourceDocumentKey == documentKey
                     ? translationSourceSnapshot
@@ -972,20 +1145,35 @@ struct ReadmeStateView: View {
     /// 把 `sourceHtml` 透给翻译按钮——按钮调 LLM 时需要把当前源 HTML 作为输入。
     private func cacheFooter(
         cachedAt: Date,
+        documentTarget: RepositoryMarkdownLinkTarget?,
         sourceHtml: String,
         sourceSnapshot: ReadmeTranslationSourceSnapshot
     ) -> some View {
         readmeStatusFooter {
             // 时钟和图文必须先合成一组。外层 footer 的 12pt 是给左侧状态与右侧按钮用的；
             // 若把 Image / Text 直接作为 HStack 子项，图标和「缓存于」会被拉开到 12pt。
-            HStack(spacing: 4) {
-                Image(systemName: "clock")
+            if let documentTarget {
+                Button("readme.document.backToReadme", action: returnToReadme)
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
                     .font(.caption2)
-                Text(String(format: String.l10n("readme.cachedAtFormat"), RelativeTimeText.pastEvent(cachedAt, locale: locale)))
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(verbatim: documentTarget.path)
                     .font(.caption2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(documentTarget.path)
+            } else {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.caption2)
+                    Text(String(format: String.l10n("readme.cachedAtFormat"), RelativeTimeText.pastEvent(cachedAt, locale: locale)))
+                        .font(.caption2)
+                }
             }
             Spacer()
-            if let control = translationControl {
+            if let control = translationControl(for: documentTarget) {
                 ReadmeTranslationFooterButton(
                     control: control,
                     sourceHtml: sourceHtml,
@@ -1030,12 +1218,12 @@ struct ReadmeStateView: View {
 
     private var readmeRefreshButton: some View {
         SyncIconButton(
-            isRefreshing: readmeVM.isRefreshing,
-            disabled: readmeVM.isRefreshing,
+            isRefreshing: isMarkdownRefreshing || readmeVM.isRefreshing,
+            disabled: isMarkdownRefreshing || readmeVM.isRefreshing,
             font: .caption2,
             frameSize: 18,
             tooltip: String.l10n("readme.refresh"),
-            action: onRetry
+            action: retryReadme
         )
     }
 }
@@ -1050,9 +1238,57 @@ struct ReadmeStateView: View {
 ///   周刊与星标走同一条路径。
 @MainActor
 struct ReadmeTranslationControl {
-    let repo: Repo
+    let owner: String
+    let name: String
+    let repositoryID: Int64?
+    /// Manage 的 Markdown 导出与私有仓库鉴权仍需要完整 Repo；下载窗口仅有仓库身份。
+    private(set) var repo: Repo?
     let translationVM: ReadmeTranslationViewModel
     let settings: AppSettings
+
+    /// nil 表示仓库 README；文件传入仓库内路径，复用控件时不能覆盖 README 的缓存。
+    var documentPath: String? = nil
+
+    init(
+        owner: String, name: String, repositoryID: Int64? = nil,
+        translationVM: ReadmeTranslationViewModel, settings: AppSettings, documentPath: String? = nil
+    ) {
+        self.owner = owner
+        self.name = name
+        self.repositoryID = repositoryID
+        self.repo = nil
+        self.translationVM = translationVM
+        self.settings = settings
+        self.documentPath = documentPath
+    }
+
+    /// 下载窗口可能没有入库仓库；身份只取 owner/name/path，不伪造 Repo 或 GitHub ID。
+    init(
+        repo: Repo, translationVM: ReadmeTranslationViewModel,
+        settings: AppSettings, documentPath: String? = nil
+    ) {
+        self.init(
+            owner: repo.owner, name: repo.name, repositoryID: repo.id,
+            translationVM: translationVM, settings: settings, documentPath: documentPath
+        )
+        self.repo = repo
+    }
+
+    var identity: String {
+        if let documentPath {
+            return "document:\(owner)/\(name):\(documentPath)"
+        }
+        return ReadmeTranslationViewModel.readmeIdentity(owner: owner, repo: name)
+    }
+
+    var cacheOwner: String {
+        documentPath == nil ? owner : "_starcat-documents"
+    }
+
+    /// 路径哈希是合法的单层目录名；不含 commit，让正文小改动继续复用已翻译段落。
+    var cacheRepo: String {
+        documentPath == nil ? name : ReadmeTranslationService.hash(identity)
+    }
 }
 
 /// README cacheFooter 区域的翻译入口按钮。
@@ -1069,6 +1305,8 @@ struct ReadmeTranslationFooterButton: View {
     let control: ReadmeTranslationControl
     let sourceHtml: String
     let sourceSnapshot: ReadmeTranslationSourceSnapshot
+    /// 文件工具栏沿用 Issues 的紧凑图标；README footer 保留原有文字入口。
+    var isCompact = false
 
     /// 翻译中时按钮 hover 状态——hover 显示 stop 图标 + tooltip 切"停止翻译"。
     ///
@@ -1091,38 +1329,53 @@ struct ReadmeTranslationFooterButton: View {
     }
 
     /// 判断当前是否展示译文，用于按钮文字 / icon 切换。
-    /// 必须绑当前仓：共享 VM 在探索 / 活动切条目后，displayMode 可能还停在上一仓。
+    /// 必须绑定文档：同一仓库的 README 和多个 Skill 各自持有独立译文。
     private var isShowingTranslation: Bool {
-        translationVM.isShowingTranslation(matching: currentRepoIdentity)
+        translationVM.isShowingTranslation(matching: control.identity)
     }
 
-    private var isTranslatingCurrentRepo: Bool {
-        translationVM.isActivelyTranslating(matching: currentRepoIdentity)
-    }
-
-    private var currentRepoIdentity: String {
-        ReadmeTranslationViewModel.readmeIdentity(for: control.repo)
+    private var isTranslatingCurrentDocument: Bool {
+        translationVM.isActivelyTranslating(matching: control.identity)
     }
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button {
-                if isTranslatingCurrentRepo {
-                    // 翻译中点击 = 用户主动停止：调 VM.cancelTranslation 取消正在跑的
-                    // Task + 复位 isTranslating + 不弹错误。下方 onHover 会在按钮失焦后
-                    // 把 isHoveringWhileTranslating 复位，恢复默认 icon 形态。
-                    translationVM.cancelTranslation()
-                } else {
-                    translationVM.toggleTranslation(
-                        repo: control.repo,
-                        sourceHtml: sourceHtml,
-                        sourceSegments: selectedSourceSegments,
-                        targetLanguage: settings.effectiveReadmeTranslationLanguage,
-                        mode: settings.readmeTranslationMode,
-                        engine: settings.readmeTranslationEngine
+        HStack(spacing: isCompact ? 0 : 4) {
+            if isCompact {
+                translationButton.toolbarIconHover()
+            } else {
+                translationButton
+            }
+            languageMenu
+        }
+    }
+
+    private var translationButton: some View {
+        Button {
+            if isTranslatingCurrentDocument {
+                // 翻译中保留点击入口用于取消；已完成段落继续由 VM 保留，稍后可接着翻译。
+                translationVM.cancelTranslation()
+            } else {
+                translationVM.toggleTranslation(
+                    identity: control.identity,
+                    cacheOwner: control.cacheOwner,
+                    cacheRepo: control.cacheRepo,
+                    repoId: control.repositoryID,
+                    sourceHtml: sourceHtml,
+                    sourceSegments: selectedSourceSegments,
+                    targetLanguage: settings.effectiveReadmeTranslationLanguage,
+                    mode: settings.readmeTranslationMode,
+                    engine: settings.readmeTranslationEngine
+                )
+            }
+        } label: {
+            if isCompact {
+                compactIconView
+                    .squareLogoActionChrome(
+                        side: 22,
+                        backgroundColor: isShowingTranslation
+                            ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.10)
                     )
-                }
-            } label: {
+            } else {
                 HStack(spacing: 4) {
                     iconView
                     Text(buttonTitle)
@@ -1130,29 +1383,54 @@ struct ReadmeTranslationFooterButton: View {
                 }
                 .foregroundStyle(isShowingTranslation ? .blue : .secondary)
             }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-            // 翻译中要让点击能落地触发 cancel，所以 disabled 条件改成：
-            //   - 翻译中：永远可点（点击 = 取消）；
-            //   - 非翻译中 + sourceHtml 为空：disabled（无内容可翻译 / 切换）。
-            .disabled(
-                !isTranslatingCurrentRepo
-                    && (sourceHtml.isEmpty || selectedSourceSegments.isEmpty)
-            )
-            .help(buttonTooltip)
-            .onHover { hovering in
-                // 只在翻译中跟踪 hover 切 icon；非翻译态不需要这个状态，确保切回
-                // 普通态时 isHoveringWhileTranslating 也被复位，防止下次进入翻译时
-                // 因残留 true 直接显示 stop 图标（虽然实际 hover 离开会立刻 false，
-                // 但额外守门更稳）。
-                if isTranslatingCurrentRepo {
-                    isHoveringWhileTranslating = hovering
-                } else if isHoveringWhileTranslating {
-                    isHoveringWhileTranslating = false
-                }
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .disabled(
+            !isTranslatingCurrentDocument
+                && (sourceHtml.isEmpty || selectedSourceSegments.isEmpty)
+        )
+        .help(buttonTooltip)
+        .accessibilityLabel(Text(isTranslatingCurrentDocument ? "readme.translate.tooltip.stop" : buttonTitle))
+        .onHover { hovering in
+            if isTranslatingCurrentDocument {
+                isHoveringWhileTranslating = hovering
+            } else if isHoveringWhileTranslating {
+                isHoveringWhileTranslating = false
             }
+        }
+    }
 
-            languageMenu
+    /// 与 Issues 同一图标画布和进度环；悬停只切可见层，进度不会重置。
+    @ViewBuilder
+    private var compactIconView: some View {
+        if isTranslatingCurrentDocument {
+            let total = translationVM.totalSegmentCount
+            let fraction = total > 0
+                ? min(max(Double(translationVM.completedSegmentCount) / Double(total), 0), 1) : 0
+            ZStack {
+                ZStack {
+                    Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: fraction)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: fraction)
+                }
+                .opacity(isHoveringWhileTranslating ? 0 : 1)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .opacity(isHoveringWhileTranslating ? 1 : 0)
+            }
+            .frame(width: 14, height: 14)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isHoveringWhileTranslating)
+            .accessibilityValue(Text(verbatim: "\(translationVM.completedSegmentCount)/\(total)"))
+        } else {
+            Image(systemName: isShowingTranslation ? "character.bubble.fill" : "character.bubble")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isShowingTranslation ? Color.accentColor : Color.primary)
+                .frame(width: 14, height: 14)
         }
     }
 
@@ -1170,7 +1448,7 @@ struct ReadmeTranslationFooterButton: View {
     /// 让 hover 切换有淡入淡出，避免硬切。
     @ViewBuilder
     private var iconView: some View {
-        if isTranslatingCurrentRepo {
+        if isTranslatingCurrentDocument {
             ZStack {
                 // 翻译中用 AI 标签整理行（BatchAITagReviewRow.statusIcon）同款思考球
                 // 替代系统菊花，统一「AI 在跑」的视觉语言；displaySize 12 适配本按钮
@@ -1204,16 +1482,21 @@ struct ReadmeTranslationFooterButton: View {
     /// 翻译中也保持"翻译"文字不变（仅图标 hover 切 stop），避免按钮宽度抖动。
     private var buttonTitle: LocalizedStringKey {
         if isShowingTranslation { return "readme.translate.showOriginal" }
-        if translationVM.cacheIsStale { return "readme.translate.staleAction" }
+        if translationVM.cacheIsStale {
+            // 文档入口复用通用的“重新翻译”，不能把 Skill 更新显示成“README 已更新”。
+            return control.documentPath == nil ? "readme.translate.staleAction" : "readme.translate.menu.regenerate"
+        }
         return "readme.translate.action"
     }
 
     private var buttonTooltip: LocalizedStringKey {
         // 翻译中 + hover → "停止翻译"，明确点击会取消而非其它操作。
-        if isTranslatingCurrentRepo && isHoveringWhileTranslating {
+        if isTranslatingCurrentDocument && isHoveringWhileTranslating {
             return "readme.translate.tooltip.stop"
         }
-        if isShowingTranslation { return "readme.translate.tooltip.showOriginal" }
+        if isShowingTranslation {
+            return control.documentPath == nil ? "readme.translate.tooltip.showOriginal" : "readme.translate.showOriginal"
+        }
         // 引擎可变后文案不再写死 AI，统一指向「所选翻译服务」。
         return "readme.translate.tooltip.translateService"
     }
@@ -1278,7 +1561,10 @@ struct ReadmeTranslationFooterButton: View {
 
             Button {
                 translationVM.regenerate(
-                    repo: control.repo,
+                    identity: control.identity,
+                    cacheOwner: control.cacheOwner,
+                    cacheRepo: control.cacheRepo,
+                    repoId: control.repositoryID,
                     sourceHtml: sourceHtml,
                     sourceSegments: selectedSourceSegments,
                     targetLanguage: settings.effectiveReadmeTranslationLanguage,
@@ -1289,7 +1575,7 @@ struct ReadmeTranslationFooterButton: View {
                 Label("readme.translate.menu.regenerate", systemImage: "arrow.clockwise")
             }
             .disabled(
-                isTranslatingCurrentRepo
+                isTranslatingCurrentDocument
                     || sourceHtml.isEmpty
                     || selectedSourceSegments.isEmpty
             )
@@ -1298,17 +1584,19 @@ struct ReadmeTranslationFooterButton: View {
             // 注意：只改 `.caption` / `.caption2` 对 chevron.down 光学差几乎看不出；
             // 用显式 12pt semibold，和排序菜单旁箭头同级可见。
             Image(systemName: "chevron.down")
-                .font(.system(size: 12, weight: .semibold))
+                .font(isCompact ? .caption : .system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 16, height: 16)
+                .frame(width: isCompact ? nil : 16, height: isCompact ? 22 : 16)
+                .padding(.horizontal, isCompact ? 2 : 0)
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         // Menu 默认会把 label 提亮成 primary；强制 secondary，避免比左侧气泡更亮、更抢眼。
         .tint(.secondary)
-        .frame(width: 18)
+        .frame(width: isCompact ? nil : 18, height: isCompact ? 22 : nil)
         .focusEffectDisabled()
+        .clickablePointer()
         .help("readme.translate.menu.tooltip")
         .task(id: settings.effectiveReadmeTranslationLanguage) {
             await refreshAvailableEngines()
@@ -1337,9 +1625,10 @@ struct ReadmeTranslationFooterButton: View {
 
 private struct StatItem: View {
     let label: LocalizedStringKey
-    let value: Int
+    let value: Int?
     let systemImage: String
     let tint: Color
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .center, spacing: 2) {
@@ -1347,7 +1636,7 @@ private struct StatItem: View {
                 Image(systemName: systemImage)
                     .foregroundStyle(tint)
                     .font(.system(size: 14))
-                Text(value, format: .number)
+                Text(value.map { $0.formatted(.number.locale(locale)) } ?? "-")
                     .monospacedDigit()
                     .font(.system(size: 14, weight: .medium))
             }
@@ -1459,7 +1748,7 @@ struct WatchersMenu: View {
                 }
             }
         } label: {
-            StatItem(label: "repo.watchers", value: repo.watchersCount, systemImage: "eye.fill", tint: StatSemanticColor.watchers.resolved(colorScheme: colorScheme))
+            StatItem(label: "repo.stats.watchers", value: repo.subscribersCount, systemImage: "eye.fill", tint: StatSemanticColor.watchers.resolved(colorScheme: colorScheme))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()

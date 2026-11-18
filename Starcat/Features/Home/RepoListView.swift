@@ -117,6 +117,8 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     let weeklyLanguageStore: WeeklyLanguageStore
     let weeklySelectionService: WeeklySelectionService
     let awesomeStore: AwesomeStore
+    let recommendationHistoryStore: DailyRecommendationStore
+    let recommendationHistoryModel: RecommendationHistoryListModel
     let activityCategoryCountService: ActivityCategoryCountService
 
     @Environment(\.locale) private var locale
@@ -187,6 +189,13 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     }
 
     private var exploreRepoCountSubtitle: String {
+        if selectedExploreMode == .recommendations {
+            // 历史有自己的反馈/关键词筛选，不继承其它探索页面的许可证筛选状态。
+            let current = recommendationHistoryModel.filtered.count
+            let total = recommendationHistoryStore.historyEntries.count
+            return current == total ? repoCountSubtitle(current)
+                : String(format: String.l10n("list.filteredRepoCountFormat"), current, total)
+        }
         // 来源 summary 是未过滤目录总数；许可证激活时分子改用完整派生结果，分母保留来源总量。
         if settings.licenseFilter.isActive {
             let current = selectedExploreMode == .discover && linuxDoStore.selectedSource == .linuxDo
@@ -225,6 +234,8 @@ private struct RepoListNavigationSubtitleModifier: ViewModifier {
     /// 后端 summary 没有交叉维度，只能使用列表 ViewModel 已发布的真实交集数量。
     private var exploreRepoCounts: (current: Int, total: Int?) {
         switch selectedExploreMode {
+        case .recommendations:
+            return (recommendationHistoryModel.filtered.count, recommendationHistoryStore.historyEntries.count)
         case .discover:
             // Linux.do 是独立目录，不能沿用普通 Discover 的 total，否则标题会显示
             // 与当前列表无关的全站发现数量。
@@ -456,6 +467,7 @@ private struct RepoBadgeCacheLoadIdentity: Hashable {
 }
 
 struct RepoListView: View {
+    @Namespace private var selectionSpace
 
     private static let navigationBreadcrumbSeparator = " › "
     private static let navigationBreadcrumbSegmentLimit = 24
@@ -481,6 +493,8 @@ struct RepoListView: View {
     var githubAPIClient: (any GitHubAPIClientProtocol)?
 
     let selectedPage: SidebarRootPage
+    let recommendationHistoryModel: RecommendationHistoryListModel
+    let onShowDailyRecommendations: () -> Void
     @Binding var selectedExploreMode: ExploreMode
     @Binding var selectedTrendingLanguage: TrendingLanguage
     /// 当前选中的 Trending repo ID（用于卡片高亮和 README 加载）。
@@ -533,11 +547,13 @@ struct RepoListView: View {
     @State private var codeFlowSheetItem: CodeGraphSheetItem?
     @State private var codebaseMemorySheetItem: CodeGraphSheetItem?
     /// 按文件勾选下载。与 CodeFlow 一样挂在页面根节点，避免 toolbar 重建把 sheet 闪回来。
-    @State private var fileBrowserSheetItem: RepoFileBrowserSheetItem?
+    @State private var workspaceWindow = WorkspaceSceneWindowReference()
     /// GitHub 组织可限制第三方 OAuth App 访问仓库节点；这类错误需要结构化解释原因。
     @State private var gitHubStarListOAuthRestrictedRepo: Repo?
     /// 列表顶栏「同步于」文案；会话内跟 `SyncManager.state`，冷启动读 DB `last_sync_at`。
     @State private var lastSyncedAt: Date?
+    /// 胶囊点击立即请求回顶；不监听同步完成，避免网络返回后再次打断用户滚动。
+    @State private var externalStarInboxScrollRequestRevision = 0
     /// Manage 仓库卡片分类共用快速搜索；草稿与已提交查询分离，避免每次输入都触发 FTS。
     @State private var isManageQuickSearchExpanded = false
     @State private var manageQuickSearchDraft = ""
@@ -545,6 +561,7 @@ struct RepoListView: View {
     @State private var navigationMetrics = RepoListNavigationMetrics()
     /// 摘要存在状态与导航计数同样局部观察，避免摘要生成后重算整个页面根视图。
     @State private var aiSummaryAvailability = RepoListAISummaryAvailability()
+    @State private var noteAvailability = RepoListNoteAvailability()
     /// 已成功补齐徽章缓存的列表前缀。append 不 bump revision，因此可只加载新增页；
     /// reset / filter / sort 导致 revision 变化时会从 0 重新核对新列表。
     @State private var badgeCacheLoadedItemsRevision: Int?
@@ -559,11 +576,13 @@ struct RepoListView: View {
     /// Explore / Activity 的 View 会随 `selectedPage` 条件分支创建和销毁；这里只持有
     /// ViewModel 与数据快照，不常驻隐藏的 List，从而兼顾模块回切缓存和稳定布局成本。
     @State private var discoveryViewModel = ExploreDiscoveryViewModel()
+    @State private var linuxDoListModel = LinuxDoListModel()
     @State private var trendingViewModel: TrendingViewModel?
     @State private var weeklyViewModel: WeeklyContentViewModel?
     @State private var activityViewModel: ActivityViewModel?
     @State private var showingInterestedLanguagePicker = false
     @State private var interestedLanguageDraft = ""
+    @State private var languageFilterContentHeight: CGFloat = 30
 
     var body: some View {
         @Bindable var vm = viewModel
@@ -602,7 +621,8 @@ struct RepoListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .toast(message: $toastMessage, icon: "doc.on.clipboard")
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if viewModel.effectiveGlobalFilterState.skillFilter != .any { RepoSkillCoverageBanner() }
+            if !(selectedPage == .trending && selectedExploreMode == .recommendations),
+               viewModel.effectiveGlobalFilterState.skillFilter != .any { RepoSkillCoverageBanner() }
         }
         .onPreferenceChange(RepoLicenseOptionsPreferenceKey.self) { keys in
             navigationMetrics.licenseOptions = keys
@@ -622,14 +642,7 @@ struct RepoListView: View {
                 .id(item.id)
                 .appSheetRootEnvironment(dependencies)
         }
-        .sheet(item: $fileBrowserSheetItem) { item in
-            RepoFileBrowserSheet(
-                target: item.target,
-                apiClient: dependencies.apiClient
-            )
-            .id(item.id)
-            .appSheetRootEnvironment(dependencies)
-        }
+        .background(WorkspaceSceneWindowReader(reference: workspaceWindow, minimumContentSize: nil))
         .onAppear {
             // Browser Plugin 请求可能先于主窗口恢复到达；窗口重新挂载时需要补消费
             // 已保存的 pendingRequest，否则用户关闭主窗口后点击 Open in Starcat 无响应。
@@ -652,7 +665,10 @@ struct RepoListView: View {
         .onChange(of: selectedExploreMode) { _, newMode in
             // 探索模块切换子模式时保留多选开关状态，但清空选中项（不同列表 repo 不同）
             let store = dependencies.exploreMultiSelectionStore
-            if store.isActive {
+            if newMode == .recommendations {
+                // 历史页的选择仅用于回看，不延续其它列表的批量操作。
+                store.exit()
+            } else if store.isActive {
                 store.clearSelection()
             }
             if newMode != .weekly {
@@ -772,6 +788,8 @@ struct RepoListView: View {
                 weeklyLanguageStore: dependencies.weeklyLanguageStore,
                 weeklySelectionService: dependencies.weeklySelectionService,
                 awesomeStore: dependencies.awesomeStore,
+                recommendationHistoryStore: dependencies.dailyRecommendationStore,
+                recommendationHistoryModel: recommendationHistoryModel,
                 activityCategoryCountService: dependencies.activityCategoryCountService
             ))
             .navigationTitle(navigationTitle)
@@ -895,6 +913,10 @@ struct RepoListView: View {
     ///
     /// Explore weekly 走 `WeeklySelectionService` 真源。
     private var listColumnTintColor: Color {
+        if selectedPage == .trending, selectedExploreMode == .recommendations {
+            guard let language = recommendationHistoryModel.selectedEntry?.item?.language else { return .accentColor }
+            return LanguageColor.color(for: language)
+        }
         if selectedPage == .trending, selectedExploreMode == .weekly,
            let project = dependencies.weeklySelectionService.selectedItem {
             return DetailHeroTintBackground.accentColor(
@@ -942,7 +964,7 @@ struct RepoListView: View {
             }
         case .trending:
             let store = exploreMultiSelectionStore
-            if store.isActive {
+            if selectedExploreMode != .recommendations, store.isActive {
                 BatchActionBar(
                     context: .explore,
                     store: store,
@@ -978,6 +1000,9 @@ struct RepoListView: View {
         switch selectedPage {
         case .manage:    return makeManageToolbarSpec()
         case .trending:
+            if selectedExploreMode == .recommendations {
+                return makeRecommendationHistoryToolbarSpec()
+            }
             if selectedExploreMode == .trending {
                 return makeTrendingToolbarSpec()
             }
@@ -988,6 +1013,24 @@ struct RepoListView: View {
         case .activity:  return makeActivityToolbarSpec()
         case .insights:  return .empty
         }
+    }
+
+    /// 历史页只发布当前历史项目的操作，不能借用上一次 Discovery 选择或无关的全局筛选。
+    @MainActor
+    private func makeRecommendationHistoryToolbarSpec() -> PageToolbarSpec {
+        let trailing = recommendationHistoryModel.selectedEntry?.item.map { item in
+            let repo = dependencies.starredRegistry.applyingDisplayState(to: item.dailyRecommendationRepo)
+            return AnyView(selectedRepoToolbarActions(
+                selection: ToolbarRepoSelection.from(repo: repo, isStarred: repo.isStarred),
+                codeFlowRepo: repo,
+                repoID: repo.id
+            ))
+        }
+        return PageToolbarSpec(
+            leadingPrimary: nil,
+            trailingPrimary: trailing,
+            searchField: AnyView(globalSearchButton)
+        )
     }
 
     /// Trending 页面 toolbar spec（W12 PR-4）：
@@ -1261,17 +1304,17 @@ struct RepoListView: View {
         Divider()
         RepoSkillFilterSection(selection: globalFilterBinding(\.skillFilter))
         Divider()
-        availabilityPicker(
+        availabilityFilterSection(
             title: "list.filter.wikiAvailability",
             icon: "doc.text.magnifyingglass",
             selection: globalFilterBinding(\.wikiAvailabilityFilter)
         )
-        availabilityPicker(
+        availabilityFilterSection(
             title: "list.filter.healthAvailability",
             icon: "heart.text.square",
             selection: globalFilterBinding(\.healthAvailabilityFilter)
         )
-        availabilityPicker(
+        availabilityFilterSection(
             title: "list.filter.openSSFAvailability",
             icon: "checkmark.shield",
             selection: globalFilterBinding(\.openSSFAvailabilityFilter)
@@ -1424,7 +1467,15 @@ struct RepoListView: View {
             },
             onOpenFileBrowser: { target in
                 AppLog.ui.info("Open file browser selection=\(target.fullName, privacy: .public) ref=\(target.ref, privacy: .public)")
-                fileBrowserSheetItem = RepoFileBrowserSheetItem(target: target)
+                RepoWorkspaceWindowController.present(
+                    identifier: "files", title: target.fullName,
+                    parent: workspaceWindow.window, dependencies: dependencies
+                ) { close in
+                    RepoFileBrowserSheet(
+                        target: target, apiClient: dependencies.apiClient,
+                        translationService: dependencies.readmeTranslationService, onClose: close
+                    )
+                }
             }
         )
         .id(actionIdentity)
@@ -1453,6 +1504,9 @@ struct RepoListView: View {
                     trendingRepository: trendingRepository,
                     githubAPIClient: githubAPIClient,
                     discoveryViewModel: discoveryViewModel,
+                    linuxDoListModel: linuxDoListModel,
+                    recommendationHistoryModel: recommendationHistoryModel,
+                    onShowDailyRecommendations: onShowDailyRecommendations,
                     trendingViewModel: $trendingViewModel,
                     weeklyViewModel: $weeklyViewModel,
                     selectedMode: $selectedExploreMode,
@@ -1499,6 +1553,7 @@ struct RepoListView: View {
     /// 账号 / 用户数据库边界必须硬失效，禁止跨用户复用 Explore / Activity 快照。
     private func resetRepoListModuleSession() {
         discoveryViewModel = ExploreDiscoveryViewModel()
+        linuxDoListModel = LinuxDoListModel()
         trendingViewModel = nil
         weeklyViewModel = nil
         activityViewModel = nil
@@ -1576,6 +1631,7 @@ struct RepoListView: View {
                    viewModel.selection == .allStars,
                    !externalStarInbox.pending.isEmpty {
                     ExternalStarInboxCapsule(items: externalStarInbox.pending) {
+                        externalStarInboxScrollRequestRevision &+= 1
                         externalStarInbox.apply()
                     }
                     .padding(.top, 10)
@@ -1955,7 +2011,9 @@ struct RepoListView: View {
                             repo: pinned,
                             viewModel: viewModel,
                             aiSummaryAvailability: aiSummaryAvailability,
-                            isSelected: selection.wrappedValue == pinned.id
+                            noteAvailability: noteAvailability,
+                            isSelected: selection.wrappedValue == pinned.id,
+                            selectionNamespace: store.isActive ? nil : selectionSpace
                         )
                     }
                     .buttonStyle(.plain)
@@ -1989,9 +2047,11 @@ struct RepoListView: View {
                             repo: repo,
                             viewModel: viewModel,
                             aiSummaryAvailability: aiSummaryAvailability,
+                            noteAvailability: noteAvailability,
                             isSelected: store.isActive
                                 ? store.contains(ghRepoId: repo.id)
-                                : (selection.wrappedValue == repo.id)
+                                : (selection.wrappedValue == repo.id),
+                            selectionNamespace: store.isActive ? nil : selectionSpace
                         )
                         .background {
                             if item.index == 0 {
@@ -2044,6 +2104,20 @@ struct RepoListView: View {
             .onDisappear {
                 listInteractionController.cancel()
             }
+            .onChange(of: externalStarInboxScrollRequestRevision) { _, _ in
+                // 临时定位卡片可能独立于分页列表存在，回顶必须定位实际第一行。
+                let firstRepoID: Int64?
+                if let pinned = viewModel.temporaryPinnedRepo,
+                   !viewModel.items.contains(where: { $0.id == pinned.id }) {
+                    firstRepoID = pinned.id
+                } else {
+                    firstRepoID = viewModel.items.first?.id
+                }
+                guard let firstRepoID else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(firstRepoID, anchor: .top)
+                }
+            }
             // 阅读状态 v2（2026-06-12）：订阅 .repoStatusDidChange，详情页改 status 后
             // HomeViewModel.statusMap 局部更新 → UnifiedRepoRow.readStatus 重渲染 → 角标即时刷新。
             // task 与 view lifetime 绑定（view 退出自动 cancel），不会泄漏 NotificationCenter observer。
@@ -2053,7 +2127,13 @@ struct RepoListView: View {
             .task(id: dependencies.databaseScopeRevision) {
                 // 以数据库真正完成 reopen 为准，不能使用可能提前恢复的登录 profile 作为切库信号。
                 aiSummaryAvailability.resetForDatabaseChange()
+                noteAvailability.resetForDatabaseChange()
+                await noteAvailability.reload(from: dependencies.repoNoteRepository)
                 await aiSummaryAvailability.reload(from: dependencies.aiSummaryRepository)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .repoNoteContentDidChange)) { notification in
+                guard let repoID = notification.userInfo?["repoId"] as? Int64 else { return }
+                noteAvailability.apply(repoID: repoID, content: notification.userInfo?["content"] as? String)
             }
             .task {
                 await observeAISummaryChanges()
@@ -2405,6 +2485,16 @@ struct RepoListView: View {
     }
 
     private var exploreNavigationTitle: Text {
+        if selectedExploreMode == .recommendations {
+            let dateTitle = recommendationHistoryModel.dateScope.title(locale: locale)
+            let scopeTitle = recommendationHistoryModel.filter == .all ? dateTitle
+                : "\(dateTitle) · \(String.l10n(recommendationHistoryModel.filter.titleKey))"
+            return highlightedNavigationTitle(
+                prefix: [String.l10n("nav.trending"), selectedExploreMode.localizedTitle]
+                    .joined(separator: Self.navigationBreadcrumbSeparator),
+                thirdLevelTitle: scopeTitle
+            )
+        }
         let presentation = ExploreNavigationPresentation.make(
             mode: selectedExploreMode,
             discoverySource: dependencies.linuxDoStore.selectedSource,
@@ -2679,20 +2769,27 @@ struct RepoListView: View {
         VStack(alignment: .leading, spacing: 4) {
             filterSectionHeader(title: "list.filter.status", icon: "tray.full")
 
-            Picker(selection: selection) {
-                // 「全部」也挂图标避免下拉里出现"3 个 Label + 1 个裸 Text"的不对齐视觉。
-                // `tray.full` 与下方 envelope.badge / envelope.open / checkmark.seal
-                // 同邮件视觉系统，语义"收件箱全在这"。
-                Label("general.all", systemImage: "tray.full").tag(RepoStatus?.none)
-                ForEach(RepoStatus.allCases, id: \.self) { st in
-                    Label(st.displayName, systemImage: statusIcon(for: st))
-                        .tag(RepoStatus?.some(st))
+            RepoFilterTabs(
+                label: "list.filter.status",
+                options: [RepoStatus?.none] + RepoStatus.allCases.map { Optional($0) },
+                selection: selection,
+                title: { $0?.displayName ?? "general.all" },
+                shortTitle: { status in
+                    guard let status else { return "general.all" }
+                    return status == .using ? "list.filter.status.short.using" : status.displayName
+                },
+                symbol: { status in
+                    status.map { statusIcon(for: $0) } ?? "tray.full"
+                },
+                color: { status in
+                    switch status {
+                    case .none: .blue
+                    case .some(.unread): .orange
+                    case .some(.read): .green
+                    case .some(.using): .purple
+                    }
                 }
-            } label: {
-                EmptyView()
-            }
-            .labelsHidden()
-            .pickerStyle(.inline)
+            )
         }
     }
 
@@ -2700,16 +2797,27 @@ struct RepoListView: View {
         VStack(alignment: .leading, spacing: 4) {
             filterSectionHeader(title: "list.filter.starStatus", icon: "star.circle")
 
-            Picker(selection: selection) {
-                ForEach(RepoStarFilter.allCases, id: \.self) { filter in
-                    Label(filter.displayName, systemImage: starFilterIcon(for: filter))
-                        .tag(filter)
+            RepoFilterTabs(
+                label: "list.filter.starStatus",
+                options: RepoStarFilter.allCases,
+                selection: selection,
+                title: \.displayName,
+                shortTitle: { filter in
+                    switch filter {
+                    case .all: "general.all"
+                    case .starred: "list.filter.starStatus.short.starred"
+                    case .unstarred: "list.filter.starStatus.short.unstarred"
+                    }
+                },
+                symbol: { starFilterIcon(for: $0) },
+                color: { filter in
+                    switch filter {
+                    case .all: .blue
+                    case .starred: .yellow
+                    case .unstarred: .secondary
+                    }
                 }
-            } label: {
-                EmptyView()
-            }
-            .labelsHidden()
-            .pickerStyle(.inline)
+            )
         }
     }
 
@@ -2717,16 +2825,20 @@ struct RepoListView: View {
         VStack(alignment: .leading, spacing: 4) {
             filterSectionHeader(title: "list.filter.library", icon: "heart.text.square")
 
-            Picker(selection: selection) {
-                ForEach(RepoLibraryFilter.allCases, id: \.self) { filter in
-                    Label(filter.displayName, systemImage: libraryFilterIcon(for: filter))
-                        .tag(filter)
+            RepoFilterTabs(
+                label: "list.filter.library",
+                options: RepoLibraryFilter.allCases,
+                selection: selection,
+                title: \.displayName,
+                symbol: { libraryFilterIcon(for: $0) },
+                color: { filter in
+                    switch filter {
+                    case .all: .blue
+                    case .inLibrary: .green
+                    case .outsideLibrary: .secondary
+                    }
                 }
-            } label: {
-                EmptyView()
-            }
-            .labelsHidden()
-            .pickerStyle(.inline)
+            )
         }
     }
 
@@ -2751,31 +2863,48 @@ struct RepoListView: View {
                     interestedLanguagePickerPopover
                         .frame(width: 280, height: 300)
                         .padding(14)
+                        .appLocaleEnvironment()
                 }
             }
 
-            if !viewModel.effectiveGlobalFilterState.globalFilterLanguages.isEmpty {
-                Button {
-                    viewModel.clearLanguageFiltersFromUser()
-                } label: {
-                    Label("list.filter.language.clearSelection", systemImage: "xmark.circle")
+            ScrollView {
+                TagChipFlowLayout(spacing: 6, constrainsItemWidth: true) {
+                    RepoLanguageFilterChip(
+                        title: String.l10n("general.all"),
+                        isSelected: viewModel.effectiveGlobalFilterState.globalFilterLanguages.isEmpty,
+                        action: { viewModel.clearLanguageFiltersFromUser() },
+                        helpText: String.l10n("list.filter.language.clearSelection")
+                    ) {
+                        Image(systemName: "globe")
+                    }
+                    ForEach(settings.interestedLanguages, id: \.self) { language in
+                        let selected = globalLanguageBinding(for: language)
+                        RepoLanguageFilterChip(
+                            title: LanguageDisplayName.shortened(for: language),
+                            isSelected: selected.wrappedValue,
+                            action: { selected.wrappedValue.toggle() },
+                            helpText: language
+                        ) {
+                            FilterMenuLanguageIcon(language: language, size: 14)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(3)
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    languageFilterContentHeight = height
                 }
             }
+            .contentMargins(.trailing, 10, for: .scrollContent)
+            // 与许可证保持约四行的视口；少量语言自然收缩，其余仍可滚动选择。
+            .frame(height: min(languageFilterContentHeight, 4 * 24 + 3 * 6 + 6))
 
             if settings.interestedLanguages.isEmpty {
                 Text("settings.filters.interestedLanguages.empty")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
-                ForEach(settings.interestedLanguages, id: \.self) { language in
-                    Toggle(isOn: globalLanguageBinding(for: language)) {
-                        Label {
-                            Text(LanguageDisplayName.shortened(for: language))
-                        } icon: {
-                            FilterMenuLanguageIcon(language: language, size: 14)
-                        }
-                    }
-                }
             }
         }
     }
@@ -2801,7 +2930,7 @@ struct RepoListView: View {
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             } else {
-                List(results, id: \.self) { language in
+                List(Array(results.enumerated()), id: \.element) { index, language in
                     Button {
                         toggleInterestedLanguageFromFilter(language)
                     } label: {
@@ -2818,6 +2947,7 @@ struct RepoListView: View {
                     }
                     .buttonStyle(.plain)
                     .focusEffectDisabled()
+                    .listRowSurface(index: index, isSelected: isInterestedLanguage(language))
                 }
                 .listStyle(.plain)
             }
@@ -2851,7 +2981,7 @@ struct RepoListView: View {
         }
     }
 
-    private func availabilityPicker(
+    private func availabilityFilterSection(
         title: LocalizedStringKey,
         icon: String,
         selection: Binding<RepoSignalAvailabilityFilter>
@@ -2859,16 +2989,20 @@ struct RepoListView: View {
         VStack(alignment: .leading, spacing: 4) {
             filterSectionHeader(title: title, icon: icon)
 
-            Picker(selection: selection) {
-                ForEach(RepoSignalAvailabilityFilter.allCases, id: \.self) { filter in
-                    Label(availabilityFilterTitle(for: filter), systemImage: availabilityFilterIcon(for: filter, fallback: icon))
-                        .tag(filter)
+            RepoFilterTabs(
+                label: title,
+                options: RepoSignalAvailabilityFilter.allCases,
+                selection: selection,
+                title: { availabilityFilterTitle(for: $0) },
+                symbol: { availabilityFilterIcon(for: $0, fallback: icon) },
+                color: { filter in
+                    switch filter {
+                    case .unknown: .blue
+                    case .available: .green
+                    case .missing: .secondary
+                    }
                 }
-            } label: {
-                EmptyView()
-            }
-            .labelsHidden()
-            .pickerStyle(.inline)
+            )
         }
     }
 
@@ -2936,7 +3070,9 @@ private struct ManageRepoRowContent: View {
     let repo: Repo
     let viewModel: HomeViewModel
     let aiSummaryAvailability: RepoListAISummaryAvailability
+    let noteAvailability: RepoListNoteAvailability
     let isSelected: Bool
+    var selectionNamespace: Namespace.ID? = nil
 
     @Environment(AppDependencies.self) private var dependencies
 
@@ -2958,7 +3094,9 @@ private struct ManageRepoRowContent: View {
             isPinned: viewModel.isRepoPinned(repo.id),
             semanticHit: viewModel.semanticHit(for: repo.id),
             showLibraryBadge: !isKnowledgeLibraryList,
-            hasAISummary: aiSummaryAvailability.contains(repo.id)
+            hasAISummary: aiSummaryAvailability.contains(repo.id),
+            hasNote: noteAvailability.contains(repo.id),
+            selectionNamespace: selectionNamespace
         )
     }
 

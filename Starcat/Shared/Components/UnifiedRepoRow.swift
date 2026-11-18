@@ -144,12 +144,17 @@ struct UnifiedRepoRow: View {
     /// 当前仓库是否至少存在一份 AI 摘要。
     /// 默认关闭，只有星标管理列表显式注入，避免 Trending / Weekly 等共享行误显示本地状态。
     let hasAISummary: Bool
+    /// 仅管理列表注入已保存的非空正文，不从卡片自行查询持久化层。
+    let hasNote: Bool
 
     /// 右侧 overlay 图标需要的内容安全边界。默认 0，只有 Search Center「全部」
     /// Tab 的来源图标会传入，避免长描述延伸到右侧 overlay 下方。
     let trailingReservedWidth: CGFloat
+    /// 持续单选列表共享背景滑动；未提供 namespace 时保留各行独立选中。
+    let selectionNamespace: Namespace.ID?
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(AppDependencies.self) private var dependencies
 
     /// 中栏 Forks 与详情 / Smart Collection 同源：语义蓝。
@@ -171,7 +176,9 @@ struct UnifiedRepoRow: View {
         showLibraryBadge: Bool = true,
         showReadStatusBadge: Bool = true,
         hasAISummary: Bool = false,
-        trailingReservedWidth: CGFloat = 0
+        hasNote: Bool = false,
+        trailingReservedWidth: CGFloat = 0,
+        selectionNamespace: Namespace.ID? = nil
     ) {
         self.card = card
         self.isSelected = isSelected
@@ -181,11 +188,13 @@ struct UnifiedRepoRow: View {
         self.showLibraryBadge = showLibraryBadge
         self.showReadStatusBadge = showReadStatusBadge
         self.hasAISummary = hasAISummary
+        self.hasNote = hasNote
         self.trailingReservedWidth = trailingReservedWidth
+        self.selectionNamespace = selectionNamespace
     }
 
     var body: some View {
-        RepoRowSurface(isSelected: isSelected, accentColor: accentColor) {
+        RepoRowSurface(isSelected: isSelected, accentColor: accentColor, selectionNamespace: selectionNamespace) {
             HStack(alignment: .center, spacing: 12) {
 
                 // 头像 + 知识库 ❤️ + 「activity kind icon」徽章覆盖（仅 Activity 场景）
@@ -279,7 +288,17 @@ struct UnifiedRepoRow: View {
                                 formatKey: semanticScoreFormatKey
                             )
                         }
+                        if hasNote {
+                            // 与详情页共用系统蓝色表达已有笔记，避免深色卡片上的灰色标识不易辨认。
+                            MetaBadge(
+                                businessIcon: .notes, text: "", tint: .blue,
+                                iconOnly: true, accessibilityLabel: "repo.notes.available"
+                            )
+                            .help(String.l10n("repo.notes.available"))
+                            .transition(.opacity)
+                        }
                     }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hasNote)
                     .lineLimit(1)
                     .clipped()
                 }

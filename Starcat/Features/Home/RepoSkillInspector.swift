@@ -2,7 +2,7 @@
 //  RepoSkillInspector.swift
 //  Starcat
 //
-//  安装工作区右栏：目录多选、逐目录覆盖状态与逐 Skill 的安装队列。
+//  安装工作区右栏：Agent 胶囊直接操作、批量目标、授权目录与逐 Skill 的任务队列。
 //
 
 import SwiftUI
@@ -16,12 +16,18 @@ struct RepoSkillInspector: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 12) {
+            LazyVStack(spacing: 12) {
                 configuration
                 progress
-                if !session.conflicts.isEmpty { conflict }
+                if !session.conflicts.isEmpty
+                    && !(session.isUninstalling && (session.isInstalling || session.hasFailures || session.phase == .cancelled)) {
+                    conflict
+                }
             }
-            .padding(14)
+            // 始终显示滚动条时，尾侧保留避让，不让胶囊或操作按钮进入滚动条覆盖区。
+            .padding(.leading, 14)
+            .padding(.trailing, 20)
+            .padding(.vertical, 14)
         }
         .background(Color.primary.opacity(0.02))
     }
@@ -40,12 +46,24 @@ struct RepoSkillInspector: View {
                 .padding(.trailing, 12)
             }
             Divider()
-            VStack(spacing: 0) {
-                ForEach(session.destinations) { destination in
-                    destinationRow(destination)
-                    if destination.id != session.destinations.last?.id {
-                        Divider().padding(.leading, 30)
+            if !session.agentTargets.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    TagChipFlowLayout(spacing: 8, constrainsItemWidth: true) {
+                        ForEach(session.agentTargets) { target in
+                            RepoSkillAgentChip(session: session, target: target)
+                        }
                     }
+                    Text("repo.skills.agents.hint")
+                        .font(interfaceScale.font(.captionSmall))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(session.destinations.filter { $0.preset == nil }.enumerated()), id: \.element.id) { index, destination in
+                    destinationRow(destination)
+                        .listRowSurface(index: index)
                 }
                 if session.destinations.isEmpty {
                     Text("repo.skills.destination.choose")
@@ -56,10 +74,22 @@ struct RepoSkillInspector: View {
                 }
             }
             HStack {
+                if DistributionChannel.current.isDirect {
+                    Menu("repo.skills.agents.more") {
+                        ForEach(RepoSkillTargetPreset.allCases.filter { preset in
+                            !session.agentTargets.contains { $0.preset == preset }
+                        }) { preset in
+                            Button(preset.agent.name) { Task { await session.addAgent(preset) } }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
                 Spacer()
                 Button("repo.skills.destination.choose") { session.chooseDirectory() }
-                    .controlSize(.small)
             }
+            .font(interfaceScale.font(.body))
+            .controlSize(.regular)
             .padding(10)
             .disabled(session.isInstalling)
             if session.isExport {
@@ -73,55 +103,61 @@ struct RepoSkillInspector: View {
         .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.11)) }
     }
 
-    /// 两行主信息加一条通用目录说明；整个 Toggle 标签均可点击，删除独立放在行尾。
+    /// 删除操作紧跟路径并独立于 Toggle，避免删除目录时误切换勾选状态。
     private func destinationRow(_ destination: RepoSkillDestination) -> some View {
         let isSelected = session.selectedDestinationIDs.contains(destination.id)
         let isPreset = destination.preset != nil
         let check = session.checks[destination.id]
-        return HStack(alignment: .center, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 4) {
             Toggle(isOn: Binding(
                 get: { isSelected },
                 set: { _ in session.toggleDestination(destination.id) }
             )) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(LocalizedStringKey(destinationTitle(destination)))
-                            .font(interfaceScale.font(.body, weight: .medium))
-                            .lineLimit(1)
-                        Spacer(minLength: 2)
-                        destinationStatus(check)
-                    }
-                    Text(verbatim: destination.displayPath)
-                        .font(interfaceScale.font(.code))
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(LocalizedStringKey(destinationTitle(destination)))
+                        .font(interfaceScale.font(.body, weight: .medium))
                         .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(destination.url.path)
-                    if destination.preset == .agents {
-                        Text("repo.skills.target.agentsNote")
-                            .font(interfaceScale.font(.captionSmall))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
+                    Spacer(minLength: 2)
+                    destinationStatus(check)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 4)
             }
             .toggleStyle(.checkbox)
             .disabled(session.isInstalling)
-            if !isPreset {
-                Button {
-                    session.removeDirectory(destination.id)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(verbatim: destination.displayPath)
+                    .font(interfaceScale.font(.code))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(destination.url.path)
+                if !isPreset {
+                    Button {
+                        session.removeDirectory(destination.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .fixedSize()
+                    .help("repo.skills.target.remove")
+                    .accessibilityLabel(Text("repo.skills.target.remove"))
+                    .disabled(session.isInstalling)
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .help("repo.skills.target.remove")
-                .accessibilityLabel(Text("repo.skills.target.remove"))
-                .disabled(session.isInstalling)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 24)
+            if destination.preset == .agents {
+                Text("repo.skills.target.agentsNote")
+                    .font(interfaceScale.font(.captionSmall))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(.leading, 24)
             }
         }
         .padding(10)
@@ -132,6 +168,7 @@ struct RepoSkillInspector: View {
         switch destination.preset {
         case .agents: "repo.skills.target.agents"
         case .claudeCode: "repo.skills.target.claude"
+        case .some(let preset): preset.agent.name
         case nil: "repo.skills.target.custom"
         }
     }
@@ -172,7 +209,8 @@ struct RepoSkillInspector: View {
     private var progress: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                sectionTitle("repo.skills.progress.title", symbol: "arrow.down.to.line")
+                sectionTitle(session.isUninstalling ? "repo.skills.uninstall.progress" : "repo.skills.progress.title",
+                             symbol: session.isUninstalling ? "trash" : "arrow.down.to.line")
                 Spacer(minLength: 2)
                 Text(verbatim: "\(session.displayedQueue.filter { $0.status == .succeeded }.count) / \(session.displayedQueue.count)")
                     .font(interfaceScale.font(.caption))
@@ -181,12 +219,12 @@ struct RepoSkillInspector: View {
                     .padding(.trailing, 12)
             }
             Divider()
-            VStack(spacing: 12) {
-                ForEach(session.skills.filter { skill in session.displayedQueue.contains { $0.skill.id == skill.id } }) { skill in
-                    let items = session.displayedQueue.filter { $0.skill.id == skill.id }
+            LazyVStack(spacing: 12) {
+                ForEach(session.displayedGroups) { group in
+                    let items = group.items
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text(verbatim: skill.name)
+                            Text(verbatim: group.skill.name)
                                 .font(interfaceScale.font(.body, weight: .semibold))
                                 .lineLimit(1)
                             Spacer(minLength: 4)
@@ -195,7 +233,10 @@ struct RepoSkillInspector: View {
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
                         }
-                        ForEach(items) { progressRow($0) }
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            progressRow(item)
+                                .listRowSurface(index: index)
+                        }
                     }
                 }
                 if session.displayedQueue.isEmpty {
@@ -215,7 +256,7 @@ struct RepoSkillInspector: View {
     /// 状态图例不再是圆形底，只保留系统符号与语义色，弱化装饰感。
     private func progressRow(_ item: RepoSkillSession.Item) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: statusSymbol(item.status))
+            Image(systemName: item.operation == .uninstall && item.status == .copying ? "trash" : statusSymbol(item.status))
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(statusColor(item.status))
                 .frame(width: 22, height: 20, alignment: .center)
@@ -227,29 +268,25 @@ struct RepoSkillInspector: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(item.destination.url.path)
-                    Spacer(minLength: 0)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if item.status == .copying {
-                        Text(verbatim: "\(Int(item.progress * 100))%")
-                            .font(interfaceScale.font(.caption))
-                            .monospacedDigit()
+                        RepoSkillItemProgress(item: item, showsBar: false)
+                    } else if item.error == nil {
+                        Text(LocalizedStringKey(session.conflicts.contains { $0.id == item.id }
+                                                 ? "repo.skills.status.blocked" : statusKey(item)))
+                            .font(interfaceScale.font(.captionSmall))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
                 if item.status == .copying {
-                    ProgressView(value: item.progress)
-                        .progressViewStyle(.linear)
-                        .tint(.accentColor)
+                    RepoSkillItemProgress(item: item, showsBar: true)
                 } else if let error = item.error {
                     Text(verbatim: error)
                         .font(interfaceScale.font(.captionSmall))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                } else {
-                    Text(LocalizedStringKey(session.conflicts.contains { $0.id == item.id }
-                                             ? "repo.skills.status.blocked" : statusKey(item.status)))
-                        .font(interfaceScale.font(.captionSmall))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
         }
@@ -264,7 +301,7 @@ struct RepoSkillInspector: View {
                 .font(interfaceScale.font(.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(session.conflicts) { item in
+            ForEach(Array(session.conflicts.enumerated()), id: \.element.id) { index, item in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(verbatim: item.skill.name)
                         .font(interfaceScale.font(.bodyEmphasis, weight: .semibold))
@@ -282,7 +319,7 @@ struct RepoSkillInspector: View {
                     .controlSize(.small)
                 }
                 .padding(10)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                .listRowSurface(index: index, cornerRadius: 6)
             }
         }
         .padding(12)
@@ -298,8 +335,16 @@ struct RepoSkillInspector: View {
             .padding(12)
     }
 
-    private func statusKey(_ status: RepoSkillSession.Status) -> String {
-        switch status {
+    private func statusKey(_ item: RepoSkillSession.Item) -> String {
+        if item.operation == .uninstall {
+            switch item.status {
+            case .copying: return "repo.skills.uninstall.running"
+            case .succeeded: return "repo.skills.uninstall.succeeded"
+            case .failed: return "repo.skills.uninstall.failed"
+            case .waiting, .cancelled: break
+            }
+        }
+        return switch item.status {
         case .waiting: "repo.skills.status.waiting"
         case .copying: "repo.skills.install.running"
         case .succeeded: session.isExport ? "repo.skills.install.exported" : "repo.skills.install.succeeded"
@@ -324,6 +369,26 @@ struct RepoSkillInspector: View {
         case .copying: .accentColor
         case .succeeded: .green
         case .failed, .cancelled: .orange
+        }
+    }
+}
+
+/// 逐字节进度只使这段视图失效，不把整份安装队列重新布局。
+private struct RepoSkillItemProgress: View {
+    let item: RepoSkillSession.Item
+    let showsBar: Bool
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+
+    var body: some View {
+        if showsBar {
+            ProgressView(value: item.progress)
+                .progressViewStyle(.linear)
+                .tint(.accentColor)
+        } else {
+            Text(verbatim: "\(Int(item.progress * 100))%")
+                .font(interfaceScale.font(.caption))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
         }
     }
 }

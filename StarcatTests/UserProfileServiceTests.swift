@@ -121,6 +121,47 @@ final class UserProfileServiceTests: XCTestCase {
         XCTAssertEqual(svc.profile?.followers, 60, "force=true 应拉新数据并更新")
     }
 
+    /// 手动刷新必须要求网络层绕过 URLCache。
+    ///
+    /// GitHub `/user` 带 `Cache-Control: private, max-age=60`；如果只跳过本地 TTL
+    /// 而沿用协议缓存策略，用户在 60 秒内连点两次会拿到同一份旧响应，误以为刷新失效。
+    func test_load_forceTrueRequestsCacheBypass() async throws {
+        let svc = UserProfileService(apiClient: mock)
+        svc.acceptFromAuth(makeUser(login: "alice", followers: 50))
+
+        let expectation = expectation(description: "fetched")
+        mock.getCurrentUserHandler = {
+            defer { expectation.fulfill() }
+            return self.makeUser(login: "alice", followers: 60)
+        }
+
+        svc.load(login: "alice", force: true)
+        await fulfillment(of: [expectation], timeout: 2.0)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(mock.getCurrentUserForceRefreshCalls, [true],
+                       "force 刷新必须让网络层忽略本地缓存")
+    }
+
+    /// 后台 TTL 刷新保持默认缓存策略，避免每次自动刷新都强制回源。
+    func test_load_backgroundRefreshKeepsProtocolCachePolicy() async throws {
+        let svc = UserProfileService(apiClient: mock)
+
+        let expectation = expectation(description: "fetched")
+        mock.getCurrentUserHandler = {
+            defer { expectation.fulfill() }
+            return self.makeUser(login: "alice", followers: 61)
+        }
+
+        // 首次加载无缓存 → 走网络（非 force）。
+        svc.load(login: "alice")
+        await fulfillment(of: [expectation], timeout: 2.0)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(mock.getCurrentUserForceRefreshCalls, [false],
+                       "后台刷新不应强制绕过缓存")
+    }
+
     // MARK: - acceptFromAuth
 
     func test_acceptFromAuth_persistsToDiskAndUpdatesLastLogin() throws {
@@ -140,6 +181,70 @@ final class UserProfileServiceTests: XCTestCase {
     }
 
     // MARK: - reset
+
+    /// 组织补充请求失败以 nil 表示，刷新基础资料时必须保留同账号的组织缓存。
+    func test_acceptFromAuth_preservesAndPersistsCachedOrganizations() {
+        let service = UserProfileService(apiClient: mock)
+        var original = makeUser(login: "alice")
+        original.organizations = [
+            GitHubOrganizationDTO(id: 101, login: "example-org", avatarUrl: nil, description: nil)
+        ]
+        service.acceptFromAuth(original)
+        service.acceptFromAuth(makeUser(login: "alice", followers: 99))
+
+        XCTAssertEqual(service.profile?.followers, 99)
+        XCTAssertEqual(service.profile?.organizations, original.organizations)
+        let restored = UserProfileService(apiClient: mock).primeFromCache()
+        XCTAssertEqual(restored?.organizations, original.organizations)
+    }
+
+    /// 成功取得空列表与请求失败不同：空列表代表用户已没有公开组织。
+    func test_acceptFromAuth_emptyOrganizationsClearsCachedOrganizations() {
+        let service = UserProfileService(apiClient: mock)
+        var user = makeUser(login: "alice")
+        user.organizations = [
+            GitHubOrganizationDTO(id: 101, login: "example-org", avatarUrl: nil, description: nil)
+        ]
+        service.acceptFromAuth(user)
+        user.organizations = []
+        service.acceptFromAuth(user)
+
+        XCTAssertEqual(service.profile?.organizations, [])
+        XCTAssertEqual(UserProfileService(apiClient: mock).primeFromCache()?.organizations, [])
+    }
+
+    func test_acceptFromAuth_doesNotReuseOrganizationsAcrossAccounts() {
+        let service = UserProfileService(apiClient: mock)
+        var user = makeUser(login: "alice")
+        user.organizations = [
+            GitHubOrganizationDTO(id: 101, login: "example-org", avatarUrl: nil, description: nil)
+        ]
+        service.acceptFromAuth(user)
+        service.acceptFromAuth(makeUser(login: "bob"))
+
+        XCTAssertNil(service.profile?.organizations)
+    }
+
+    func test_load_preservesOrganizationsWhenSupplementFails() async throws {
+        let service = UserProfileService(apiClient: mock)
+        var user = makeUser(login: "alice")
+        user.organizations = [
+            GitHubOrganizationDTO(id: 101, login: "example-org", avatarUrl: nil, description: nil)
+        ]
+        service.acceptFromAuth(user)
+        let fetched = expectation(description: "profile fetched")
+        mock.getCurrentUserHandler = {
+            defer { fetched.fulfill() }
+            return self.makeUser(login: "alice", followers: 99)
+        }
+
+        service.load(login: "alice", force: true)
+        await fulfillment(of: [fetched], timeout: 2)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(service.profile?.followers, 99)
+        XCTAssertEqual(service.profile?.organizations, user.organizations)
+    }
 
     func test_reset_clearsMemoryDiskAndLastLogin() {
         let svc = UserProfileService(apiClient: mock)

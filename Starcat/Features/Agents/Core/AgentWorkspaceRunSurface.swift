@@ -43,7 +43,7 @@ struct AgentWorkspaceRunSurface: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.locale) private var locale
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.starcatReduceMotion) private var reduceMotion
     @AppStorage(ExternalAgentRuntimePreferences.backendKey)
     private var externalRuntimeBackendRawValue = AgentRuntimeBackend.builtinLoop.rawValue
     @AppStorage(ExternalAgentRuntimePreferences.codexModelKey)
@@ -95,6 +95,7 @@ struct AgentWorkspaceRunSurface: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             composer
+                .disabled(viewModel.loadingHistoryRunID != nil)
         }
         // 明确接受父栏宽度，不能让菜单的最小宽度把整个 VStack 撑大后居中裁切。
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -230,80 +231,11 @@ struct AgentWorkspaceRunSurface: View {
             reasoningEffort: runtimeReasoningEffort,
             isAvailable: runtimeSelectionAvailable
         )
-        let externalSearchTool = ExternalSearchAgentTool(
-            collector: AppSettingsAgentExternalSearchCollector(settings: dependencies.settings)
-        )
-        let knowledgeSearcher: any AgentKnowledgeSearching
-        do {
-            knowledgeSearcher = try dependencies.makeAgentKnowledgeCapabilityAdapter(
-                selectedModelID: viewModel.selectedModelID
-            )
-        } catch {
-            // RAG 配置或权益异常只关闭 knowledge_search；周刊的冻结元数据工具与 Artifact
-            // 仍然可用，避免一个可选增强能力让整个 Agent Runtime 无法启动。
-            AppLog.ai.warning("Agent knowledge tool unavailable: \(error.localizedDescription, privacy: .public)")
-            knowledgeSearcher = UnavailableAgentKnowledgeSearcher()
-        }
-        var runtimes: [AgentRuntimeBackend: any AgentRuntime] = [:]
-        let toolRegistry: AgentToolRegistry?
-        do {
-            toolRegistry = try AgentToolRegistry(tools: GitHubWeeklyReportAgentTools.makeAll(
-                externalSearchTool: externalSearchTool,
-                knowledgeTool: AgentKnowledgeTool(searcher: knowledgeSearcher),
-                // 与 MCP 走同一组 Capability 装配规则，避免 Agent 写标签后漏掉语义索引刷新。
-                additionalTools: UntaggedTidyAgentTools.make(executor: dependencies.makeRepositoryTagCapability())
-            ))
-        } catch {
-            toolRegistry = nil
-            runtimes[.builtinLoop] = UnavailableAgentRuntime(message: error.localizedDescription)
-        }
-
-        if let toolRegistry {
-            do {
-                let modelClient = try AgentLoopModelClientFactory.make(
-                    settings: dependencies.settings,
-                    selectedModelID: viewModel.selectedModelID
-                )
-                runtimes[.builtinLoop] = LoopAgentRuntime(
-                    modelClient: modelClient,
-                    toolRegistry: toolRegistry,
-                    runRepository: dependencies.agentRunRepository,
-                    mode: viewModel.selectedAgent?.workflow.executionMode ?? .readonlyPlanning,
-                    localeIdentifier: locale.identifier,
-                    preferredLanguage: preferredOutputLanguage,
-                    externalSearchPolicy: AgentExternalSearchPolicy.current(settings: dependencies.settings)
-                )
-            } catch {
-                runtimes[.builtinLoop] = UnavailableAgentRuntime(message: error.localizedDescription)
-            }
-        }
-
-        if preferredBackend != .builtinLoop {
-            do {
-                let adapter = try ExternalAgentRuntimePreferences.makeAdapter(
-                    backend: preferredBackend,
-                    settings: dependencies.settings
-                )
-                runtimes[preferredBackend] = ExternalAgentRuntime(
-                    adapter: adapter,
-                    distributionGate: dependencies.distributionGate,
-                    selectedModelName: runtimeModelName,
-                    reasoningEffort: runtimeReasoningEffort,
-                    localeIdentifier: locale.identifier,
-                    preferredLanguage: preferredOutputLanguage,
-                    toolRegistry: toolRegistry,
-                    runRepository: dependencies.agentRunRepository,
-                    mcpBridgeFactory: { toolSet in
-                        try await dependencies.mcpService.makeTransientBridge(toolSet: toolSet)
-                    }
-                )
-            } catch {
-                runtimes[preferredBackend] = UnavailableAgentRuntime(message: error.localizedDescription)
-            }
-        }
-        viewModel.configureRuntime(AgentRuntimeRouter(
-            preferredBackend: preferredBackend,
-            runtimes: runtimes
+        viewModel.configureRuntime(dependencies.makeWorkspaceAgentRuntime(
+            modelID: viewModel.selectedModelID, backend: preferredBackend,
+            modelName: runtimeModelName, reasoningEffort: runtimeReasoningEffort,
+            mode: viewModel.selectedAgent?.workflow.executionMode ?? .readonlyPlanning,
+            localeIdentifier: locale.identifier, preferredLanguage: preferredOutputLanguage
         ))
     }
 
@@ -514,8 +446,20 @@ struct AgentWorkspaceRunSurface: View {
     }
 
     private var runTimeline: some View {
-        AgentMessageTimelineView(viewModel: viewModel)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack {
+            // 时间线已有 runIdentity 的折叠与跟随重置，不用 .id 再重建整棵消息树。
+            AgentMessageTimelineView(viewModel: viewModel)
+                .stableDetailTransition(value: "\(viewModel.selectedAgentID)|\(viewModel.selectedHistoryRunID ?? "")")
+                .opacity(viewModel.loadingHistoryRunID == nil ? 1 : 0)
+                .allowsHitTesting(viewModel.loadingHistoryRunID == nil)
+                .accessibilityHidden(viewModel.loadingHistoryRunID != nil)
+            if viewModel.loadingHistoryRunID != nil {
+                RepoSkillSkeletonView(layout: .manifest)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.24), value: viewModel.loadingHistoryRunID)
     }
 
     // MARK: - Composer
@@ -946,7 +890,7 @@ struct AgentWorkspaceRunSurface: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(candidates) { candidate in
+                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
                             let isSelected = selectedRepoIDs.contains(candidate.id)
                             AgentContextPickerRepositoryRow(
                                 candidate: candidate,
@@ -955,6 +899,7 @@ struct AgentWorkspaceRunSurface: View {
                                 isHighlighted: candidate.id == highlightedRepoID,
                                 isEnabled: isSelected || !selectionFull,
                                 selectionLimit: viewModel.maximumSelectedRepoContexts,
+                                rowIndex: index,
                                 onToggle: { viewModel.toggleRepoContext(candidate) }
                             )
                             .equatable()

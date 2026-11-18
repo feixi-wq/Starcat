@@ -2,19 +2,26 @@
 //  RepoSkillSheet.swift
 //  Starcat
 //
-//  真实 Skill 三栏安装工作区，窗口尺寸由 AppKit 持有，内容只消费共享会话。
+//  真实 Skill 阅读与浮动安装工作区，窗口尺寸由 AppKit 持有，内容只消费共享会话。
 //
 
 import SwiftUI
 
-/// 窗口持有固定画布；选择、阅读、安装配置独立分栏，主操作根据批次阶段切换。
+/// 窗口持有固定画布；安装配置按需覆盖阅读区，主操作根据批次阶段切换。
 struct RepoSkillSheet: View {
     let session: RepoSkillSession
     let onClose: () -> Void
 
     @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.starcatReduceMotion) private var reduceMotion
     @Environment(AppDependencies.self) private var dependencies
+    @Environment(\.openWindow) private var openWindow
     @State private var previewID = ""
+    @State private var tab = RepoSkillDetailPane.Tab.manifest
+    @State private var isPreviewExpanded = false
+    @State private var isInspectorPresented = false
+    @State private var previewedFile: RepoSkillFile?
 
     private var preview: RepoSkill? {
         session.skills.first { $0.id == previewID } ?? session.skills.first
@@ -26,138 +33,220 @@ struct RepoSkillSheet: View {
             Divider()
             GeometryReader { geometry in
                 HStack(spacing: 0) {
-                    RepoSkillSelectionPane(session: session, previewID: $previewID)
-                        .frame(width: min(280, geometry.size.width * 0.25))
-                    Divider()
+                    if !isPreviewExpanded {
+                        RepoSkillSelectionPane(session: session, previewID: $previewID)
+                            .frame(width: min(280, geometry.size.width * 0.25))
+                        Divider()
+                    }
+                    // 阅读器始终留在同一个结构位置；安装面板不参与分栏，避免正文随开关重新排版。
                     VStack(alignment: .leading, spacing: 8) {
                         if let error = session.error {
                             Text(verbatim: error).foregroundStyle(.secondary).padding(16)
                         }
-                        if session.isLoading && preview == nil {
-                            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let preview {
-                            if let progress = session.scanProgressText {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text(verbatim: progress)
+                        if preview == nil, session.isLoading || (session.scan == nil && session.error == nil) {
+                            RepoSkillSkeletonView(layout: .manifest)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .background(RepoSkillPanelStyle.panelColor(colorScheme), in: RoundedRectangle(cornerRadius: 8))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .strokeBorder(Color.primary.opacity(0.09))
                                 }
-                                .font(interfaceScale.font(.caption))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 18)
+                                // 预留与详情工具栏一致的高度，首个 Skill 到达时正文起点保持稳定。
+                                .padding(.top, 44)
+                                .padding(.horizontal, 16)
                                 .padding(.bottom, 8)
-                            }
-                            if let issue = preview.installationIssue {
-                                Label(issue, systemImage: "exclamationmark.triangle")
-                                    .font(interfaceScale.font(.caption)).padding(.horizontal, 18)
-                            }
-                            RepoSkillDetailPane(skill: preview, session: session)
+                        } else if let preview {
+                            RepoSkillDetailPane(
+                                skill: preview, session: session,
+                                translationService: dependencies.readmeTranslationService,
+                                tab: $tab,
+                                isPreviewExpanded: $isPreviewExpanded,
+                                isInspectorPresented: $isInspectorPresented,
+                                previewedFile: $previewedFile
+                            )
                         } else {
                             ContentUnavailableView(
                                 "repo.skills.list.empty", systemImage: "shippingbox",
                                 description: Text(session.scan?.complete == true ? "repo.skills.scan.absent" : "repo.skills.scan.incomplete")
                             )
                         }
-                        if let scan = session.scan, !scan.complete {
-                            DisclosureGroup("repo.skills.scan.incomplete") {
-                                ForEach(Array(scan.diagnostics.enumerated()), id: \.offset) { _, message in
-                                    Text(verbatim: message).textSelection(.enabled)
-                                }
-                            }
-                            .font(interfaceScale.font(.caption))
-                            .padding(12)
-                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    Divider()
-                    RepoSkillInspector(session: session)
-                        .frame(width: max(310, geometry.size.width * 0.29))
                 }
+                .overlay(alignment: .trailing) {
+                    if isInspectorPresented && tab == .manifest {
+                        installationPanel
+                            // 浮层覆盖内容区全高，包含阅读工具栏，不改变正文或底栏的可用尺寸。
+                            .frame(width: min(420, geometry.size.width * 0.5), height: geometry.size.height)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .clipped()
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isInspectorPresented)
             }
-            Divider()
-            footer
+            if !isPreviewExpanded {
+                Divider()
+                footer
+            }
         }
         .foregroundStyle(.primary)
-        // macOS 新版 regular/large 按钮可能默认采用胶囊，任务窗口明确遵循 6pt 矩形圆角。
-        .buttonBorderShape(.roundedRectangle(radius: 6))
         .background(Color(nsColor: .windowBackgroundColor))
         .task { await session.load() }
-        .onDisappear { session.close() }
+        .onChange(of: preview?.id, initial: true) { _, id in
+            previewedFile = nil
+            session.focusSkill(id)
+        }
+        // 语言切换会重建视图；会话由窗口 onDismiss 关闭，不能随 SwiftUI 子树退场失效。
+        .onChange(of: tab) { _, tab in
+            if tab != .manifest { isInspectorPresented = false }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await session.refreshDestination() }
         }
         .onChange(of: session.skills.map(\.id)) { _, ids in
             if !ids.contains(previewID) { previewID = ids.first ?? "" }
+            if ids.isEmpty { isPreviewExpanded = false }
         }
-        .onExitCommand(perform: onClose)
+        .onExitCommand {
+            if isInspectorPresented {
+                isInspectorPresented = false
+            } else if previewedFile != nil {
+                previewedFile = nil
+            } else if isPreviewExpanded {
+                isPreviewExpanded = false
+            } else {
+                onClose()
+            }
+        }
         .onChange(of: dependencies.databaseScopeRevision) { _, _ in
             session.close()
             onClose()
         }
     }
 
+    /// 浮层只持有展示状态；目录选择、冲突与进度仍由窗口会话持有，收起不会取消安装。
+    private var installationPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("repo.skills.install.title", systemImage: "shippingbox")
+                    .font(interfaceScale.font(.bodyEmphasis, weight: .semibold))
+                Spacer(minLength: 8)
+                SheetCloseButton { isInspectorPresented = false }
+            }
+            .padding(12)
+            Divider()
+            RepoSkillInspector(session: session)
+            // 放大阅读时窗口底栏隐藏，操作随浮层显示，仍可直接确认安装。
+            if isPreviewExpanded {
+                Divider()
+                footer
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .leading) {
+            // 浮层边界必须明确为竖线；无 Stack 约束的 Divider 会横穿面板中部。
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+                .allowsHitTesting(false)
+        }
+    }
+
     private var header: some View {
-        HStack(spacing: 12) {
-            RemoteAvatar(urlString: RepoAvatarURL.from(owner: session.repo.owner), size: 28, showBorder: false)
-                .accessibilityHidden(true)
-            Text(verbatim: session.repo.fullName)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(session.repo.fullName)
-            Spacer(minLength: 12)
+        RepoWorkspaceHeader(target: RepoFileBrowserTarget(repo: session.repo)) {
+            if DistributionChannel.current.isDirect, let preview {
+                Button("skills.import.addToLibrary") {
+                    try? SkillWorkspaceSceneCoordinator.shared.openRepositoryImport(.init(repo: session.repo, skill: preview)) { sceneID in
+                        openWindow(id: sceneID)
+                    }
+                }
+                .disabled(session.isInstalling || preview.installationIssue != nil)
+                .buttonStyle(RepoSkillHeaderButtonStyle())
+            }
+            RepoSkillScanNotice(session: session)
             SyncIconButton(isRefreshing: session.isLoading, disabled: session.isInstalling,
                            tooltip: String.l10n("repo.skills.scan.refresh")) {
                 Task { await session.load(force: true) }
             }
             SheetCloseButton(action: onClose)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
     }
 
     private var footer: some View {
         HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
                 Label {
-                    Text(footerText)
+                    Text(verbatim: footerText)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(.tail)
+                        .help(footerText)
                 } icon: {
-                    Image(systemName: session.phase == .finished && !session.hasFailures ? "checkmark.circle" : "info.circle")
+                    Image(systemName: footerStatus.symbol)
+                        .foregroundStyle(footerStatus.color)
                         .help("repo.skills.install.safety")
+                        .accessibilityHidden(true)
                 }
-                .font(interfaceScale.font(.caption))
-                .foregroundStyle(.secondary)
-                if session.phase == .finished || session.phase == .cancelled {
-                    Text(LocalizedStringKey(session.isExport ? "repo.skills.install.exportNotice" : "repo.skills.install.reload"))
-                        .font(interfaceScale.font(.captionSmall))
-                        .foregroundStyle(.secondary)
+                if let progress = session.scanProgressText {
+                    Text(verbatim: progress)
+                        .monospacedDigit()
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: interfaceScale.scaled(180), alignment: .leading)
+                        .help(progress)
+                        .accessibilityLabel(Text(verbatim: progress))
                 }
             }
+            .font(interfaceScale.font(.caption))
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(LocalizedStringKey(session.isInstalling ? "common.close" : "common.cancel"), action: onClose)
-                .buttonStyle(.bordered)
-                .keyboardShortcut(.cancelAction)
+                .lineLimit(1)
+                .help(LocalizedStringKey(session.isInstalling ? "common.close" : "common.cancel"))
+                // 浮层在最上方时由 onExitCommand 先收起，不能让底栏快捷键直接关闭整个窗口。
+                .keyboardShortcut(isInspectorPresented || previewedFile != nil ? nil : .cancelAction)
 
-            Button(action: primaryAction) {
-                Text(LocalizedStringKey(primaryKey))
-                    .frame(minWidth: 84)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(primaryDisabled)
+            Button(LocalizedStringKey(primaryKey), action: primaryAction)
+                .lineLimit(1)
+                .help(LocalizedStringKey(primaryKey))
+                .keyboardShortcut(.defaultAction)
+                .disabled(primaryDisabled)
         }
-        .controlSize(.regular)
+        .buttonStyle(.automatic)
+        // 进度只更新固定底栏内的单行内容，不挤动顶栏或改变正文高度；按钮仍使用原生尺寸。
+        .frame(height: max(32, interfaceScale.scaled(28)))
         .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.vertical, 6)
+    }
+
+    /// 图标同时使用形状与状态色区分结果，品牌图标和正文不随此状态染色。
+    private var footerStatus: (symbol: String, color: Color) {
+        if session.isInstalling {
+            return (session.isUninstalling ? "trash.circle" : "arrow.down.circle", .accentColor)
+        }
+        if session.hasFailures { return ("exclamationmark.circle.fill", .red) }
+        if session.phase == .cancelled { return ("stop.circle.fill", .orange) }
+        if session.phase == .finished { return ("checkmark.circle.fill", .green) }
+        if session.hasDuplicateNames || session.scan?.complete == false {
+            return ("exclamationmark.triangle.fill", .orange)
+        }
+        return ("info.circle.fill", .accentColor)
     }
 
     private var footerText: String {
+        if session.isInstalling {
+            return String.l10n(session.isUninstalling ? "repo.skills.uninstall.running" : "repo.skills.install.running")
+        }
+        if session.hasFailures {
+            return String.l10n(session.isUninstalling ? "repo.skills.uninstall.failed" : "repo.skills.install.failed")
+        }
+        if session.phase == .cancelled { return String.l10n("repo.skills.install.cancelled") }
+        if session.phase == .finished {
+            let status = session.isUninstalling ? "repo.skills.uninstall.succeeded"
+                : session.isExport ? "repo.skills.install.exported" : "repo.skills.install.installed"
+            let notice = session.isExport ? "repo.skills.install.exportNotice" : "repo.skills.install.reloadHint"
+            return [String.l10n(status), String.l10n(notice)].joined(separator: " · ")
+        }
         let items = session.displayedQueue
         let selected = Set(items.map { $0.skill.id })
         let directories = Set(items.map { $0.destination.id })
@@ -169,16 +258,19 @@ struct RepoSkillSheet: View {
 
     private var primaryKey: String {
         if session.isInstalling { return "repo.skills.install.cancel" }
+        if session.isUninstalling && session.hasFailures { return "repo.skills.install.retry" }
+        if session.isUninstalling && session.phase == .cancelled { return "repo.skills.install.resume" }
         if !session.conflicts.isEmpty { return "repo.skills.install.resolve" }
         if session.phase == .finished {
-            return session.hasFailures ? "repo.skills.install.retry" : "repo.skills.install.done"
+            if session.hasFailures { return "repo.skills.install.retry" }
+            if session.plannedItems.isEmpty { return "repo.skills.install.done" }
         }
         if session.isExport { return "repo.skills.install.export" }
         return session.phase == .cancelled ? "repo.skills.install.resume" : "repo.skills.install.start"
     }
 
     private var primaryDisabled: Bool {
-        if session.isInstalling || (session.phase == .finished && !session.hasFailures) { return false }
+        if session.isInstalling || (session.phase == .finished && !session.hasFailures && session.plannedItems.isEmpty) { return false }
         return !session.canStart
     }
 
@@ -186,9 +278,12 @@ struct RepoSkillSheet: View {
     private func primaryAction() {
         if session.isInstalling {
             session.cancel()
-        } else if session.phase == .finished && !session.hasFailures {
+        } else if session.phase == .finished && !session.hasFailures && session.plannedItems.isEmpty {
             onClose()
         } else {
+            // 在文件页触发底栏安装时先回到正文，安装浮层只出现在 SKILL.md。
+            tab = .manifest
+            isInspectorPresented = true
             session.start()
         }
     }

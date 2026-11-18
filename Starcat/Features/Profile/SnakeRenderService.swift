@@ -29,6 +29,12 @@ final class SnakeRenderService {
     /// 当前帧渲染结果（后台渲染，主线程写、主线程读）。
     private(set) var frameImage: CGImage?
 
+    /// 每次配置仅在首帧就绪时更新，避免切换动画观察逐帧图片、连带重算整张贡献卡。
+    private(set) var readyRevision = 0
+
+    /// 取消 Task 不会撤回已入主队列的发布；版本号阻止旧玩法首帧误触发新玩法入场。
+    @ObservationIgnored private var configurationRevision = 0
+
     /// 时钟 Task 不参与 UI 观察，排除出 @Observable 的跟踪。
     @ObservationIgnored private var renderTask: Task<Void, Never>?
 
@@ -38,12 +44,14 @@ final class SnakeRenderService {
         animator: SnakeAnimator?,
         payload: ContributionCalendarPayload?,
         colorScheme: ColorScheme,
-        style: ContributionGraphStyle = .standard
+        style: ContributionGraphStyle = .standard,
+        range: ContributionGraphRange = .year
     ) {
         stop()
+        let revision = configurationRevision
 
         guard let animator else {
-            renderStatic(payload: payload, colorScheme: colorScheme, style: style)
+            renderStatic(payload: payload, colorScheme: colorScheme, style: style, range: range)
             return
         }
 
@@ -55,7 +63,8 @@ final class SnakeRenderService {
             let baseGrid = SnakeFrameRenderer.renderBaseGrid(
                 payload: payload,
                 colorScheme: colorScheme,
-                style: style
+                style: style,
+                range: range
             )
             var lastRenderedStepToken = Int.min
             var lastFrameHadFood = false
@@ -86,10 +95,15 @@ final class SnakeRenderService {
                     frame: frame,
                     colorScheme: colorScheme,
                     style: style,
+                    range: range,
                     baseGrid: baseGrid
                 )
                 DispatchQueue.main.async {
+                    guard self.configurationRevision == revision else { return }
                     self.frameImage = image
+                    if image != nil, self.readyRevision != revision {
+                        self.readyRevision = revision
+                    }
                 }
                 lastRenderedStepToken = stepToken
                 lastFrameHadFood = !frame.foodCells.isEmpty
@@ -101,6 +115,7 @@ final class SnakeRenderService {
     }
 
     func stop() {
+        configurationRevision &+= 1
         renderTask?.cancel()
         renderTask = nil
     }
@@ -109,12 +124,17 @@ final class SnakeRenderService {
     private func renderStatic(
         payload: ContributionCalendarPayload?,
         colorScheme: ColorScheme,
-        style: ContributionGraphStyle
+        style: ContributionGraphStyle,
+        range: ContributionGraphRange
     ) {
         frameImage = SnakeFrameRenderer.renderBaseGrid(
             payload: payload,
             colorScheme: colorScheme,
-            style: style
+            style: style,
+            range: range
         )
+        if frameImage != nil {
+            readyRevision = configurationRevision
+        }
     }
 }

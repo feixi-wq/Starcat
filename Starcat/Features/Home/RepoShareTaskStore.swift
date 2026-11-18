@@ -2,7 +2,7 @@
 //  RepoShareTaskStore.swift
 //  Starcat
 //
-//  AI 分享页创建任务的窗口会话级状态中心。
+//  AI 分享页创建任务的应用会话级状态中心，窗口与 CLI 共用。
 //
 //  模块职责：
 //  - 以 repoID 隔离多个分享任务，防止用户切换仓库后异步结果串仓；
@@ -14,7 +14,7 @@
 //  关键约束：
 //  - 每次状态回写同时校验 repoID + taskID。旧任务即使晚到，也不能覆盖重试任务；
 //  - 同一仓库只保留一个任务。重复点击只负责重新打开 Sheet，不重复消耗 AI 配额；
-//  - “后台继续”只指 Starcat 进程内继续，不做跨进程持久化或系统后台调度。
+//  - 运行中任务只在进程内继续；成功链接由 ShareAPI 单独持久化，不做系统后台调度。
 //
 
 import Foundation
@@ -26,6 +26,7 @@ import Observation
 /// 单测，同时生产环境仍直接复用现有 AI service 与 ShareAPI，不引入第二套业务实现。
 @MainActor
 struct RepoShareOperations {
+    var cachedShare: @MainActor (Repo) async -> ShareCreateResponse? = { _ in nil }
     let cachedInsight: @MainActor (Repo) async throws -> RepoAIInsight?
     let generateInsight: @MainActor (Repo) async throws -> RepoAIInsight
     let createShare: @MainActor (ShareRepoRequest) async throws -> ShareCreateResponse
@@ -90,6 +91,11 @@ final class RepoShareTaskStore {
 
     /// Task 句柄本身不是 UI 状态；忽略 Observation，避免任务字典变化触发无关重绘。
     @ObservationIgnored private var tasks: [Int64: Task<Void, Never>] = [:]
+    private let billingAlerts: AIBackgroundBillingAlerts?
+
+    init(billingAlerts: AIBackgroundBillingAlerts? = nil) {
+        self.billingAlerts = billingAlerts
+    }
 
     func job(for repoID: Int64) -> RepoShareJob? {
         jobs[repoID]
@@ -103,10 +109,43 @@ final class RepoShareTaskStore {
         jobs[repoID]?.state.isSuccessful == true
     }
 
-    /// 首次创建。已有运行中、成功或失败结果时都不重复提交，由调用方直接打开现有 Sheet。
+    /// 公共任务等待同一状态机真实完成；保留缓存回退、取消与防止迟到响应创建链接的约束。
+    func createAndWait(repo: Repo, operations: RepoShareOperations) async throws -> String {
+        start(repo: repo, operations: operations)
+        let task = tasks[repo.id]
+        let taskID = jobs[repo.id]?.id
+        return try await withTaskCancellationHandler {
+            // cancelled 是即时 UI 反馈，不能作为底层已退出的证明；切库屏障必须等待原 Task。
+            await task?.value
+            try Task.checkCancellation()
+            guard jobs[repo.id]?.id == taskID else { throw CancellationError() }
+            switch jobs[repo.id]?.state {
+            case .success(let url): return url
+            case .failure(let message): throw StarcatPublicCapabilityError(code: "SHARE_FAILED", message: message)
+            case .cancelled: throw CancellationError()
+            default: throw StarcatPublicCapabilityError(code: "SHARE_FAILED", message: "The share operation did not produce a result.")
+            }
+        } onCancel: {
+            task?.cancel()
+            Task { @MainActor in
+                if self.jobs[repo.id]?.id == taskID { self.cancel(repoID: repo.id) }
+            }
+        }
+    }
+
+    /// 运行中直接恢复；成功结果再次打开时重查持久记录，允许过期链接重新创建。
     func start(repo: Repo, operations: RepoShareOperations) {
-        guard jobs[repo.id] == nil else { return }
+        guard jobs[repo.id] == nil || jobs[repo.id]?.state.isSuccessful == true else { return }
         launch(repo: repo, operations: operations)
+    }
+
+    /// AI 摘要属于账号数据库；切号前必须取消并等待，公开分享链接记录继续保留。
+    func resetForAccountChange() async {
+        let pending = Array(tasks.values)
+        for repoID in Array(tasks.keys) { cancel(repoID: repoID) }
+        for task in pending { await task.value }
+        jobs.removeAll()
+        latestCompletion = nil
     }
 
     /// 失败或用户取消后允许重新创建；运行中与成功态保持单任务语义。
@@ -151,6 +190,11 @@ final class RepoShareTaskStore {
         }
 
         do {
+            if let existing = await operations.cachedShare(repo) {
+                try Task.checkCancellation()
+                finish(repo: repo, taskID: taskID, state: .success(existing.shareUrl), outcome: .success)
+                return
+            }
             let insight: RepoAIInsight
             if let cached = try await operations.cachedInsight(repo) {
                 try Task.checkCancellation()
@@ -179,6 +223,9 @@ final class RepoShareTaskStore {
             }
             finish(repo: repo, taskID: taskID, state: .failure(message), outcome: .failure)
         } catch {
+            if jobs[repo.id]?.id == taskID, case .generatingSummary = jobs[repo.id]?.state {
+                billingAlerts?.record(error, kind: .sharing, repo: repo)
+            }
             finish(repo: repo, taskID: taskID, state: .failure(error.localizedDescription), outcome: .failure)
         }
     }
@@ -198,6 +245,7 @@ final class RepoShareTaskStore {
         outcome: RepoShareCompletionNotice.Outcome
     ) {
         guard update(repoID: repo.id, taskID: taskID, state: state) else { return }
+        if outcome == .success { billingAlerts?.resolve(kind: .sharing, repoID: repo.id) }
         latestCompletion = RepoShareCompletionNotice(
             repoID: repo.id,
             repoFullName: repo.fullName,
@@ -233,5 +281,17 @@ final class RepoShareTaskStore {
             suggestedTags: tags
         )
         return ShareRepoRequest(repo: repoDTO, aiSummary: summaryDTO)
+    }
+}
+
+extension AppDependencies {
+    /// UI 和公共接口从同一处装配分享用例，避免缓存/生成选择与 API 版本逐渐分叉。
+    func makeRepoShareOperations() -> RepoShareOperations {
+        RepoShareOperations(
+            cachedShare: { await self.shareAPI.cachedRepoShare(fullName: $0.fullName) },
+            cachedInsight: { try await self.repoAIInsightService.cachedInsightFast(for: $0) },
+            generateInsight: { (try await self.repoAIInsightService.generateInsight(for: $0)).insight },
+            createShare: { try await self.shareAPI.shareRepo(request: $0) }
+        )
     }
 }

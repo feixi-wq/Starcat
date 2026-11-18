@@ -267,8 +267,38 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
         )
     }
 
+    /// nil 让 Hero 隐藏入口；显式闭包类型也避免把条件方法引用塞进大型 ViewBuilder。
+    private var issuesEntryAction: (() -> Void)? {
+        guard showsIssuesEntry, !repo.isPrivate, !repo.owner.isEmpty, !repo.name.isEmpty else { return nil }
+        return { openIssuesWorkspace() }
+    }
+
+    /// 工作台继续由 Scaffold 持有，避免胶囊因换行重建时重置列表或登录状态。
+    private func openIssuesWorkspace() {
+        guard dependencies.authSession.state.isAuthenticated else {
+            dependencies.authSession.requestLoginSheet()
+            return
+        }
+        ensureRepoIssuesVMIfNeeded()
+        guard let issuesVM = repoIssuesVM else { return }
+        issuesWindow = RepoWorkspaceWindowController.present(
+            identifier: "issues", title: repo.fullName,
+            parent: workspaceWindow.window, dependencies: dependencies
+        ) { close in
+            RepoIssuesWorkspaceView(
+                repo: repo, listViewModel: issuesVM,
+                inbox: dependencies.githubNotificationInboxService,
+                threadRepository: dependencies.githubNotificationThreadRepository,
+                apiClient: dependencies.apiClient,
+                aiService: dependencies.repoAIInsightService,
+                onClose: close
+            )
+        }
+    }
+
     /// Issues 工作台（左列表 + 右详情/新建 大模态）展示状态（`showsIssuesEntry` 开启时入口才可见）。
-    @State private var showsIssuesWorkspace = false
+    @State private var workspaceWindow = WorkspaceSceneWindowReference()
+    @State private var issuesWindow: RepoWorkspaceWindowController?
     /// Issues 工作台数据层。挂载时预创建（`.task`，Environment 在 task 阶段可靠），
     /// 跨窗口开关保活，切换仓库由 `prepare(owner:repo:)` 复位。
     /// 为什么不能等首次点击再创建：VM 写入与 popover/sheet 内容求值同事务时，
@@ -530,7 +560,8 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
             showsRecommendations = false
             // 切仓库时收起 Issues 工作台；VM 保留实例，
             // 下次打开由 `prepare(owner:repo:)` 复位到新仓库。
-            showsIssuesWorkspace = false
+            issuesWindow?.dismissWorkspace()
+            issuesWindow = nil
             aiOverlayTopChromeInset = 0
             libraryState = .outsideLibrary
             isLibraryOperationInFlight = false
@@ -827,10 +858,16 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                     libraryState: libraryState,
                     onLanguageTapped: onLanguageTapped,
                     showsContributorsStat: showsContributorsStat,
+                    // 工作台加载后优先使用不含 PR 的精确计数，尚未加载时沿用本地元数据。
+                    openIssuesCount: repoIssuesVM?.openCount ?? repo.openIssuesCount,
+                    onIssuesTapped: issuesEntryAction,
                     onStarTapped: handleStarTapped
                 ) {
                     trailingActionsView
                 }
+                // 标题内部也有按 repo 加载的统计任务，淡化时保留其身份，避免重复挂载。
+                .stableDetailTransition(value: repo.fullName)
+                .background(WorkspaceSceneWindowReader(reference: workspaceWindow, minimumContentSize: nil))
                 heroExtension_()
                 // v1.5（2026-06-10）：RepoLocalSections 内置渲染,跟随面板整段折叠。
                 // 可见性 + spring 0.25s star 后展开转场都由组件内部自治,Scaffold 无脑挂。
@@ -964,36 +1001,6 @@ struct RepoDetailScaffold<Body: View, HeroExt: View>: View {
                         }
                     )
                     .appLocaleEnvironment()
-                }
-            }
-            // Issues 工作台入口（2026-11-01）：仅星标详情（showsIssuesEntry）且公开仓库显示。
-            // 角标计数：工作台打开过一次后用 Search API 精确值（不含 PR）——本地
-            // `openIssuesCount` 含 PR，会出现「角标 1、面板 0 条」的口径错位（PR-only 仓库）；
-            // 未打开过工作台时仍用本地值兜底。
-            if showsIssuesEntry,
-               !repo.isPrivate,
-               !repo.owner.isEmpty,
-               !repo.name.isEmpty {
-                RepoIssuesEntryButton(openIssuesCount: repoIssuesVM?.openCount ?? repo.openIssuesCount) {
-                    guard dependencies.authSession.state.isAuthenticated else {
-                        dependencies.authSession.requestLoginSheet()
-                        return
-                    }
-                    ensureRepoIssuesVMIfNeeded()
-                    showsIssuesWorkspace = true
-                }
-                .sheet(isPresented: $showsIssuesWorkspace) {
-                    if let issuesVM = repoIssuesVM {
-                        RepoIssuesWorkspaceView(
-                            repo: repo,
-                            listViewModel: issuesVM,
-                            inbox: dependencies.githubNotificationInboxService,
-                            threadRepository: dependencies.githubNotificationThreadRepository,
-                            apiClient: dependencies.apiClient,
-                            aiService: dependencies.repoAIInsightService
-                        )
-                        .appLocaleEnvironment()
-                    }
                 }
             }
             if canShowLibraryToggle(for: repo) {

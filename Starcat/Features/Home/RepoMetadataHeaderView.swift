@@ -68,6 +68,9 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     let onLanguageTapped: ((String) -> Void)?
     /// 默认展示 Hero 贡献者列。目前所有详情场景都开。
     let showsContributorsStat: Bool
+    /// 入口是否显示与工作台状态仍由 Scaffold 决定，Hero 只负责胶囊排列。
+    let openIssuesCount: Int?
+    let onIssuesTapped: (() -> Void)?
     private let trailingActions: TrailingActions
 
     /// OpenSSF 与 Repo Health 都放在 `full_name` 同行。
@@ -92,6 +95,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         libraryState: LibraryState = .outsideLibrary,
         onLanguageTapped: ((String) -> Void)? = nil,
         showsContributorsStat: Bool = true,
+        openIssuesCount: Int? = nil,
+        onIssuesTapped: (() -> Void)? = nil,
         onStarTapped: @escaping () async throws -> Void,
         @ViewBuilder trailingActions: () -> TrailingActions
     ) {
@@ -103,6 +108,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         self.libraryState = libraryState
         self.onLanguageTapped = onLanguageTapped
         self.showsContributorsStat = showsContributorsStat
+        self.openIssuesCount = openIssuesCount
+        self.onIssuesTapped = onIssuesTapped
         self.onStarTapped = onStarTapped
         self.trailingActions = trailingActions()
     }
@@ -180,7 +187,6 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
                     if let headerSourceBadge, headerSourceBadge.isVisible {
                         RepoDetailHeaderSourceBadgeView(badge: headerSourceBadge)
                     }
-                    LinuxDoSourceBadge(repoID: repo.id, interactive: true)
                 }
                 badgeRow
                 inlineTopicsRow
@@ -216,20 +222,33 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
 
     @ViewBuilder
     private var badgeRow: some View {
-        // 窄面板放不下时 Skill 胶囊折到第二行，License 胶囊始终保持完整文案。
+        // 窄面板放不下时入口一起折行，保持 Linux.do → Issues → Skills 的顺序。
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
                 primaryBadges
-                RepoSkillBadge(repo: repo)
+                sourceAndFeatureBadges
             }
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) { primaryBadges }
-                RepoSkillBadge(repo: repo)
+                sourceAndFeatureBadges
             }
         }
         .lineLimit(1)
-        // License 胶囊固定 24pt（设计稿 24-26pt），折行时第二行也算入行高。
+        // 保留元信息行的最小高度，胶囊自身使用与 Skills 一致的紧凑尺寸。
         .frame(minHeight: 24, alignment: .leading)
+    }
+
+    /// 来源、Issues 与技能入口共用一行紧凑胶囊，窄面板时一起移到许可证下方。
+    private var sourceAndFeatureBadges: some View {
+        HStack(spacing: 10) {
+            LinuxDoSourceBadge(repoID: repo.id, interactive: true)
+            if let onIssuesTapped {
+                RepoIssuesEntryButton(openIssuesCount: openIssuesCount, action: onIssuesTapped)
+                    // 切仓库或账号时从 0 重新入场；同仓库计数更新保持当前动画状态。
+                    .id("\(dependencies.databaseScopeRevision):\(repo.id)")
+            }
+            RepoSkillBadge(repo: repo)
+        }
     }
 
     @ViewBuilder
@@ -247,7 +266,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         LicenseKnowledgeCapsule(
             rawLicense: repo.license,
             owner: repo.owner,
-            repoName: repo.name
+            repoName: repo.name,
+            isCompact: true
         )
         .layoutPriority(1)
         // fork 来源不再单独占第三行，也不再用灰色 Fork 胶囊占位。
@@ -306,8 +326,8 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
 
             WatchersMenu(repo: repo)
 
-            RepoDateStatItem(label: "repo.created", value: repo.createdAt, systemImage: "calendar.badge.plus")
-            RepoDateStatItem(label: "repo.updated", value: repo.updatedAt, systemImage: "clock.arrow.circlepath")
+            RepoDateStatItem(label: "repo.stats.created", value: repo.createdAt, systemImage: "calendar.badge.plus")
+            RepoDateStatItem(label: "repo.stats.updated", value: repo.updatedAt, systemImage: "clock.arrow.circlepath")
             // v2.0(2026-06-12,dong4j 反馈)：原本独立成段的 Releases 订阅区被压缩为这一列紧凑 stat,
             // 与 Stars / Forks / Watchers / Created / Updated 同行展示。详见
             // `Starcat/Features/Releases/RepoReleaseSection.swift` 文件头 v2.0 演化说明。
@@ -686,24 +706,33 @@ struct RepoShareButton: View {
     @Environment(RepoShareTaskStore.self) private var taskStore
     @Environment(\.presentRepoShare) private var presentRepoShare
     @Environment(\.colorScheme) private var colorScheme
+    @State private var hasExistingShare = false
 
     var body: some View {
         // 探索和独立详情可能持有旧快照；统一读 registry，确保 Star / 取消 Star 后
         // 立即切换点击行为，不把入口绑定到侧边栏分类或快照里的旧 isStarred。
         let targetRepo = dependencies.starredRegistry.applyingDisplayState(to: repo)
-        if targetRepo.isStarred {
-            shareMenu(for: targetRepo)
-        } else {
-            CopyFeedbackButton(
-                providesContent: { publicURL.absoluteString },
-                tooltip: "repo.share.link.copy.help",
-                onCopied: onLinkCopied
-            ) { didCopy in
-                shareIcon(didCopy: didCopy)
+        Group {
+            if targetRepo.isStarred {
+                shareMenu(for: targetRepo)
+            } else {
+                CopyFeedbackButton(
+                    providesContent: { publicURL.absoluteString },
+                    tooltip: "repo.share.link.copy.help",
+                    onCopied: onLinkCopied
+                ) { didCopy in
+                    shareIcon(didCopy: didCopy)
+                }
+                .accessibilityLabel(Text("repo.share.link.copy"))
+                .pressableHover()
+                .fixedSize()
             }
-            .accessibilityLabel(Text("repo.share.link.copy"))
-            .pressableHover()
-            .fixedSize()
+        }
+        .task(id: "\(repo.fullName)|\(dependencies.settings.customServiceURL(for: .sharing) ?? "")|\(taskStore.latestCompletion?.id.uuidString ?? "")") {
+            // 重新进入详情、重启或其它窗口发布成功时，从同一持久记录恢复空心 / 实心状态。
+            let existing = await dependencies.shareAPI.cachedRepoShare(fullName: repo.fullName)
+            guard !Task.isCancelled else { return }
+            hasExistingShare = existing != nil
         }
     }
 
@@ -732,7 +761,7 @@ struct RepoShareButton: View {
                             .controlSize(.small)
                     }
                 } else {
-                    let isShared = taskStore.isSuccessful(repoID: targetRepo.id)
+                    let isShared = hasExistingShare
                     Label(
                         isShared ? "repo.share.ai.created" : "repo.share.ai.create",
                         systemImage: isShared ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack"
@@ -755,9 +784,9 @@ struct RepoShareButton: View {
 
     /// 沿用 Hero 操作的 28pt 点击区域与 13pt 图标，和知识库 / Wiki 入口保持一致。
     private func shareIcon(didCopy: Bool = false) -> some View {
-        Image(systemName: didCopy ? "checkmark.circle.fill" : "square.and.arrow.up")
+        Image(systemName: didCopy ? "checkmark.circle.fill" : (hasExistingShare ? "square.and.arrow.up.fill" : "square.and.arrow.up"))
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(didCopy ? Color.green : Color.secondary)
+            .foregroundStyle(didCopy ? Color.green : (hasExistingShare ? Color.blue : Color.secondary))
             .frame(width: 28, height: 28)
             .heroActionIconSurface(colorScheme: colorScheme)
             .contentShape(Capsule())
@@ -838,30 +867,47 @@ struct RepoShareTaskSheet: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                // 整行都是复制命中区；右侧图标承担 1.5s 绿色成功反馈，不再新增提示行。
-                CopyFeedbackButton(
-                    providesContent: { url },
-                    tooltip: "repo.share.success.copyLink"
-                ) { didCopy in
-                    HStack(spacing: 10) {
-                        Text(verbatim: url)
-                            .font(.callout.monospaced())
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        // 固定布局盒消除两个 Symbol 固有尺寸差异，同时恢复项目统一的
-                        // replace 过渡；动画只发生在盒内，不再触发链接行或 Sheet 重排。
+                HStack(spacing: 8) {
+                    Text(verbatim: url)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // 两个独立命中区避免按钮嵌套，复制仍使用统一的 1.5 秒成功反馈。
+                    CopyFeedbackButton(
+                        providesContent: { url },
+                        tooltip: "repo.share.success.copyLink"
+                    ) { didCopy in
                         Image(systemName: didCopy ? "checkmark.circle.fill" : "doc.on.doc")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(didCopy ? Color.green : Color.secondary)
-                            .frame(width: 18, height: 18)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                             .contentTransition(.symbolEffect(.replace))
                     }
-                    .padding(10)
-                    .contentShape(Rectangle())
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel(Text("repo.share.success.copyLink"))
+                    .pressableHover()
+
+                    Button {
+                        if let target = URL(string: url) { NSWorkspace.shared.open(target) }
+                    } label: {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .pressableHover()
+                    .help(Text("repo.share.success.openInBrowser"))
+                    .accessibilityLabel(Text("repo.share.success.openInBrowser"))
                 }
+                .padding(10)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
             }
 
         case .failure(let message):
@@ -904,14 +950,8 @@ struct RepoShareTaskSheet: View {
                     Label("repo.share.progress.cancel", systemImage: "xmark.circle")
                 }
 
-            case .success(let url):
-                Button {
-                    if let target = URL(string: url) {
-                        NSWorkspace.shared.open(target)
-                    }
-                } label: {
-                    Label("repo.share.success.openInBrowser", systemImage: "arrow.up.right.square")
-                }
+            case .success:
+                EmptyView()
 
             case .failure:
                 Button {
@@ -1173,6 +1213,7 @@ private struct RepoDateStatItem: View {
     let value: String?
     let systemImage: String
     @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(\.locale) private var locale
 
     var body: some View {
         // dong4j 2026-06-12 反馈:hero stats 行字号要统一。
@@ -1186,7 +1227,7 @@ private struct RepoDateStatItem: View {
                 Image(systemName: systemImage)
                     .foregroundStyle(.secondary)
                     .font(interfaceScale.font(.bodyEmphasis))
-                Text(repoDateStatLabel(from: value))
+                Text(repoDateStatLabel(from: value, locale: locale))
                     .monospacedDigit()
                     .lineLimit(1)
                     .font(interfaceScale.font(.bodyEmphasis, weight: .medium))
@@ -1203,9 +1244,9 @@ private struct RepoDateStatItem: View {
 ///
 /// Awesome 会先把服务端时间解析成 `Date`，再通过带毫秒的 formatter 写回 DTO；
 /// 因此这里必须同时兼容 `...56Z` 与 `...56.000Z`，不能使用只接受前一种格式的默认解析器。
-func repoDateStatLabel(from value: String?) -> String {
+func repoDateStatLabel(from value: String?, locale: Locale = .current) -> String {
     guard let date = ISO8601DateFormatter.githubDate(from: value) else {
         return "-"
     }
-    return date.formatted(.iso8601.year().month().day())
+    return date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(locale))
 }

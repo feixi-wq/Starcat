@@ -82,6 +82,10 @@ struct GRDBRepoRepository {
             var writtenIDs: Set<Int64> = []
             for dto in dtos where !protectedIDs.contains(dto.repo.id) {
                 var repo = Self.repoFromDTO(dto.repo, starredAt: dto.starredAt, cachedAt: cachedAtISO)
+                // Stars 列表不返回 subscribers_count，不能清掉详情补齐的真实关注者数。
+                if repo.subscribersCount == nil {
+                    repo.subscribersCount = try Repo.fetchOne(db, key: repo.id)?.subscribersCount
+                }
                 try repo.save(db)
 
                 var starred = StarredRepo(
@@ -259,11 +263,18 @@ struct GRDBRepoRepository {
         }
     }
 
-    func upsertRepoMetadataForLibrary(repo: Repo, syncedAt: Date) async throws -> Repo {
+    /// 预览使用同一事务完成查找与补行，避免精简快照覆盖并发同步刚写入的完整资料。
+    /// 此处只保证 README 等子表的外键父行存在，不创建 Star 或知识库归属。
+    func upsertRepoMetadataForLibrary(
+        repo: Repo,
+        syncedAt: Date,
+        preservingExisting: Bool = false
+    ) async throws -> Repo {
         let cachedAtISO = ISO8601DateFormatter.shared.string(from: syncedAt)
 
         return try await database.writer.write { db in
             let existing = try Repo.fetchOne(db, key: repo.id)
+            if preservingExisting, let existing { return existing }
             var saved = repo
             // “加入知识库”只能保证本地 metadata 存在，不能把 repo 写成 GitHub starred。
             // 已有 starred 事实必须保留；没有历史行时一律按未 star 入库。
@@ -1469,12 +1480,10 @@ struct GRDBRepoRepository {
             //   过去 mapper 没传 → `repos.owner_avatar` 列对所有同步入库的 repo 都是 NULL，
             //   逼着搜索弹窗 / 详情页只能用 `https://github.com/{login}.png` 拼凑。
             //   现在搭车每次同步自然回填，不增加任何 API 调用。
-            // - `subscribersCount` 仅 `/repos/{owner}/{name}` 端点返回，stars / search
-            //   嵌套 repo 都不含 → 保持 nil（保留为 Optional 字段供后续 D-21 之类的
-            //   懒加载场景填）。
+            // - `subscribersCount` 仅详情端点返回；列表缺省为 nil，不能用 Stars 数代替。
             // - `defaultBranch` / `openIssuesCount`：DTO 已扩，搭车回填。
             ownerAvatar: dto.owner.avatarUrl,
-            subscribersCount: nil,
+            subscribersCount: dto.subscribersCount,
             defaultBranch: dto.defaultBranch,
             openIssuesCount: dto.openIssuesCount
         )

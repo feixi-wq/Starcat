@@ -41,7 +41,7 @@
 
 - 涉及分支/worktree 操作前，先读取根目录 [`BRANCH.md`](BRANCH.md)，再用 Git 命令核对真实 refs、提交关系和 worktree 归属。
 - 创建、切换或恢复长期分支后，必须向 dong4j 说明当前分支、用途、基线、worktree、状态和后续归宿。
-- 创建新 worktree 后，必须先从主仓库复制被 Git 忽略的本地配置（至少 `Configs/Secrets.xcconfig` 和 SPM `Package.resolved`）到相同路径，再构建或测试；不输出、不提交配置内容，详见 [Git-分支与Worktree规范](docs/5-规范/Git-分支与Worktree规范.md)。
+- 创建新 worktree 后，必须先从主仓库复制被 Git 忽略的本地配置（至少 `Configs/Secrets.xcconfig`）到相同路径，再构建或测试；不输出、不提交配置内容。SPM 完整锁由受控的 `Configs/SwiftPackages.resolved` 提供，生成工程时恢复，不再从其他工作区复制生成的 `Package.resolved` 作为版本来源，详见 [Git-分支与Worktree规范](docs/5-规范/Git-分支与Worktree规范.md)。
 - 创建、合并、停放、废弃或删除长期分支/worktree 时，必须在同一任务中同步更新 `BRANCH.md`。
 - 删除前必须检查独有提交、Git 合并关系、语义覆盖和 worktree 脏状态；未审查分支禁止直接删除。
 - 未经 dong4j 明确授权，不得 push、删除远端分支、强制删除 worktree 或改写共享历史。
@@ -124,6 +124,16 @@ make run-direct
 - `build/DerivedData-Sandbox` 只属于 App Store Debug，`build/DerivedData-NoSandbox` 只属于 Direct Debug，`build/DerivedData-Tests` 只属于命令行单测。脚本会记录 Xcode / SDK / scheme 所有权指纹，环境变化时仅重建对应的可再生缓存。
 - **禁止**裸 `xcodebuild build` 写入这三个固定目录，也禁止把其他 scheme、Xcode Beta 或一次性诊断构建指向它们。
 - 需要新增构建场景时，先补 Makefile / 脚本标准入口；一次性裸 `xcodebuild` 必须使用独立的 `/tmp` DerivedData，不能借用项目固定缓存。
+
+### 简单 UI 改动免构建（2026-11-14 起生效）
+
+单个任务如果**只**改 UI 组件（间距、颜色、字号、图标、文案、对齐、局部布局等纯展示层调整），验证口径为：
+
+- **有对应单测就跑**：`make test TEST_ARGS="-only-testing:StarcatTests/XXX"`；确认没有相关测试则跳过测试，直接说明「无相关测试」。
+- **不要额外编译**：不跑 `make build-appstore` / `make build-direct` / `make run-*`，也不裸跑 `xcodebuild build`。
+- `make test` 自身会编译测试目标，属于允许范围；本条约束的是额外的产物构建。
+
+以下情况**不适用**本豁免，仍需按上文完整构建：改动涉及非 UI 逻辑（数据层、网络、并发、状态管理）、新增或删除 Swift 文件（需 `xcodegen generate`）、修改 `project.yml` / 构建配置 / 签名，或改动同时跨越 UI 与业务边界。
 
 ---
 
@@ -241,6 +251,7 @@ Starcat/
 |------|------|
 | **`AGENTS.md`** | **跨 Agent 协作唯一维护源（本文档）** |
 | **`docs/功能实现总览.md`** | **【主进度索引】所有功能 checkbox + 重构债务，开工前必读** |
+| [`LESSONS.md`](LESSONS.md) | 高置信经验规则索引；开工前按任务域核对，新增教训先登记 Rule / Reason / Evidence |
 | `docs/0-总览/README.md` | 文档总入口 / 目录结构 |
 | `docs/1-立项/概要设计.md` | 技术选型、阶段规划 |
 | `docs/1-立项/功能清单.md` | 功能优先级原表（P0/P1/P2 详细描述） |
@@ -250,7 +261,7 @@ Starcat/
 | `docs/5-规范/Git-提交规范.md` | Git commit message 格式与更新日志分类规则 |
 | `docs/5-规范/Git-分支与Worktree规范.md` | 分支、worktree、`BRANCH.md` 登记、合并与清理规则 |
 | `docs/5-规范/Changelog-更新规范.md` | Changelog 询问时机、授权边界、日常文件范围与发版生成规则 |
-| `docs/6-发版与上架/SOP-发版流程.md` | 发版 SOP（git tag 自动驱动版本号） |
+| `docs/6-发版与上架/SOP-双渠道签名与发布.md` | 当前 App Store / Direct 正式发布 SOP；`SOP-发版流程.md` 仅保留旧版流程与版本号机制 |
 
 > **阅读顺序建议**：先读 `AGENTS.md` 了解概览，再根据任务需要查阅对应文档。
 
@@ -270,6 +281,8 @@ Starcat/
 ---
 
 ## 架构决策（关键约束）
+
+新增或修改业务功能时，AI 必须主动读取并执行 [`docs/5-规范/CLI与MCP能力暴露规范.md`](docs/5-规范/CLI与MCP能力暴露规范.md)：逐动作评估 CLI / MCP 暴露、登记公共目录和验证；暂缓写具体原因，纯 UI 写不适用结论，无需 dong4j 再次提醒。
 
 1. **本地优先**: 用户数据（tags、notes、status）与 repo 缓存分离。repo 缓存可重建，用户数据不能丢失
 2. **AI 保守策略**: AI 只给建议，用户确认后才写入。标签不经确认绝不自动应用
@@ -335,11 +348,11 @@ Section {
 以下问题已在 `docs/1-立项/开发前问题清单.md` 中确认解决方案，开发时必须遵循：
 
 - ✅ macOS 最低版本：15 Sequoia
-- ✅ Swift：编译器 6.0 + 语言模式 5 + @Observable
-- ✅ README 渲染：WebView（100% GFM 兼容）
+- ✅ Swift：Swift 6 语言模式 + 严格并发检查 + @Observable；编译器由标准构建入口选择的稳定版 Xcode 提供
+- ✅ README 渲染：WKWebView；具体 GFM、资源加载与降级边界以渲染实现和相关设计为准
 - ✅ OAuth scope：`["read:user", "public_repo"]`
 - ✅ 后台任务：macOS 用 NSBackgroundActivityScheduler
-- ✅ 语义搜索：服务端计算，客户端存缓存
+- ✅ 语义搜索：Embedding Provider 生成向量，客户端保存索引并计算相似度；不依赖固定的服务端语义排序接口
 - ✅ Release 订阅通知：使用轮询方案
 
 ---
@@ -393,6 +406,11 @@ Section {
 > 单一信任源：[`docs/5-规范/UI-Focus-Ring-规范.md`](docs/5-规范/UI-Focus-Ring-规范.md)
 > 使用 `.buttonStyle(.plain)` 的 Button **必须**添加 `.focusEffectDisabled()`。
 
+### UI 规范：动效（强制，2026-11-15 起生效）
+
+> 单一信任源：[`docs/5-规范/UI-动效规范.md`](docs/5-规范/UI-动效规范.md)
+> 凡新增或修改用户可见 UI，AI 必须主动读取并落实适用的反馈、切换与加载动效，无需 dong4j 再单独提醒；列表、详情及骨架加载继续执行下述专项规范。
+
 ### UI 规范：折叠/展开整行点击（强制，2026-07-13 起生效）
 
 > 单一信任源：[`docs/5-规范/UI-折叠展开-规范.md`](docs/5-规范/UI-折叠展开-规范.md)
@@ -412,6 +430,12 @@ Section {
 
 > 单一信任源：[`docs/5-规范/UI-列表分页加载规范.md`](docs/5-规范/UI-列表分页加载规范.md)
 > 所有滚动驱动的增量列表统一使用 `ListPaginationPolicy` 与 `automaticListPagination`；剩余 10 个可见项时预取，快速滚动期间不得丢失加载需求，筛选、排序或来源变化时必须重置分页身份。
+
+### UI 规范：列表交互、详情切换与骨架加载（强制，2026-11-15 起生效）
+
+> 单一信任源：[`docs/5-规范/UI-列表与详情切换动效规范.md`](docs/5-规范/UI-列表与详情切换动效规范.md)
+> 凡新增或修改列表、导航菜单、详情页及其加载状态，AI 必须主动读取并执行该规范，无需 dong4j 再说“参考 Codenotch”。
+> 常规行列表默认具备斑马纹与整行悬停高亮；单选导航采用选中背景跨行弹簧动效；详情有完整出入场；内容区域异步加载采用骨架屏 + 轻量动画 + 就绪后过渡。只落实当前任务涉及的页面。
 
 ### UI 规范：复制按钮反馈（强制，2026-07-12 起生效）
 
@@ -443,7 +467,7 @@ Section {
 
 ---
 
-*最后更新：2026-09-13*
+*最后更新：2026-11-15*
 
 
 <claude-mem-context>

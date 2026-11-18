@@ -13,6 +13,7 @@ import Observation
 @Observable
 final class DailyRadarWorkspaceViewModel {
     static let root = "/api/v1/daily-radar"
+    /// 阅读目录与日期、列表使用同一快照版本，不作为全局侧栏统计的来源。
     private(set) var catalog: DailyRadarCatalog?
     private(set) var dates: [DailyRadarDates.Edition] = []
     private(set) var items: [DailyRadarReport] = []
@@ -215,19 +216,19 @@ final class DailyRadarWorkspaceViewModel {
         let path = "\(Self.root)/catalog"
         if let cached = await repository.cached(DailyRadarCatalog.self, path: path, parameters: query.catalogParameters) {
             guard catalogGeneration == token, !Task.isCancelled else { return }
-            applyCatalog(cached.value, events: query.category == "ai-weekly-events")
+            applySidebarCatalog(cached.value, events: query.category == "ai-weekly-events")
         }
         do {
             let loaded = try await repository.fetch(DailyRadarCatalog.self, path: path,
                                                     parameters: query.catalogParameters, force: force)
             guard catalogGeneration == token, !Task.isCancelled else { return }
-            applyCatalog(loaded.value, events: query.category == "ai-weekly-events")
+            applySidebarCatalog(loaded.value, events: query.category == "ai-weekly-events")
         } catch {
             // 目录的网络失败不清除成功缓存，也不改变正文自己的加载状态
         }
     }
 
-    private func applyCatalog(_ catalog: DailyRadarCatalog, events: Bool) {
+    private func applySidebarCatalog(_ catalog: DailyRadarCatalog, events: Bool) {
         if events { eventsCatalog = catalog }
         else { weeklyCatalog = catalog }
     }
@@ -236,9 +237,25 @@ final class DailyRadarWorkspaceViewModel {
     /// 到新内容就位）；未命中才清空进入骨架态。同身份刷新跳过快照直接网络重验证。
     /// CATALOG_CHANGED 只有限重试一次。
     func reload(force: Bool = false) async {
-        guard let repository else { return }
+        guard repository != nil else { return }
         let diagnostic = DiagnosticOperation(category: "dailyRadar", name: "reload",
                                              fields: ["force": .boolean(force)])
+        await DiagnosticContext.$current.withValue(diagnostic) {
+            if force {
+                // 手动刷新同时重验证独立目录；页面加载失败也不能阻止成功的统计更新。
+                // 普通分类/日期切换不走此路径，避免旧页面快照回退全局计数。
+                async let sidebar: Void = reloadSidebarCatalogs(force: true)
+                await reload(force: force, diagnostic: diagnostic)
+                await sidebar
+            } else {
+                await reload(force: force, diagnostic: diagnostic)
+            }
+        }
+    }
+
+    /// 目录变化重试和有效快照回退均在根操作内完成，避免把首次请求失败独立落盘。
+    private func reload(force: Bool, diagnostic: DiagnosticOperation) async {
+        guard let repository else { return }
         var diagnosticOutcome: DiagnosticEvent.Outcome = .cancelled
         defer {
             diagnostic.finish(Task.isCancelled ? .cancelled : diagnosticOutcome,
@@ -314,6 +331,11 @@ final class DailyRadarWorkspaceViewModel {
                 diagnosticOutcome = DiagnosticFailure.isCancellation(error) ? .cancelled : .failed
                 guard generation == token else { return }
                 if (error as? DailyRadarError)?.catalogChanged == true, attempt == 0 { continue }
+                let outputAvailable = publishedIdentity == expectedIdentity
+                UserFacingError.map(error, operation: "dailyRadar.reload", service: "DailyRadar",
+                    impact: outputAvailable ? .none : .blocked, summary: .contentUnavailable)
+                    .record(category: "dailyRadar", operation: "reload",
+                        fields: ["attempt": .integer(attempt + 1), "outputAvailable": .boolean(outputAvailable)])
                 if !(error is CancellationError) { failed = true }
                 return
             }
@@ -417,9 +439,8 @@ final class DailyRadarWorkspaceViewModel {
     }
 
     private func publish(catalog: DailyRadarCatalog, dates: DailyRadarDates, page: DailyRadarPage, edition: String?) {
+        // 页面快照可能早于侧栏目录：只恢复阅读会话，统计由独立目录加载路径维护。
         self.catalog = catalog
-        // 来源由当前请求身份确定，不能用空目录或分类交集猜测服务归属
-        applyCatalog(catalog, events: category == "ai-weekly-events")
         self.dates = dates.dates
         self.items = page.items
         self.total = page.total

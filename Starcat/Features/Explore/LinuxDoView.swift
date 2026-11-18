@@ -8,7 +8,9 @@
 import SwiftUI
 
 struct LinuxDoView: View {
+    @Namespace private var selectionSpace
     let store: LinuxDoStore
+    let model: LinuxDoListModel
     @Binding var selectedRepoID: Int64?
     @Binding var selectedRepo: DiscoveryRepoDTO?
     let onRepoCountChange: (Int) -> Void
@@ -16,13 +18,10 @@ struct LinuxDoView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(AuthSession.self) private var authSession
     @Environment(\.locale) private var locale
-    @State private var model = LinuxDoListModel()
     @State private var search = ""
     @State private var quickSearchDraft = ""
     @State private var isQuickSearchExpanded = false
     @State private var recentPromotionFirst = true
-    @State private var libraryStates: [Int64: LibraryState] = [:]
-    @State private var wikiAvailability: [Int64: Bool] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,8 +32,10 @@ struct LinuxDoView: View {
         .task {
             selectedRepoID = nil
             selectedRepo = nil
-            libraryStates = (try? await dependencies.repoNoteRepository.fetchAllLibraryStateMap()) ?? [:]
-            await store.refreshCatalog()
+            // 目录缓存与入库徽标互不依赖，不能让一次读库挡住首屏缓存恢复。
+            async let catalog: Void = store.refreshCatalog()
+            model.libraryStates = (try? await dependencies.repoNoteRepository.fetchAllLibraryStateMap()) ?? [:]
+            await catalog
         }
         .preference(key: RepoLicenseOptionsPreferenceKey.self,
                     value: RepoLicenseFilter.options(store.repositories.map(\.licenseSpdx)))
@@ -48,14 +49,14 @@ struct LinuxDoView: View {
             if settings.wikiAvailabilityFilter != .unknown {
                 let snapshot = await WikiAvailabilitySnapshotLoader.load(requests: repos.map { WikiAvailabilityRequest(id: $0.repoID, owner: $0.owner, repo: $0.name) })
                 guard !Task.isCancelled else { return }
-                wikiAvailability = snapshot
+                model.wikiAvailability = snapshot
             }
             _ = await (scores, health)
         }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .repoLibraryStateDidChange) {
                 guard !Task.isCancelled else { return }
-                libraryStates = (try? await dependencies.repoNoteRepository.fetchAllLibraryStateMap()) ?? [:]
+                model.libraryStates = (try? await dependencies.repoNoteRepository.fetchAllLibraryStateMap()) ?? [:]
                 rebuildList()
             }
         }
@@ -122,7 +123,9 @@ struct LinuxDoView: View {
 
     @ViewBuilder
     private var catalogContent: some View {
-        if store.catalog == nil && store.isRefreshingCatalog {
+        // 首帧任务尚未开始、或缓存快照还未生成本地行时也应显示骨架，避免闪过空目录。
+        if store.catalog == nil && !store.failed.contains(.catalog)
+            || model.rows.isEmpty && model.identity != queryIdentity {
             RepoSkeletonListView(rowCount: 10)
         } else if store.catalog == nil && store.failed.contains(.catalog) {
             // 没有缓存时，加载失败就是当前页面的主状态；不要再叠加“空目录”，
@@ -164,16 +167,23 @@ struct LinuxDoView: View {
 
     private var repoList: some View {
         let selection = dependencies.exploreMultiSelectionStore
+        // 不包含目录 revision 或结果 ID；后台刷新和分页不重播首屏，用户切换条件才重播。
+        let snapshotID = "\(store.providerID):\(store.selectedLanguage ?? ""):\(search):\(recentPromotionFirst):\(settings.skillScanFilterIdentity):\(settings.interestedLanguages)".hashValue
         return List {
             ForEach(Array(model.rows.enumerated()), id: \.element.repoID) { index, repo in
                 Button {
                     if selection.isActive { selection.toggle(SelectionSnapshot(ghRepoId: repo.repoID, owner: repo.owner, name: repo.name)) }
                     else { selectedRepoID = repo.repoID; selectedRepo = repo }
                 } label: {
-                    UnifiedRepoRow(card: repo.asCardData(registry: dependencies.starredRegistry, isInLibrary: libraryStates[repo.repoID] == .inLibrary), isSelected: selection.isActive ? selection.contains(ghRepoId: repo.repoID) : selectedRepoID == repo.repoID)
+                    UnifiedRepoRow(
+                        card: repo.asCardData(registry: dependencies.starredRegistry, isInLibrary: model.libraryStates[repo.repoID] == .inLibrary),
+                        isSelected: selection.isActive ? selection.contains(ghRepoId: repo.repoID) : selectedRepoID == repo.repoID,
+                        selectionNamespace: selection.isActive ? nil : selectionSpace
+                    )
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
+                .listRowReveal(index: index, snapshotID: snapshotID, replayAfterSnapshotCommit: true)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
                 .automaticListPagination(appearingIndex: index, visibleItemCount: model.rows.count, loadedItemCount: model.rows.count, hasMore: model.hasMore, isLoading: false, identity: model.identity) { model.loadMore() }
@@ -194,20 +204,26 @@ struct LinuxDoView: View {
             guard settings.starFilter.matches(isStarred: dependencies.starredRegistry.contains(ghRepoId: repo.repoID)) else { return false }
             if settings.hideArchived && repo.isArchived || settings.hideForks && repo.isFork { return false }
             if !settings.globalFilterLanguages.isEmpty && !settings.globalFilterLanguages.contains(where: { $0.caseInsensitiveCompare(repo.language ?? "") == .orderedSame }) { return false }
-            if !matchesAvailability(wikiAvailability[repo.repoID] ?? false, filter: settings.wikiAvailabilityFilter) { return false }
+            if !matchesAvailability(model.wikiAvailability[repo.repoID] ?? false, filter: settings.wikiAvailabilityFilter) { return false }
             if !matchesAvailability(dependencies.repoHealthStore.snapshot(for: repo.repoID) != nil, filter: settings.healthAvailabilityFilter) { return false }
             if !matchesAvailability(dependencies.openSSFScoreStore.record(for: repo.repoID)?.badgeData != nil, filter: settings.openSSFAvailabilityFilter) { return false }
             switch settings.libraryFilter {
             case .all: return true
-            case .inLibrary: return libraryStates[repo.repoID] == .inLibrary
-            case .outsideLibrary: return libraryStates[repo.repoID] != .inLibrary
+            case .inLibrary: return model.libraryStates[repo.repoID] == .inLibrary
+            case .outsideLibrary: return model.libraryStates[repo.repoID] != .inLibrary
             }
         }
     }
 
     private var queryIdentity: String {
-        // 显式包含语言身份，两个空分类（或结果相同的分类）之间切换也必须重置分页。
-        "\(store.providerID):\(store.catalog?.payload.revision ?? -1):\(store.selectedLanguage ?? ""):\(settings.licenseFilter.cacheKey):\(search):\(recentPromotionFirst):\(filteredRepositories.map(\.repoID))"
+        // 身份只读输入，不在 body / 刷新命令 / 骨架判断中反复筛选全目录、拼接结果 ID。
+        // 动态集合只在对应筛选启用时参与失效；同版本的 TTL / 304 校验不会丢失已加载页。
+        let stars = settings.starFilter == .all ? 0 : dependencies.starredRegistry.ids.hashValue
+        let library = settings.libraryFilter == .all ? 0 : model.libraryStates.hashValue
+        let wiki = settings.wikiAvailabilityFilter == .unknown ? 0 : model.wikiAvailability.hashValue
+        let health = settings.healthAvailabilityFilter == .unknown ? 0 : Set(dependencies.repoHealthStore.snapshots.keys).hashValue
+        let scores = settings.openSSFAvailabilityFilter == .unknown ? 0 : Set(dependencies.openSSFScoreStore.records.compactMap { $0.value.badgeData == nil ? nil : $0.key }).hashValue
+        return "\(store.providerID):\(store.catalog?.payload.revision ?? -1):\(store.selectedLanguage ?? ""):\(settings.skillScanFilterIdentity):\(settings.interestedLanguages):\(search):\(recentPromotionFirst):\(stars):\(library):\(wiki):\(health):\(scores)"
     }
 
     private var signalIdentity: String {

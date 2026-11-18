@@ -44,7 +44,9 @@ struct SidebarHeaderView: View {
     /// 2026-06-06 A 方案：accountMenu 中"刷新个人信息"项触发 `load(force: true)`，
     /// 同时让贡献草坪和开发语言也跟着刷一下（用户主动刷新时一并更新）。
     @Environment(UserProfileService.self) private var userProfileService
-    /// 分享卡 Top Languages 使用用户自有公开仓库语言统计，不使用 starred 项目语言分布。
+    /// 刷新时间的相对文案必须跟随 App 内语言设置，不能退回系统 locale。
+    @Environment(\.locale) private var locale
+    /// 个人语言条与分享卡共用自有公开仓库的统计，不使用 starred 项目语言分布。
     @Environment(DeveloperLanguageService.self) private var developerLanguageService
 
     /// 当前在 Trending 页面选中的 repo（仅在 Trending 页面有效，Manage 页面为 nil）。
@@ -68,6 +70,10 @@ struct SidebarHeaderView: View {
     /// 点击头像左侧分享图标时打开；sheet 关闭回调置回 false。
     @State private var showShareCardSheet: Bool = false
 
+    /// 每次打开资料浮层时更新基准时间，避免刷新提示停留在旧值。
+    @State private var accountMenuReferenceDate = Date()
+    @State private var showAccountPopover = false
+
     var body: some View {
         VStack(spacing: 6) {
             switch authSession.state {
@@ -77,7 +83,11 @@ struct SidebarHeaderView: View {
                 // HOM-PROFILE 2026-06-05：bio + 个人主页快捷链接图标行；
                 // 全部字段为空时该 view 自身不渲染内容，不会浪费垂直空间。
                 ProfileLinksRow(user: user)
-                statsRow(user: user)
+                // 15pt 热区在 3pt 色条上下各留 6pt，组内不再叠加外层间距。
+                VStack(spacing: 0) {
+                    statsRow(user: user)
+                    developerLanguageBar
+                }
             case .unauthenticated, .awaitingUserCode, .awaitingWebCallback:
                 // 2026-06-29：把 .awaitingWebCallback 也归到 unauthenticated 显示分支
                 // ——sidebar 头像卡不需要区分"正在走哪个 flow"，反正都是未登录态
@@ -87,7 +97,8 @@ struct SidebarHeaderView: View {
         }
         .padding(.horizontal, 14)
         .padding(.top, 8)
-        .padding(.bottom, 12)
+        // 登录态由色条下方 6pt 热区与草坪顶部 2pt 组成 8pt 间距。
+        .padding(.bottom, authSession.state.isAuthenticated ? 0 : 12)
         .background(alignment: .top) { sidebarTintBackground }
         // HOM-175：防御性兜底，强制整张头像卡严格按内容尺寸（垂直方向不被拉伸）。
         // 即便未来子视图（avatarRow / ProfileLinksRow / statsRow）再次引入垂直
@@ -127,8 +138,25 @@ struct SidebarHeaderView: View {
             } else {
                 // 登出时强制关闭分享卡（防止后台 sheet 残留显示旧用户信息）
                 showShareCardSheet = false
+                showAccountPopover = false
             }
         }
+    }
+
+    /// 直接消费现有快照，以详情页相同的 Top 5 + Other 规则展示完整比例。
+    /// 只增加展示入口，加载、缓存与手动刷新仍由现有开发语言服务负责。
+    private var developerLanguageBar: some View {
+        let bytesByLanguage = developerLanguageService.snapshot?.languages.reduce(
+            into: [String: Int]()
+        ) { result, entry in
+            result[entry.name] = entry.bytes
+        } ?? [:]
+
+        return LanguageDistributionBar(
+            segments: RepositoryLanguageDistributionViewModel.makeSegments(from: bytesByLanguage),
+            barHeight: 3,
+            hoverHeight: 15
+        )
     }
 
     // MARK: - 选中 repo 语言色背景
@@ -393,40 +421,12 @@ struct SidebarHeaderView: View {
         .accessibilityLabel(Text("sharecard.button.help"))
     }
 
-    /// 账户操作菜单。使用 SwiftUI 原生 Menu 组件，自带圆角、hover 反馈等系统样式。
+    /// 复用原有右上角入口；资料和账户操作收进同一个原生 Popover，避免出现两个省略号按钮。
     @ViewBuilder
     private func accountMenu() -> some View {
-        Menu {
-            Button {
-                AppDelegate.openSettingsWindow()
-            } label: {
-                Label("settings.general.title", systemImage: "gearshape")
-            }
-
-            // 2026-06-06 A 方案 D5-B：手动刷新个人信息入口。
-            // 触发 UserProfileService / ContributionService / DeveloperLanguageService 同时 force refresh。
-            // GitHub Stars List 属于当前账号的远端资料；用户主动刷新个人信息时也顺手同步一次。
-            // 拉到后 profile service 反向 push 给 AuthSession.state，sidebar 自然更新；分享卡数据用 service 快照更新。
-            if let login = authSession.state.user?.login {
-                Button {
-                    userProfileService.load(login: login, force: true)
-                    contributionService.load(login: login, force: true)
-                    developerLanguageService.load(login: login, force: true)
-                    Task { await refreshGitHubStarLists(login: login) }
-                } label: {
-                    Label("sidebar.account.refreshProfile", systemImage: "arrow.clockwise")
-                }
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                // signOut 改 async（2026-06-12 多账号 DB 隔离要 await DB 切换完成），
-                // SwiftUI Button action 是同步闭包，包 Task 触发即可。
-                Task { await authSession.signOut() }
-            } label: {
-                Label("auth.signOut", systemImage: "rectangle.portrait.and.arrow.right")
-            }
+        Button {
+            accountMenuReferenceDate = Date()
+            showAccountPopover.toggle()
         } label: {
             Image(systemName: "ellipsis.circle.fill")
                 .font(.system(size: 16))
@@ -435,7 +435,30 @@ struct SidebarHeaderView: View {
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .help(Text("sidebar.account"))
+        .popover(isPresented: $showAccountPopover, arrowEdge: .trailing) {
+            if let user = authSession.state.user {
+                ProfileAccountPopover(
+                    user: user,
+                    service: dependencies.profileExtrasService,
+                    lastRefreshed: userProfileService.lastFetchedAt.map(lastRefreshedText),
+                    onRefresh: {
+                        dependencies.profileExtrasService.load(user: user, force: true)
+                        userProfileService.load(login: user.login, force: true)
+                        contributionService.load(login: user.login, force: true)
+                        developerLanguageService.load(login: user.login, force: true)
+                        Task { await refreshGitHubStarLists(login: user.login) }
+                    },
+                    onSignOut: {
+                        showAccountPopover = false
+                        Task { await authSession.signOut() }
+                    }
+                )
+                .id(user.id)
+                .appLocaleEnvironment()
+            }
+        }
+        .help(Text("profile.extras.title"))
+        .accessibilityLabel(Text("profile.extras.title"))
     }
 
     // MARK: - 显示名 + login
@@ -571,6 +594,20 @@ struct SidebarHeaderView: View {
     private func refreshGitHubStarLists(login: String) async {
         await dependencies.githubStarListSyncService.sync(login: login)
         await viewModel.refreshGitHubStarListData(reloadCurrentList: true)
+    }
+
+    /// 仅展示相对时间；`.named` 让“1 天前”自然显示为“昨天”，并显式跟随 App 语言。
+    private func lastRefreshedText(_ date: Date) -> String {
+        let relativeTime = RelativeTimeText.pastEvent(
+            date,
+            relativeTo: max(date, accountMenuReferenceDate),
+            locale: locale,
+            dateTimeStyle: .named
+        )
+        return String(
+            format: String.l10n("sidebar.account.refreshedRelativeFormat"),
+            relativeTime
+        )
     }
 }
 

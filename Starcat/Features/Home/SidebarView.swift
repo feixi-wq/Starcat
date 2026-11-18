@@ -35,6 +35,7 @@ private struct GitHubStarListEditorItem: Identifiable {
 /// / `selectedWeeklyLanguage` 等现有 binding 中，避免把视觉选中态改成新的数据源。
 private enum ExploreSidebarSelection: Hashable {
     case mode(ExploreMode)
+    case recommendationDate(RecommendationHistoryDateScope)
     case topic(String?)
     case platform(String?)
     case language(String?)
@@ -46,6 +47,13 @@ private enum ExploreSidebarSelection: Hashable {
     case dailyRadarCategory(String?)
     /// 文章工作区独立于仓库分类筛选，保留用户原仓库选择。
     case dailyRadarPreview
+}
+
+/// 子分类的展示身份包含独立来源；Linux.do 与普通发现虽然同属 discover，仍须分别过渡。
+private enum ExploreSidebarContext: Equatable {
+    case mode(ExploreMode)
+    case linuxDo
+    case dailyRadar
 }
 
 /// 探索侧栏图标色：未选中用语义色；明亮主题选中时跟系统蓝底反成白色。
@@ -91,6 +99,7 @@ struct SidebarView: View {
     @State private var explorePlatformsExpanded: Bool = true
     /// 每日热点子分类展开/收起状态；「全部主题」行常驻，仅子分类折叠（2026-11-04 对齐其他分组）。
     @State private var dailyRadarCategoriesExpanded: Bool = true
+    @State private var recommendationOlderDatesExpanded = false
     /// Activity 分类列表展开/收起状态。Activity 是独立 root，不能复用 Trending 的展开态。
     @State private var activityCategoriesExpanded: Bool = true
     @Binding var selectedPage: SidebarRootPage
@@ -127,12 +136,12 @@ struct SidebarView: View {
     ///
     /// 只传最终颜色而不传 `ActivityItem`，避免 Sidebar 需要理解 Activity 的详情模型。
     var currentActivityTintColor: Color?
-
     /// 每日热点独立内容区的展示状态由主窗口持有。
     @Binding var dailyRadarPreviewPresentation: Bool
 
     /// 与右侧覆盖层共享的每日热点目录/分类状态；左栏不创建第二套请求。
     @Bindable var dailyRadarModel: DailyRadarWorkspaceViewModel
+    let recommendationHistoryModel: RecommendationHistoryListModel
     /// 新功能标识状态由主窗口持有；侧栏只读展示，并在系统 List 选中时写入首次点击记录。
     var newFeatureBadgeStore: NewFeatureBadgeStore
     var onOpenFollowGraph: (FollowGraphRelation) -> Void = { _ in }
@@ -228,13 +237,32 @@ struct SidebarView: View {
                 // macOS Sheet 不会让宿主窗口退出前台。AI 分组窗口展示期间把侧栏的
                 // 12/20 FPS 装饰时钟切成静态分支，让出转场渲染预算。
                 .environment(\.starcatContinuousAnimationsPaused, showGitHubStarListAIGroupingSheet)
-            sidebarList
+            // 两个板块在同一时段交接，不先把导航淡到全透明；固定容器避免列表尺寸参与过渡。
+            ZStack(alignment: .topLeading) {
+                sidebarList(for: selectedPage)
+                    .id(selectedPage)
+                    .transition(reduceMotion ? .identity : .opacity)
+                    .zIndex(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: selectedPage)
+            // 加载任务位于稳定容器，离场列表不会额外保留或重启同一份查询。
+            .task(id: selectedPage == .manage ? viewModel.sidebarFacetQuery : nil) {
+                guard selectedPage == .manage else { return }
+                await viewModel.refreshSidebarFacetCounts()
+            }
+            .task(id: selectedPage == .trending ? dailyRadarScope : nil) {
+                guard selectedPage == .trending else { return }
+                await prepareDailyRadarSidebar()
+            }
             // 后台任务区统一承载自动/手动整理与面板已关闭的单仓摘要。
             // 手动整理会抢占本轮自动整理，因此两者不会同时出现。
             backgroundTaskFooter
         }
         .background(.bar)
         .task {
+            await dependencies.linuxDoStore.restoreCatalog()
             // 公共来源索引不依赖进入发现页；长期前台使用也按 TTL 低频更新。
             while !Task.isCancelled {
                 await dependencies.linuxDoStore.refreshProvenance()
@@ -864,6 +892,8 @@ struct SidebarView: View {
                 trendingRepo: currentTrendingRepo,
                 activityTintColor: currentActivityTintColor
             )
+            // 语言提示向下浮出资料区，需要绘制在相邻贡献草坪上方。
+            .zIndex(1)
 
             // 贡献草坪：与 Activity 选中/tint 完全解耦；固定 id 保持 TimelineView identity。
             SidebarContributionGraphSection()
@@ -898,6 +928,9 @@ struct SidebarView: View {
 
     private var defaultExploreSidebarSelection: ExploreSidebarSelection {
         switch selectedExploreMode {
+        case .recommendations:
+            return recommendationHistoryModel.dateScope == .all
+                ? .mode(.recommendations) : .recommendationDate(recommendationHistoryModel.dateScope)
         case .discover:
             if dependencies.linuxDoStore.selectedSource == .linuxDo {
                 if let language = dependencies.linuxDoStore.selectedLanguage { return .linuxDoLanguage(language) }
@@ -931,7 +964,11 @@ struct SidebarView: View {
         case .dailyRadarCategory(let id):
             return dailyRadarPreviewPresentation && dailyRadarModel.category == id
         case .mode(let mode):
-            return selectedExploreMode == mode && (mode != .discover || dependencies.linuxDoStore.selectedSource == .catalog)
+            return selectedExploreMode == mode
+                && (mode != .recommendations || recommendationHistoryModel.dateScope == .all)
+                && (mode != .discover || dependencies.linuxDoStore.selectedSource == .catalog)
+        case .recommendationDate(let scope):
+            return selectedExploreMode == .recommendations && recommendationHistoryModel.dateScope == scope
         case .topic(let code):
             return selectedExploreMode == .discover && dependencies.linuxDoStore.selectedSource == .catalog && selectedDiscoveryTopic == code
         case .platform(let code):
@@ -981,6 +1018,7 @@ struct SidebarView: View {
             dailyRadarModel.selectCategory(id)
         case .mode(let mode):
             selectedExploreMode = mode
+            if mode == .recommendations { recommendationHistoryModel.dateScope = .all }
             if mode == .awesome {
                 guard authSession.state.isAuthenticated else {
                     showLoginSheet = true
@@ -991,6 +1029,9 @@ struct SidebarView: View {
         case .topic(let code):
             selectedExploreMode = .discover
             selectedDiscoveryTopic = code
+        case .recommendationDate(let scope):
+            recommendationHistoryModel.dateScope = scope
+            selectedExploreMode = .recommendations
         case .platform(let code):
             selectedExploreMode = .discover
             selectedDiscoveryPlatform = code
@@ -1020,8 +1061,16 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private var sidebarList: some View {
-        switch selectedPage {
+    private func sidebarList(for page: SidebarRootPage) -> some View {
+        sidebarListContent(for: page)
+            .allowsHitTesting(page == selectedPage)
+            .accessibilityHidden(page != selectedPage)
+    }
+
+    /// 每个板块保留原生 List 的选择语义；外层身份只用于板块之间的交叉淡化。
+    @ViewBuilder
+    private func sidebarListContent(for page: SidebarRootPage) -> some View {
+        switch page {
         case .manage:
             List(selection: Binding(
                 get: { viewModel.selection },
@@ -1030,30 +1079,17 @@ struct SidebarView: View {
                 manageSidebarContent
             }
             .listStyle(.sidebar)
-            .task(id: viewModel.sidebarFacetQuery) {
-                await viewModel.refreshSidebarFacetCounts()
-            }
         case .trending:
             List(selection: exploreSidebarSelectionBinding) {
                 exploreModeSidebarContent
-                if !dailyRadarPreviewPresentation {
-                    exploreSidebarContent
-                } else {
-                    dailyRadarSidebarContent
-                }
+                exploreSidebarContent
+                    // 分类直接随选择更新，只有变化的内容在同一事务中过渡，避免整段淡空。
+                    // 不重置 List 或分类身份，未变化的语言行与模式入口保持稳定。
+                    .contentTransition(.opacity)
+                    .transition(reduceMotion ? .identity : .opacity)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: exploreSidebarContext)
             }
             .listStyle(.sidebar)
-            .task(id: dailyRadarScope) {
-                await prepareDailyRadarSidebar()
-            }
-            // 分类行自身挂有折叠/展开 transition；切 Explore mode 时不能复用
-            // List(selection:) 的系统选中动画，否则旧筛选 section 退场与新 section
-            // 入场会连续触发整窗 layout。手动点 header 的 disclosureSpring 是另一笔
-            // transaction，不受这里影响。
-            .transaction(value: selectedExploreMode) { transaction in
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-            }
         case .activity:
             List(selection: $selectedActivityCategory) {
                 activitySidebarContent
@@ -1065,6 +1101,20 @@ struct SidebarView: View {
             }
             .listStyle(.sidebar)
         }
+    }
+
+    private var exploreSidebarContext: ExploreSidebarContext {
+        if dailyRadarPreviewPresentation { return .dailyRadar }
+        if selectedExploreMode == .discover, dependencies.linuxDoStore.selectedSource == .linuxDo {
+            return .linuxDo
+        }
+        return .mode(selectedExploreMode)
+    }
+
+    /// 语言段读取当前来源的模式，Linux.do 与每日热点仍沿用各自独立的数据源。
+    private var exploreLanguageMode: ExploreMode {
+        if case .mode(let mode) = exploreSidebarContext { return mode }
+        return .discover
     }
 
     /// 与阅读工作区使用相同身份，预加载目录后打开文章不会再次清空计数或选中分类
@@ -1220,11 +1270,14 @@ struct SidebarView: View {
                     )
                     .disabled(!viewModel.canFilterByTags)
                     .opacity(viewModel.canFilterByTags ? 1 : 0.5)
+                    .contentTransition(.opacity)
                     .transition(Self.disclosureRowTransition)
                 }
             } header: {
                 tagSectionHeader
             }
+            // 标签标题与列表保留身份，仅在基础分类切换时平滑交接局部内容。
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: viewModel.selection)
 
             if !viewModel.languageStats.isEmpty || viewModel.libraryCount > 0 || viewModel.myProjectsCount > 0 {
                 // HOM-43：折叠按钮始终可见，不依赖 hover；图标在右侧；点击整个区域可折叠
@@ -1243,6 +1296,8 @@ struct SidebarView: View {
                 } header: {
                     languageSectionHeader
                 }
+                .contentTransition(.opacity)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: viewModel.selection)
             }
         } else {
             Section {
@@ -1257,6 +1312,11 @@ struct SidebarView: View {
     @ViewBuilder
     private var exploreModeSidebarContent: some View {
         Section("nav.trending") {
+            exploreSelectableRow(selection: .mode(.recommendations), count: dependencies.dailyRecommendationStore.hasLoadedState ? dependencies.dailyRecommendationStore.historyEntries.count : nil) {
+                exploreSidebarBusinessIcon(.recommendations, color: .blue)
+            } title: {
+                Text("recommendations.daily.navigationTitle.short")
+            }
             if settings.exploreCatalogPreferences.isGroupEnabled("dailyRadar") {
                 exploreSelectableRow(selection: .dailyRadarPreview, count: dailyRadarModel.totalCount) {
                     // 每日热点与 Weekly 拆分图形：雷达 vs 报纸（2026-11-04 图标体系样板决议）。
@@ -1274,8 +1334,15 @@ struct SidebarView: View {
                         selection: .linuxDo,
                         count: dependencies.linuxDoStore.provenance?.payload.origins?.count ?? 0
                     ) {
-                        // 社区来源使用单气泡，复用分类字号与字重，避免独立缩放造成笔画不一致。
-                        exploreSidebarBusinessIcon(.linuxDo, color: .indigo)
+                        // 官方圆形占画布的 5/6；17.6pt 画布使可见直径与相邻 16pt 业务图标一致。
+                        // 外层仍用原来的 16pt 图标槽，品牌原色不参与选中态染色。
+                        Image("LinuxDoOfficialLogo")
+                            .resizable()
+                            .renderingMode(.original)
+                            .scaledToFit()
+                            .frame(width: 17.6 * interfaceScale.multiplier, height: 17.6 * interfaceScale.multiplier)
+                            .frame(width: 16, height: 16)
+                            .accessibilityHidden(true)
                     } title: {
                         HStack(spacing: 4) {
                             Text(verbatim: "Linux.do")
@@ -1296,34 +1363,15 @@ struct SidebarView: View {
         ) {
             exploreSidebarBusinessIcon(mode.businessIcon, color: mode.sidebarIconColor)
         } title: {
-            HStack(spacing: 4) {
-                Text(mode.titleKey)
-                    .lineLimit(1)
-                if mode == .awesome {
-                    Button {
-                        guard authSession.state.isAuthenticated else {
-                            showLoginSheet = true
-                            return
-                        }
-                        Task { await dependencies.awesomeStore.presentSourceManager() }
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(interfaceScale.font(.captionSmall))
-                            .foregroundStyle(ExploreSidebarIconStyle(semanticColor: .secondary))
-                            .frame(width: 18, height: 18)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-                    .help(Text("awesome.sources.manage"))
-                    .accessibilityLabel(Text("awesome.sources.manage"))
-                }
-            }
+            Text(mode.titleKey)
+                .lineLimit(1)
         }
     }
 
     private func exploreModeCount(_ mode: ExploreMode) -> Int? {
         switch mode {
+        case .recommendations:
+            return dependencies.dailyRecommendationStore.historyEntries.count
         case .trending:
             return dependencies.trendingLanguageStore.sidebarTotalCount
         case .discover, .popular, .newReleases:
@@ -1337,21 +1385,70 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var exploreSidebarContent: some View {
-        switch selectedExploreMode {
-        case .discover:
-            if dependencies.linuxDoStore.selectedSource == .catalog {
+        switch exploreSidebarContext {
+        case .dailyRadar:
+            dailyRadarSidebarContent
+        case .linuxDo:
+            linuxDoLanguageSidebarContent
+        case .mode(let mode):
+            switch mode {
+            case .recommendations:
+                recommendationDateSidebarContent
+            case .discover:
                 exploreDiscoverySidebarContent
-            } else {
-                linuxDoLanguageSidebarContent
+            case .popular, .newReleases:
+                exploreLanguageSidebarContent
+            case .trending:
+                trendingSidebarContent
+            case .weekly:
+                weeklyLanguageSidebarContent
+            case .awesome:
+                awesomeSourceSidebarContent
             }
-        case .popular, .newReleases:
-            exploreLanguageSidebarContent
-        case .trending:
-            trendingSidebarContent
-        case .weekly:
-            weeklyLanguageSidebarContent
-        case .awesome:
-            awesomeSourceSidebarContent
+        }
+    }
+
+    /// 最近五个自然日只占有数据的日期行，更早日期集中折叠；选择与中栏共用窗口模型。
+    private var recommendationDateSidebarContent: some View {
+        let entries = dependencies.dailyRecommendationStore.historyEntries
+        let dates = RecommendationHistoryDates(entries: entries)
+        return Section("recommendations.history.datesTitle") {
+            recommendationDateRow(.all, count: entries.count)
+            ForEach(dates.recent) { group in
+                recommendationDateRow(.day(group.day), count: group.count)
+            }
+            if !dates.older.isEmpty {
+                Button {
+                    withAnimation(disclosureAnimation) { recommendationOlderDatesExpanded.toggle() }
+                } label: {
+                    HStack {
+                        Text(LocalizedStringKey(recommendationOlderDatesExpanded
+                            ? "recommendations.history.lessDates" : "recommendations.history.moreDates"))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(recommendationOlderDatesExpanded ? 90 : 0))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .foregroundStyle(.secondary)
+                if recommendationOlderDatesExpanded {
+                    ForEach(dates.older) { group in
+                        recommendationDateRow(.day(group.day), count: group.count)
+                    }
+                }
+            }
+            if dates.unknownCount > 0 { recommendationDateRow(.unknown, count: dates.unknownCount) }
+        }
+    }
+
+    private func recommendationDateRow(_ scope: RecommendationHistoryDateScope, count: Int) -> some View {
+        exploreSelectableRow(selection: .recommendationDate(scope), count: count) {
+            exploreSidebarSystemIcon(scope == .all ? "clock" : "calendar", color: .blue)
+        } title: {
+            Text(verbatim: scope.title(locale: locale))
         }
     }
 
@@ -1535,7 +1632,7 @@ struct SidebarView: View {
 
             if trendingLanguagesExpanded {
                 let items = exploreLanguageRowItems(
-                    keysWithCounts: dependencies.exploreCatalogStore.displayLanguages(for: selectedExploreMode).map { ($0.key, $0.count) },
+                    keysWithCounts: dependencies.exploreCatalogStore.displayLanguages(for: exploreLanguageMode).map { ($0.key, $0.count) },
                     interestedLanguages: viewModel.interestedLanguages
                 )
                 ForEach(items) { item in
@@ -2000,9 +2097,9 @@ struct SidebarView: View {
 
                 Spacer(minLength: 8)
 
-                Text((dependencies.linuxDoStore.selectedSource == .linuxDo && selectedExploreMode == .discover
+                Text((exploreSidebarContext == .linuxDo
                     ? dependencies.linuxDoStore.languages.count
-                    : dependencies.exploreCatalogStore.displayLanguages(for: selectedExploreMode).count).formatted())
+                    : dependencies.exploreCatalogStore.displayLanguages(for: exploreLanguageMode).count).formatted())
                     .font(interfaceScale.font(.captionSmall))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -2241,7 +2338,7 @@ struct SidebarView: View {
         // 「全部」回退到 catalog total。
         let count: Int? = language?.count ?? (isLinuxDo
             ? dependencies.linuxDoStore.repositories.count
-            : dependencies.exploreCatalogStore.total(for: selectedExploreMode))
+            : dependencies.exploreCatalogStore.total(for: exploreLanguageMode))
         // 语言 logo 不是 SF Symbol，不能塞进 systemImage 字符串；仍走 Label icon 槽，
         // 与趋势/周刊语言行、星标主导航同一套 sidebar 图标列对齐。
         return exploreSelectableRow(
@@ -2770,7 +2867,7 @@ struct SidebarView: View {
                     Spacer(minLength: 4)
                     HStack(spacing: 4) {
                         Spacer(minLength: 0)
-                        Text(viewModel.sidebarLanguageStats == nil ? "—" : row.count.formatted())
+                        Text(viewModel.sidebarLanguageTotal == nil ? "—" : row.count.formatted())
                             .font(interfaceScale.font(.captionSmall))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()

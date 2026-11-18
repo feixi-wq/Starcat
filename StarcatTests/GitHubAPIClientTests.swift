@@ -185,6 +185,9 @@ struct GitHubAPIClientTests {
                 }
                 """.data(using: .utf8)!
                 return (httpResponse(200, request.url!), body)
+            case "/users/alice/orgs":
+                let body = #"[{"id":101,"login":"example-org","avatar_url":"https://avatars.example/org.png","description":"Example organization"}]"#.data(using: .utf8)!
+                return (httpResponse(200, request.url!), body)
             default:
                 throw URLError(.badURL)
             }
@@ -197,11 +200,207 @@ struct GitHubAPIClientTests {
         #expect(user.status?.message == "Shipping Starcat")
         #expect(user.activeStatus?.displayEmoji == "😘")
         #expect(user.updatedAt == "2026-07-30T12:34:56Z")
-        #expect(URLProtocolStub.receivedRequests.map { $0.url?.path } == ["/user", "/graphql"])
-        let graphQLRequest = try #require(URLProtocolStub.receivedRequests.last)
+        #expect(user.organizations?.first?.login == "example-org")
+        #expect(user.organizations?.first?.avatarUrl == "https://avatars.example/org.png")
+        #expect(user.organizations?.first?.description == "Example organization")
+        #expect(URLProtocolStub.receivedRequests.map { $0.url?.path } == ["/user", "/graphql", "/users/alice/orgs"])
+        let graphQLRequest = try #require(URLProtocolStub.receivedRequests.first { $0.url?.path == "/graphql" })
         #expect(graphQLRequest.httpMethod == "POST")
         #expect(graphQLRequest.value(forHTTPHeaderField: "Authorization") == "Bearer status-token")
         #expect(graphQLRequest.value(forHTTPHeaderField: "Content-Type") == "application/json")
+    }
+
+    @Test("getCurrentUser(forceRefresh: true) 必须绕过 URLCache")
+    func getCurrentUserForceRefreshBypassesURLCache() async throws {
+        let client = makeClient(token: "force-token")
+        URLProtocolStub.requestHandler = { request in
+            switch request.url?.path {
+            case "/user":
+                let body = #"{"id":42,"login":"alice","followers":55}"#.data(using: .utf8)!
+                return (httpResponse(200, request.url!), body)
+            case "/graphql":
+                let body = #"{"data":{"viewer":{"status":null}}}"#.data(using: .utf8)!
+                return (httpResponse(200, request.url!), body)
+            case "/users/alice/orgs":
+                return (httpResponse(200, request.url!), Data("[]".utf8))
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        // 必须走协议 existential 调用：生产侧 `UserProfileService` 持有的是
+        // `any GitHubAPIClientProtocol`。若协议扩展的默认实现赢过 actor 的真实实现，
+        // cache policy 会被静默丢弃，这里就是唯一能发现该回归的地方。
+        let protocolClient: any GitHubAPIClientProtocol = client
+        let user = try await protocolClient.getCurrentUser(forceRefresh: true)
+
+        #expect(user.followers == 55)
+        let profileRequest = try #require(URLProtocolStub.receivedRequests.first)
+        #expect(profileRequest.url?.path == "/user")
+        // GitHub `/user` 带 60 秒 max-age；强制刷新必须显式忽略本地缓存，
+        // 否则用户连点两次会拿到同一份旧响应。
+        #expect(profileRequest.cachePolicy == .reloadIgnoringLocalCacheData)
+        let organizationsRequest = try #require(URLProtocolStub.receivedRequests.last)
+        #expect(organizationsRequest.url?.path == "/users/alice/orgs")
+        #expect(organizationsRequest.cachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(user.organizations == [])
+    }
+
+    /// 组织列表必须按 Link 指定的页码继续，并把强制刷新传到每一页。
+    @Test("公开组织完整分页且沿用刷新策略", arguments: [false, true])
+    func userOrganizationsFollowPagination(forceRefresh: Bool) async throws {
+        let client = makeClient(token: nil)
+        URLProtocolStub.requestHandler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let page = query.first { $0.name == "page" }?.value
+            let headers = page == "1"
+                ? ["Link": #"<https://api.test.invalid/users/alice/orgs?page=3&per_page=100>; rel="next""#]
+                : [:]
+            let body = page == "1"
+                ? #"[{"id":1,"login":"first-org","avatar_url":null,"description":null}]"#
+                : #"[{"id":2,"login":"last-org","avatar_url":null,"description":null}]"#
+            return (httpResponse(200, request.url!, headers), Data(body.utf8))
+        }
+
+        let organizations = try await client.getUserOrganizations(login: "alice", forceRefresh: forceRefresh)
+
+        #expect(organizations.map(\.login) == ["first-org", "last-org"])
+        let requests = URLProtocolStub.receivedRequests
+        #expect(requests.count == 2)
+        for request in requests {
+            #expect(request.url?.path == "/users/alice/orgs")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            #expect(request.cachePolicy == (forceRefresh ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy))
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            #expect(query.contains(URLQueryItem(name: "per_page", value: "100")))
+        }
+        #expect(requests.last?.url?.query?.contains("page=3") == true)
+    }
+
+    /// 两项补充资料各自降级，任一请求失败都不能丢掉另一项或 REST 身份资料。
+    @Test("组织和状态接口相互独立地降级", arguments: [false, true])
+    func userProfileSupplementFailuresAreIndependent(statusFails: Bool) async throws {
+        let client = makeClient()
+        URLProtocolStub.requestHandler = { request in
+            switch request.url?.path {
+            case "/user":
+                return (httpResponse(200, request.url!), Data(#"{"id":42,"login":"alice"}"#.utf8))
+            case "/graphql":
+                let body = #"{"data":{"viewer":{"status":{"emoji":"wave","message":"Hello","expiresAt":null,"indicatesLimitedAvailability":false,"updatedAt":"2026-11-14T00:00:00Z"}}}}"#
+                return (httpResponse(statusFails ? 500 : 200, request.url!), Data(body.utf8))
+            case "/users/alice/orgs":
+                let body = #"[{"id":101,"login":"example-org","avatar_url":null,"description":null}]"#
+                return (httpResponse(statusFails ? 200 : 500, request.url!), Data(body.utf8))
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        let user = try await client.getCurrentUser()
+
+        #expect(user.id == 42)
+        #expect(user.login == "alice")
+        #expect(user.status?.message == (statusFails ? nil : "Hello"))
+        #expect(user.organizations?.map(\.login) == (statusFails ? ["example-org"] : nil))
+    }
+
+    /// 公开列表和授权列表都必须完整分页，组织 ID 去重后仍包含非公开成员关系。
+    @Test("账户组织合并公开和非公开列表", arguments: [false, true])
+    func profileOrganizationsMergeAllPages(forceRefresh: Bool) async throws {
+        let client = makeClient(token: "org-token")
+        URLProtocolStub.requestHandler = { request in
+            let isPublic = request.url?.path == "/users/alice/orgs"
+            let isFirst = request.url?.query?.contains("page=1&") == true
+            let headers = isFirst && !isPublic
+                ? ["Link": #"<https://api.test.invalid/user/orgs?page=3>; rel="next""#] : [:]
+            let body = isPublic ? #"[{"id":1,"login":"public-org"}]"#
+                : (isFirst ? #"[{"id":1,"login":"public-org"},{"id":2,"login":"private-org"}]"#
+                    : #"[{"id":3,"login":"another-private-org"}]"#)
+            return (httpResponse(200, request.url!, headers), Data(body.utf8))
+        }
+        let result = try await client.getProfileOrganizations(login: "alice", forceRefresh: forceRefresh)
+        #expect(result.organizations.map(\.id) == [1, 2, 3])
+        #expect(!result.accessLimited)
+        let requests = URLProtocolStub.receivedRequests
+        #expect(requests.count == 3)
+        #expect(requests.last?.url?.query?.contains("page=3") == true)
+        for request in requests {
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer org-token")
+            #expect(request.cachePolicy == (forceRefresh ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy))
+        }
+    }
+
+    /// 权限不足和 SSO 部分结果都要保留公开组织，并明确标记可见范围可能不完整。
+    @Test("组织权限限制保留公开结果", arguments: [403, 200])
+    func profileOrganizationsReportLimitedAccess(statusCode: Int) async throws {
+        let client = makeClient()
+        URLProtocolStub.requestHandler = { request in
+            if request.url?.path == "/users/alice/orgs" {
+                return (httpResponse(200, request.url!), Data(#"[{"id":1,"login":"public-org"}]"#.utf8))
+            }
+            let body = statusCode == 403 ? #"{"message":"Resource protected by organization restrictions"}"#
+                : #"[{"id":2,"login":"authorized-org"}]"#
+            return (
+                httpResponse(statusCode, request.url!, [
+                    "X-GitHub-SSO": "partial-results; organizations=99", "X-RateLimit-Remaining": "100"
+                ]),
+                Data(body.utf8)
+            )
+        }
+        let result = try await client.getProfileOrganizations(login: "alice", forceRefresh: false)
+        #expect(result.accessLimited)
+        #expect(result.organizations.first?.login == "public-org")
+        #expect(result.organizations.count == (statusCode == 403 ? 1 : 2))
+    }
+
+    /// Sponsors 的两个方向分别分页；GitHub union 中的用户和组织都需要解码。
+    @Test("Sponsors 两个方向完整分页")
+    func profileSponsorsFollowBothConnections() async throws {
+        let client = makeClient()
+        URLProtocolStub.requestHandler = { request in
+            let requestBody = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let query = requestBody["query"] as! String
+            let variables = requestBody["variables"] as? [String: String]
+            let isSponsors = query.contains("accounts: sponsors(")
+            let isFirst = variables?["after"] == nil
+            let accountID = isSponsors ? (isFirst ? "user-1" : "org-2") : "maintainer-3"
+            let hasNextPage = isSponsors && isFirst
+            let body = """
+            {"data":{"viewer":{"hasSponsorsListing":true,"accounts":{
+              "nodes":[null,{"id":"\(accountID)","login":"\(accountID)","avatarUrl":null}],
+              "pageInfo":{"hasNextPage":\(hasNextPage),"endCursor":\(hasNextPage ? "\"cursor-1\"" : "null")}
+            }}}}
+            """
+            return (httpResponse(200, request.url!), Data(body.utf8))
+        }
+        let result = try await client.getProfileSponsors()
+        #expect(result.hasSponsorsListing)
+        #expect(result.sponsors.map(\.id) == ["user-1", "org-2"])
+        #expect(result.sponsoring.map(\.id) == ["maintainer-3"])
+        #expect(URLProtocolStub.receivedRequests.count == 3)
+    }
+
+    /// 网页抓取必须保持匿名，且把强制刷新策略传到 HTML 请求。
+    @Test("成就网页不携带 API Token")
+    func achievementsPageIsAnonymous() async throws {
+        URLProtocolStub.reset()
+        #expect(GitHubAchievementsClient.anonymousSession.configuration.httpCookieStorage == nil)
+        #expect(!GitHubAchievementsClient.anonymousSession.configuration.httpShouldSetCookies)
+        URLProtocolStub.requestHandler = { request in
+            let html = """
+            <meta content="profiles_achievements"><turbo-frame id="user-profile-frame"></turbo-frame>
+            """
+            return (httpResponse(200, request.url!), Data(html.utf8))
+        }
+        let result = try await GitHubAchievementsClient.fetch(
+            login: "alice", forceRefresh: true, session: URLProtocolStub.ephemeralSession()
+        )
+        #expect(result.isEmpty)
+        let request = try #require(URLProtocolStub.receivedRequests.first)
+        #expect(request.url?.host == "github.com")
+        #expect(request.url?.query == "tab=achievements")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
     }
 
     @Test("getUserSocialAccounts: 使用公开用户端点并解码 X 与通用链接")

@@ -7,10 +7,112 @@
 //
 
 import Foundation
+import Observation
 import Testing
 @testable import Starcat
 
 struct DailyRadarClientTests {
+    /// 来源链接的项目身份来自 GitHub URL，栏目名只作为非 GitHub 来源的兜底。
+    @Test func sourceLinksExposeRepositoryIdentityAndOwnerAvatar() throws {
+        let weekly = DailyRadarReport.Source(
+            name: "每周 AI 大事",
+            url: try #require(URL(string: "https://github.com/starcat-app/starcat-ai-events/blob/main/reports/2026-11-12.md")),
+            commit: "fixture",
+            path: "reports/2026-11-12.md"
+        )
+        let daily = DailyRadarReport.Source(
+            name: "agents-radar",
+            url: try #require(URL(string: "https://github.com/duanyytop/agents-radar/blob/main/daily/2026-11-12.md")),
+            commit: "fixture",
+            path: "daily/2026-11-12.md"
+        )
+        let external = DailyRadarReport.Source(
+            name: "External source",
+            url: try #require(URL(string: "https://example.com/report.md")),
+            commit: "",
+            path: ""
+        )
+
+        #expect(weekly.repositoryFullName == "starcat-app/starcat-ai-events")
+        #expect(weekly.ownerAvatarURL?.absoluteString == "https://github.com/starcat-app.png?size=64")
+        #expect(daily.repositoryFullName == "duanyytop/agents-radar")
+        #expect(daily.ownerAvatarURL?.absoluteString == "https://github.com/duanyytop.png?size=64")
+        #expect(external.repositoryFullName == nil)
+    }
+
+    /// 正文末尾 agents-radar 生成尾注由原生“内容来源”承担；正文内普通提及必须保留。
+    @Test func presentationMarkdownRemovesOnlyTrailingAgentsRadarAttribution() throws {
+        let markdown = """
+        ## News
+
+        *See [agents-radar](https://github.com/duanyytop/agents-radar) for context.*
+
+        Report body.
+
+        *本日报由 [agents-radar](https://github.com/duanyytop/agents-radar) 自动生成。*
+        """
+        let result = DailyRadarReport.removingGeneratedAttribution(from: markdown)
+        #expect(result.hasSuffix("Report body."))
+        #expect(result.contains("See [agents-radar]"))
+        #expect(!result.contains("自动生成"))
+
+        let unchanged = DailyRadarReport.removingGeneratedAttribution(
+            from: "Report body.\n\n*本日报由 [agents-radar](https://github.com/duanyytop/agents-radar) 自动生成。*\n\n## Next"
+        )
+        #expect(unchanged.contains("自动生成"))
+
+        let structured = """
+        ---
+        {"article_format":1,"title":"Report","summary":"Summary","edition_date":"2026-11-12","reading_minutes":3}
+        ---
+
+        # Report
+
+        Report body.
+
+        *本日报由 [agents-radar](https://github.com/duanyytop/agents-radar) 自动生成。*
+        """
+        let structuredBody = try #require(
+            DailyRadarArticle.parse(DailyRadarReport.removingGeneratedAttribution(from: structured))?.body
+        )
+        #expect(structuredBody.hasSuffix("Report body."))
+        #expect(!structuredBody.contains("自动生成"))
+    }
+
+    /// 非 H1 开头的重复标题只由展示层移除；不同标题和正文中间标题必须保留。
+    @Test func presentationMarkdownRemovesOnlyDuplicatedLeadingTitle() {
+        let title = "AI CLI 工具社区动态日报 2026-11-11"
+        let duplicated = """
+        # \(title)
+
+        Report body.
+        """
+        #expect(
+            DailyRadarReport.removingDuplicatedLeadingTitle(from: duplicated, title: title)
+                == "Report body."
+        )
+
+        let different = """
+        # Another title
+
+        Report body.
+        """
+        #expect(
+            DailyRadarReport.removingDuplicatedLeadingTitle(from: different, title: title)
+                == different.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        let interior = """
+        Report body.
+
+        # \(title)
+        """
+        #expect(
+            DailyRadarReport.removingDuplicatedLeadingTitle(from: interior, title: title)
+                == interior.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
     /// 新栏目独立路由与凭据，不能借 Weekly 的 key 或当前选中分类读取正文
     @Test func eventsRequestsUseIndependentServiceAndCredential() async throws {
         let fixture = DailyRadarFixture()
@@ -466,7 +568,7 @@ struct DailyRadarClientTests {
         #expect(model.workspaceTitle == DailyRadarCatalog.Category.localizedTitle(for: "ai-community"))
     }
 
-    @Test @MainActor func sidebarCountsFollowCatalogAndSelectCategoryClosesDetail() async throws {
+    @Test @MainActor func sidebarCountsFollowIndependentCatalogAndSelectCategoryClosesDetail() async throws {
         let fixture = DailyRadarFixture()
         defer { fixture.clean() }
         let model = DailyRadarWorkspaceViewModel()
@@ -475,8 +577,12 @@ struct DailyRadarClientTests {
         #expect(model.categoryCounts.isEmpty)
         #expect(model.totalCount == nil)
         await model.reload()
-        #expect(model.categoryCounts == ["ai-cli": 12])
-        #expect(model.totalCount == 12)
+        // 页面发布不隐式加载侧栏；两份统计只由独立目录入口维护。
+        #expect(model.categoryCounts.isEmpty)
+        #expect(model.totalCount == nil)
+        await model.reloadSidebarCatalogs()
+        #expect(model.categoryCounts == ["ai-cli": 12, "ai-weekly-events": 43])
+        #expect(model.totalCount == 55)
         // 打开报告后切换分类必须关闭详情面板，避免旧详情浮在新分类列表之上。
         let selected = try #require(model.items.first)
         await model.open(selected)
@@ -543,6 +649,89 @@ struct DailyRadarClientTests {
         #expect(!restarted.failed)
     }
 
+    /// 分类和历史日期快照仍可离线阅读，但不能在恢复或重验证期间回退侧栏的独立目录统计。
+    @Test(arguments: [false, true], [false, true])
+    @MainActor func olderPageSnapshotsNeverChangeSidebarCounts(events: Bool, networkFails: Bool) async throws {
+        let fixture = DailyRadarFixture()
+        defer { fixture.clean() }
+        let model = DailyRadarWorkspaceViewModel()
+        model.configure(repository: fixture.repository, scope: "one", locale: Locale(identifier: "en_US"))
+        let category = events ? "ai-weekly-events" : "ai-cli"
+        let historicalDate = "2026-10-29"
+        model.selectCategory(category)
+        await model.reload()
+        model.selectedEdition = historicalDate
+        fixture.state.mutate { $0.historyDates = [historicalDate, "2026-10-24"] }
+        await model.reload()
+        #expect(model.catalog?.catalogRevision == "1")
+
+        fixture.state.mutate {
+            $0.revision = "2"
+            $0.weeklyCount = 13
+            $0.eventsCount = 44
+        }
+        await model.reloadSidebarCatalogs(force: true)
+        let expectedCounts = ["ai-cli": 13, "ai-weekly-events": 44]
+        #expect(model.categoryCounts == expectedCounts)
+        #expect(model.totalCount == 57)
+        fixture.state.mutate { $0.networkError = networkFails }
+
+        for selectedEdition in [nil, historicalDate] as [String?] {
+            model.selectCategory(nil)
+            model.selectCategory(category)
+            model.selectedEdition = selectedEdition
+            // 只断言最终值会漏掉“旧快照先回退、网络随后恢复”的瞬时跳变。
+            let updates = AsyncStream<Void>.makeStream()
+            withObservationTracking {
+                _ = model.categoryCounts
+                _ = model.totalCount
+            } onChange: {
+                updates.continuation.yield(())
+            }
+
+            await model.reload()
+            updates.continuation.finish()
+            var sidebarChanged = false
+            for await _ in updates.stream { sidebarChanged = true }
+
+            #expect(!sidebarChanged)
+            #expect(model.categoryCounts == expectedCounts)
+            #expect(model.totalCount == 57)
+            #expect(model.catalog?.catalogRevision == (networkFails ? "1" : "2"))
+            #expect(model.isShowingCachedContent == networkFails)
+            #expect(!model.items.isEmpty)
+            if let selectedEdition { #expect(model.edition == selectedEdition) }
+        }
+    }
+
+    /// 手动刷新必须更新两份独立统计；日期/列表失败时仍保留旧阅读快照。
+    @Test(arguments: [false, true], [false, true])
+    @MainActor func forcedRefreshUpdatesSidebarIndependentlyOfPageSuccess(events: Bool, pageFails: Bool) async throws {
+        let fixture = DailyRadarFixture()
+        defer { fixture.clean() }
+        let model = DailyRadarWorkspaceViewModel()
+        model.configure(repository: fixture.repository, scope: "one", locale: Locale(identifier: "en_US"))
+        await model.reloadSidebarCatalogs()
+        model.selectCategory(events ? "ai-weekly-events" : "ai-cli")
+        await model.reload()
+        #expect(model.catalog?.catalogRevision == "1")
+        #expect(model.totalCount == 55)
+
+        fixture.state.mutate {
+            $0.revision = "2"
+            $0.weeklyCount = 13
+            $0.eventsCount = 44
+            if pageFails { $0.failedPaths = ["/api/v1/daily-radar/dates"] }
+        }
+        await model.reload(force: true)
+
+        #expect(model.categoryCounts == ["ai-cli": 13, "ai-weekly-events": 44])
+        #expect(model.totalCount == 57)
+        #expect(model.catalog?.catalogRevision == (pageFails ? "1" : "2"))
+        #expect(model.isShowingCachedContent == pageFails)
+        #expect(!model.items.isEmpty)
+    }
+
     @Test @MainActor func switchingCategoryClearsStaleItemsButSameIdentityFailureKeepsContent() async throws {
         let fixture = DailyRadarFixture()
         defer { fixture.clean() }
@@ -594,6 +783,8 @@ private final class DailyRadarFixtureState: @unchecked Sendable {
         var historyDates: [String]? = nil
         var changeOnNext = false
         var failedEventsCatalog = false
+        var weeklyCount = 12
+        var eventsCount = 43
         var requests: [URLRequest] = []
     }
     private let lock = NSLock()
@@ -672,12 +863,12 @@ private final class DailyRadarFixtureState: @unchecked Sendable {
             if path.hasSuffix("/catalog") {
                 if isEvents {
                     payload = """
-                    {"catalog_revision":"\(values.revision)","categories":[{"id":"ai-weekly-events","title":"Weekly AI Highlights","period":"weekly"}],"available_languages":["en","zh-Hans"],"latest_available_date":"\(values.day)","category_counts":{"ai-weekly-events":43},"total_count":43}
+                    {"catalog_revision":"\(values.revision)","categories":[{"id":"ai-weekly-events","title":"Weekly AI Highlights","period":"weekly"}],"available_languages":["en","zh-Hans"],"latest_available_date":"\(values.day)","category_counts":{"ai-weekly-events":\(values.eventsCount)},"total_count":\(values.eventsCount)}
                     """
                 } else {
-                    // 计数与 /reports 的 total=12 语义保持一致，供侧边栏徽标断言使用。
+                    // 默认计数与 /reports 一致；允许模拟目录更新，验证页面快照不会回写旧统计。
                     payload = """
-                    {"catalog_revision":"\(values.revision)","categories":[{"id":"ai-cli","title":"AI CLI","period":"daily"}],"available_languages":["en"],"latest_available_date":"\(values.day)","category_counts":{"ai-cli":12},"total_count":12}
+                    {"catalog_revision":"\(values.revision)","categories":[{"id":"ai-cli","title":"AI CLI","period":"daily"}],"available_languages":["en"],"latest_available_date":"\(values.day)","category_counts":{"ai-cli":\(values.weeklyCount)},"total_count":\(values.weeklyCount)}
                     """
                 }
             } else if path.hasSuffix("/dates") {

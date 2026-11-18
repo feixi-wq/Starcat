@@ -295,8 +295,9 @@ struct RepoCardViewDataTests {
 
     @Test("详情页日期同时兼容 GitHub 原始格式与 Awesome 毫秒格式")
     func repoDateStatAcceptsBothISO8601Formats() {
-        #expect(repoDateStatLabel(from: "2025-06-15T17:28:56Z") == "2025-06-15")
-        #expect(repoDateStatLabel(from: "2025-06-15T17:28:56.000Z") == "2025-06-15")
+        let english = repoDateStatLabel(from: "2025-06-15T17:28:56Z", locale: Locale(identifier: "en_US"))
+        #expect(english == repoDateStatLabel(from: "2025-06-15T17:28:56.000Z", locale: Locale(identifier: "en_US")))
+        #expect(english != repoDateStatLabel(from: "2025-06-15T17:28:56Z", locale: Locale(identifier: "zh_CN")))
         #expect(repoDateStatLabel(from: nil) == "-")
         #expect(repoDateStatLabel(from: "invalid") == "-")
     }
@@ -339,6 +340,19 @@ struct RepoCardViewDataTests {
         #expect(repo.description == "Web Debugging Proxy Application")
         #expect(repo.createdAt != nil)
         #expect(repo.updatedAt != nil)
+    }
+
+    @Test("探索详情同仓反馈使用新说明，切仓退场保留旧说明")
+    func discoveryHeaderUsesLiveValueOnlyForDisplayedRepository() {
+        #expect(DiscoveryHeaderSnapshotPolicy.resolve(
+            displayedID: 1, selectedID: 1, current: "恢复", snapshot: "不感兴趣"
+        ) == "恢复")
+        #expect(DiscoveryHeaderSnapshotPolicy.resolve(
+            displayedID: 1, selectedID: 2, current: "新仓说明", snapshot: "旧仓说明"
+        ) == "旧仓说明")
+        #expect(DiscoveryHeaderSnapshotPolicy.resolve(
+            displayedID: 2, selectedID: 2, current: nil as String?, snapshot: "旧仓说明"
+        ) == nil)
     }
 
     // MARK: - Helpers

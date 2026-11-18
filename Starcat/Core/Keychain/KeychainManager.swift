@@ -151,7 +151,9 @@ final class KeychainManager: KeychainManaging, @unchecked Sendable {
                 category: "secure-storage",
                 operation: "credentials.decode",
                 message: "Encrypted credentials file could not be decoded",
-                underlying: DiagnosticEvent.summarize(error)
+                summary: .credentialsUnavailable,
+                impact: .dataRisk,
+                underlying: DiagnosticEvent.summarize(error), error: error
             )
             return [:]
         }
@@ -181,7 +183,9 @@ final class KeychainManager: KeychainManaging, @unchecked Sendable {
                 category: "secure-storage",
                 operation: "credentials.write",
                 message: "Encrypted credentials could not be persisted",
-                underlying: DiagnosticEvent.summarize(error)
+                summary: .credentialsUnavailable,
+                impact: .dataRisk,
+                underlying: DiagnosticEvent.summarize(error), error: error
             )
             if error is KeychainError {
                 throw error
@@ -258,6 +262,14 @@ final class KeychainManager: KeychainManaging, @unchecked Sendable {
         AppLog.keychain.info("AI provider key stored securely")
     }
 
+    /// 设置页与公共操作共用相同的空值、清理和安全保存语义；调用方不能读取或回显密钥。
+    func persistAIProviderKey(_ rawKey: String, providerID: String, allowsEmpty: Bool) throws {
+        let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty && !allowsEmpty { throw AIClientError.missingAPIKey }
+        if trimmed.isEmpty { try deleteAIKey(forProvider: providerID) }
+        else { try storeAIKey(trimmed, forProvider: providerID) }
+    }
+
     func loadAIKey(forProvider providerID: String) throws -> String? {
         // 迁移兼容：如果新 profile 维度还没有 Key，回退读取旧版全局 AI Key。
         value(forAccount: Account.aiKey(providerID: providerID)) ?? value(forAccount: Account.aiKey)
@@ -300,7 +312,9 @@ final class KeychainManager: KeychainManaging, @unchecked Sendable {
                 category: "secure-storage",
                 operation: "credentials.deleteAll",
                 message: "Encrypted credentials file could not be deleted",
-                underlying: DiagnosticEvent.summarize(error)
+                summary: .dataCleanupFailed,
+                impact: .dataRisk,
+                underlying: DiagnosticEvent.summarize(error), error: error
             )
             if error is KeychainError {
                 throw error
@@ -321,7 +335,9 @@ final class KeychainManager: KeychainManaging, @unchecked Sendable {
                 visibility: .issue,
                 category: "secure-storage",
                 operation: "credentials.selfCheck",
-                message: "Secure storage self-check returned mismatched data"
+                message: "Secure storage self-check returned mismatched data",
+                summary: .credentialsUnavailable,
+                impact: .dataRisk
             )
             throw KeychainError.selfCheckMismatch
         }

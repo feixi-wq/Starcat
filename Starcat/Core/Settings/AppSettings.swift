@@ -21,6 +21,23 @@ import Foundation
 import SwiftUI
 import Observation
 
+/// 同仓 Markdown 链接的互斥打开方式；默认使用独立阅读窗口。
+enum RepositoryMarkdownOpenMode: String, CaseIterable, Identifiable {
+    case browser
+    case newWindow
+    case currentDetail
+
+    var id: String { rawValue }
+
+    var displayName: LocalizedStringKey {
+        switch self {
+        case .browser: "settings.general.markdownLinks.browser"
+        case .newWindow: "settings.general.markdownLinks.newWindow"
+        case .currentDetail: "settings.general.markdownLinks.currentDetail"
+        }
+    }
+}
+
 // MARK: - 外观主题(W4-5 D1,dong4j 2026-06-03 需求)
 
 /// 应用外观主题。
@@ -998,12 +1015,9 @@ final class AppSettings {
         didSet { persistBool(key: Keys.openFirstDetailOnCategoryChange, value: openFirstDetailOnCategoryChange) }
     }
 
-    /// README 里的同仓 Markdown 链接是否在 App 内打开。
-    ///
-    /// 默认 false：保持「点击即进浏览器」的现有行为，避免用户在没看到开关前
-    /// 被突然改掉的导航吓到。打开后才拦截当前仓库的 `.md` / `.markdown` 链接。
-    var openRepositoryMarkdownInApp: Bool {
-        didSet { persistBool(key: Keys.openRepositoryMarkdownInApp, value: openRepositoryMarkdownInApp) }
+    /// README 里的同仓 Markdown 链接打开位置；普通外链不受此偏好影响。
+    var repositoryMarkdownOpenMode: RepositoryMarkdownOpenMode {
+        didSet { persist(key: Keys.repositoryMarkdownOpenMode, value: repositoryMarkdownOpenMode.rawValue) }
     }
 
     /// AI 服务商配置。API Key 不进 UserDefaults，单独走 KeychainManager 的加密文件。
@@ -1307,6 +1321,19 @@ final class AppSettings {
         }
     }
 
+    /// 所选决策引擎接管全局搜索的自然语言查询分流（默认 false）。
+    ///
+    /// 搜索会把原始查询发给远端模型或触发本地推理，风险面与仓库内分组 / 标签不同；
+    /// 因此不借用既有业务作用范围，必须由用户单独授权。
+    var decisionSearchRoutingEnabled: Bool {
+        didSet {
+            persistBool(
+                key: Keys.decisionSearchRoutingEnabled,
+                value: decisionSearchRoutingEnabled
+            )
+        }
+    }
+
     /// 原生 TypeSafe Key 最近一次显式连接测试是否失败（默认 false）。
     ///
     /// 这里只记录设置页的明确测试结果，不把普通业务请求错误当作永久失效：失败时保留
@@ -1577,44 +1604,10 @@ final class AppSettings {
         didSet { persistBool(key: Keys.mcpAllowRemoteConnections, value: mcpAllowRemoteConnections) }
     }
 
-    /// 是否允许 MCP 读取用户私有笔记。
-    ///
-    /// 默认 false：repo 元数据和 README 是低敏只读上下文，私有笔记属于用户主动写入的
-    /// 私人数据，必须显式开启才暴露给 agent。
-    var mcpExposePrivateNotes: Bool {
-        didSet { persistBool(key: Keys.mcpExposePrivateNotes, value: mcpExposePrivateNotes) }
-    }
-
-    /// 是否允许 MCP 工具写入本地用户数据（notes / status / tags）。
-    ///
-    /// 读取与写入分开授权：用户可能愿意让 agent 整理标签和写新笔记，但不希望它读取
-    /// 已有私有笔记内容。具体工具仍会在 facade 层做二次校验和审计。
-    var mcpAllowLocalWrites: Bool {
-        didSet { persistBool(key: Keys.mcpAllowLocalWrites, value: mcpAllowLocalWrites) }
-    }
-
-    /// 是否允许 MCP 修改用户 GitHub 账号中的 Star 状态。
-    ///
-    /// 远端 Star/Unstar 会调用 GitHub API，影响范围不同于本地 notes/tags 写入，
-    /// 因此必须使用独立且默认关闭的授权，不能随本地写入开关一并放行。
-    var mcpAllowGitHubStarWrites: Bool {
-        didSet { persistBool(key: Keys.mcpAllowGitHubStarWrites, value: mcpAllowGitHubStarWrites) }
-    }
-
-    /// 是否允许 MCP 批量写入。
-    ///
-    /// `batch_organize_repos` 还要求本地写入同时开启，并在 Facade 层限制单次最多
-    /// 100 个仓库；避免 Agent 因一次过大的请求长时间占用本地写队列。
-    var mcpAllowBatchWrites: Bool {
-        didSet { persistBool(key: Keys.mcpAllowBatchWrites, value: mcpAllowBatchWrites) }
-    }
-
-    /// 是否允许 MCP 执行替换式写入（例如 set_repo_tags）。
-    ///
-    /// 替换式操作会删除未出现在新集合里的旧关联，比 add/remove 更容易被 agent 误用，
-    /// 因此单独开关且默认关闭。
-    var mcpAllowDestructiveWrites: Bool {
-        didSet { persistBool(key: Keys.mcpAllowDestructiveWrites, value: mcpAllowDestructiveWrites) }
+    /// CLI 与 MCP 共用的唯一写权限；本地修改、远端修改、生成与刷新均由 App 检查。
+    /// 读取默认开放（包括笔记）；配对和产品权益不通过此开关改变。
+    var mcpAllowWrites: Bool {
+        didSet { persistBool(key: Keys.mcpAllowWrites, value: mcpAllowWrites) }
     }
 
     /// Pro 权益状态镜像（HOM-151 起源于 StoreKit，后续扩展到 Direct License）。
@@ -1995,9 +1988,17 @@ final class AppSettings {
         self.openFirstDetailOnCategoryChange = defaults.object(
             forKey: Keys.openFirstDetailOnCategoryChange
         ) as? Bool ?? false
-        self.openRepositoryMarkdownInApp = defaults.object(
-            forKey: Keys.openRepositoryMarkdownInApp
-        ) as? Bool ?? false
+        // 将已发布的二态开关一次迁移为三态偏好，保留显式的浏览器 / 新窗口选择。
+        // 旧 key 缺失才采用新默认值，迁移后删除旧 key，不长期双写两套设置。
+        let markdownOpenMode = defaults.string(forKey: Keys.repositoryMarkdownOpenMode)
+            .flatMap(RepositoryMarkdownOpenMode.init(rawValue:))
+            ?? (defaults.object(forKey: Keys.legacyOpenRepositoryMarkdownInApp) as? Bool).map {
+                $0 ? .newWindow : .browser
+            }
+            ?? .newWindow
+        self.repositoryMarkdownOpenMode = markdownOpenMode
+        defaults.set(markdownOpenMode.rawValue, forKey: Keys.repositoryMarkdownOpenMode)
+        defaults.removeObject(forKey: Keys.legacyOpenRepositoryMarkdownInApp)
 
         let aiProviderRaw = defaults.string(forKey: Keys.aiProvider)
         let resolvedAIProvider = aiProviderRaw.flatMap(AIServiceProvider.init(rawValue:)) ?? .openAICompatible
@@ -2177,6 +2178,9 @@ final class AppSettings {
             self.decisionTagSuggestionsEnabled = defaults.object(
                 forKey: Keys.decisionTagSuggestionsEnabled
             ) as? Bool ?? false
+            self.decisionSearchRoutingEnabled = defaults.object(
+                forKey: Keys.decisionSearchRoutingEnabled
+            ) as? Bool ?? false
         } else {
             let migratedEnabled = defaults.object(
                 forKey: Keys.legacyTypesafeDecisionEnabled
@@ -2191,6 +2195,7 @@ final class AppSettings {
             self.decisionEngineID = .jev
             self.decisionGroupingSuggestionsEnabled = migratedGrouping
             self.decisionTagSuggestionsEnabled = migratedTags
+            self.decisionSearchRoutingEnabled = false
             defaults.set(migratedEnabled, forKey: Keys.decisionEngineEnabled)
             defaults.set(DecisionEngineID.jev.rawValue, forKey: Keys.decisionEngineID)
             defaults.set(
@@ -2201,6 +2206,7 @@ final class AppSettings {
                 migratedTags,
                 forKey: Keys.decisionTagSuggestionsEnabled
             )
+            defaults.set(false, forKey: Keys.decisionSearchRoutingEnabled)
         }
         self.typesafeNativeKeyTestFailed = defaults.object(forKey: Keys.typesafeNativeKeyTestFailed) as? Bool ?? false
         self.typesafeModelID = defaults.string(forKey: Keys.typesafeModelID) ?? JevDecisionEngine.defaultModelID
@@ -2349,11 +2355,17 @@ final class AppSettings {
         let storedMCPPort = defaults.object(forKey: Keys.mcpServicePort) as? Int ?? Self.defaultMCPServicePort
         self.mcpServicePort = (1024...65535).contains(storedMCPPort) ? storedMCPPort : Self.defaultMCPServicePort
         self.mcpAllowRemoteConnections = defaults.object(forKey: Keys.mcpAllowRemoteConnections) as? Bool ?? false
-        self.mcpExposePrivateNotes = defaults.object(forKey: Keys.mcpExposePrivateNotes) as? Bool ?? false
-        self.mcpAllowLocalWrites = defaults.object(forKey: Keys.mcpAllowLocalWrites) as? Bool ?? false
-        self.mcpAllowGitHubStarWrites = defaults.object(forKey: Keys.mcpAllowGitHubStarWrites) as? Bool ?? false
-        self.mcpAllowBatchWrites = defaults.object(forKey: Keys.mcpAllowBatchWrites) as? Bool ?? false
-        self.mcpAllowDestructiveWrites = defaults.object(forKey: Keys.mcpAllowDestructiveWrites) as? Bool ?? false
+        let migratedMCPWrites = defaults.object(forKey: Keys.mcpAllowWrites) as? Bool
+            ?? (defaults.object(forKey: "settings.mcp.allowLocalWrites.v1") as? Bool ?? false)
+        self.mcpAllowWrites = migratedMCPWrites
+        defaults.set(migratedMCPWrites, forKey: Keys.mcpAllowWrites)
+        for retiredKey in [
+            "settings.mcp.exposePrivateNotes.v1", "settings.mcp.allowLocalWrites.v1",
+            "settings.mcp.allowGitHubStarWrites.v1", "settings.mcp.allowBatchWrites.v1",
+            "settings.mcp.allowDestructiveWrites.v1"
+        ] {
+            defaults.removeObject(forKey: retiredKey)
+        }
 
         // HOM-126：自动整理偏好。缺失时回落到 `AutoTidySettings.default`（总开关关 +
         // 启动/同步触发 + 50 个 + 最近 star + 仅标签 + 90% 阈值），与任务描述一致。
@@ -2478,7 +2490,7 @@ final class AppSettings {
         lastActivityCategoryRaw = ""
         listPreferenceValues = [:]
         openFirstDetailOnCategoryChange = false
-        openRepositoryMarkdownInApp = false
+        repositoryMarkdownOpenMode = .newWindow
 
         let provider = AIServiceProvider.openAICompatible
         let baseURL = provider.defaultBaseURL
@@ -2520,6 +2532,7 @@ final class AppSettings {
         decisionEngineID = .jev
         decisionGroupingSuggestionsEnabled = false
         decisionTagSuggestionsEnabled = false
+        decisionSearchRoutingEnabled = false
         typesafeNativeKeyTestFailed = false
         typesafeModelID = JevDecisionEngine.defaultModelID
         externalSearchAllowPrivateRepos = false
@@ -2561,11 +2574,7 @@ final class AppSettings {
         mcpServiceEnabled = false
         mcpServicePort = Self.defaultMCPServicePort
         mcpAllowRemoteConnections = false
-        mcpExposePrivateNotes = false
-        mcpAllowLocalWrites = false
-        mcpAllowGitHubStarWrites = false
-        mcpAllowBatchWrites = false
-        mcpAllowDestructiveWrites = false
+        mcpAllowWrites = false
         isProUser = false
         autoTidySettings = .default
         githubStarListAutoGroupingSettings = .default
@@ -2696,8 +2705,10 @@ final class AppSettings {
                 category: "settings",
                 operation: "settings.persistJSON",
                 message: "A settings value could not be encoded",
+                summary: .settingsUnavailable,
+                impact: .dataRisk,
                 underlying: DiagnosticEvent.summarize(error),
-                context: ["key": key]
+                context: ["key": key], error: error
             )
         }
     }
@@ -2724,8 +2735,10 @@ final class AppSettings {
                 category: "settings",
                 operation: "settings.persistJSON",
                 message: "A settings value could not be encoded",
+                summary: .settingsUnavailable,
+                impact: .dataRisk,
                 underlying: DiagnosticEvent.summarize(error),
-                context: ["key": Keys.aiProviderProfiles]
+                context: ["key": Keys.aiProviderProfiles], error: error
             )
         }
     }
@@ -2876,8 +2889,10 @@ final class AppSettings {
                 category: "settings",
                 operation: "settings.decodeJSON",
                 message: "A persisted settings value could not be decoded",
+                summary: .settingsUnavailable,
+                impact: .dataRisk,
                 underlying: DiagnosticEvent.summarize(error),
-                context: ["key": Keys.aiProviderProfiles]
+                context: ["key": Keys.aiProviderProfiles], error: error
             )
             return outcome
         }
@@ -3117,7 +3132,8 @@ final class AppSettings {
         static let lastActivityCategory = "settings.lastActivityCategory"
         static let listPreferenceValues = "settings.listPreferences.values.v1"
         static let openFirstDetailOnCategoryChange = "settings.detail.openFirstOnCategoryChange.v1"
-        static let openRepositoryMarkdownInApp = "settings.readme.openRepositoryMarkdownInApp.v1"
+        static let legacyOpenRepositoryMarkdownInApp = "settings.readme.openRepositoryMarkdownInApp.v1"
+        static let repositoryMarkdownOpenMode = "settings.readme.repositoryMarkdownOpenMode.v1"
         static let aiProvider = "settings.ai.provider"
         static let aiBaseURL = "settings.ai.baseURL"
         static let aiChatModel = "settings.ai.chatModel"
@@ -3149,6 +3165,7 @@ final class AppSettings {
         static let decisionEngineID = "settings.labs.decision.engine.v1"
         static let decisionGroupingSuggestionsEnabled = "settings.labs.decision.grouping.v1"
         static let decisionTagSuggestionsEnabled = "settings.labs.decision.tags.v1"
+        static let decisionSearchRoutingEnabled = "settings.labs.decision.searchRouting.v1"
         /// 仅供一次性 UserDefaults 迁移读取；应用层不再写回这些 POC key。
         static let legacyTypesafeDecisionEnabled = "settings.labs.typesafe.enabled.v1"
         static let legacyTypesafeGroupingSuggestionsEnabled = "settings.labs.typesafe.grouping.v1"
@@ -3194,11 +3211,7 @@ final class AppSettings {
         static let mcpServiceEnabled = "settings.mcp.enabled.v1"
         static let mcpServicePort = "settings.mcp.port.v1"
         static let mcpAllowRemoteConnections = "settings.mcp.allowRemoteConnections.v1"
-        static let mcpExposePrivateNotes = "settings.mcp.exposePrivateNotes.v1"
-        static let mcpAllowLocalWrites = "settings.mcp.allowLocalWrites.v1"
-        static let mcpAllowGitHubStarWrites = "settings.mcp.allowGitHubStarWrites.v1"
-        static let mcpAllowBatchWrites = "settings.mcp.allowBatchWrites.v1"
-        static let mcpAllowDestructiveWrites = "settings.mcp.allowDestructiveWrites.v1"
+        static let mcpAllowWrites = "settings.mcp.allowWrites.v2"
         static let autoTidySettings = "settings.ai.autoTidy.v1"  // HOM-126
         static let githubStarListAutoGroupingSettings = "settings.ai.githubStarListAutoGrouping.v1"
         static let customServiceURLs = "settings.services.customURLs.v1"  // 2026-06-08
@@ -3245,7 +3258,7 @@ final class AppSettings {
             lastActivityCategory,
             listPreferenceValues,
             openFirstDetailOnCategoryChange,
-            openRepositoryMarkdownInApp,
+            repositoryMarkdownOpenMode,
             aiProvider,
             aiBaseURL,
             aiChatModel,
@@ -3305,11 +3318,7 @@ final class AppSettings {
             mcpServiceEnabled,
             mcpServicePort,
             mcpAllowRemoteConnections,
-            mcpExposePrivateNotes,
-            mcpAllowLocalWrites,
-            mcpAllowGitHubStarWrites,
-            mcpAllowBatchWrites,
-            mcpAllowDestructiveWrites,
+            mcpAllowWrites,
             autoTidySettings,
             githubStarListAutoGroupingSettings,
             customServiceURLs,

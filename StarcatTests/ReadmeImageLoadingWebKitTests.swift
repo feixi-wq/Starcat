@@ -2,16 +2,18 @@
 //  ReadmeImageLoadingWebKitTests.swift
 //  StarcatTests
 //
-//  用可控的离线响应验证真实 README 脚本与 CSS，不建立窗口、不截图。
+//  用可控的离线响应验证真实 README 脚本与 CSS，不显示窗口、不截图。
 //  图片请求在测试放行前始终挂起，避免依赖网络速度判断加载态。
 //
 
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 import WebKit
 @testable import Starcat
 
-/// 无窗口 WebKit 回归：覆盖慢图占位、失败恢复、小图过滤与快速完成路径。
+/// 离屏 WebKit 回归：覆盖图片加载和浏览器的真实 DOM、布局、键盘及缩放行为。
 @MainActor
 @Suite("README image loading WebKit", .serialized)
 struct ReadmeImageLoadingWebKitTests {
@@ -23,7 +25,7 @@ struct ReadmeImageLoadingWebKitTests {
         <img id="slow" src="starcat-image-test://fixture/fallback.gif" width="600" height="240">
         </picture></a></p>
         """, dark: dark)
-        defer { fixture.webView.stopLoading() }
+        defer { fixture.close() }
         try await fixture.wait("document.querySelector('#slow')?.classList.contains('readme-image-loading')")
         let state = try await fixture.webView.evaluateJavaScript("""
         (() => {
@@ -49,14 +51,10 @@ struct ReadmeImageLoadingWebKitTests {
         try fixture.responses.finish("/slow.gif")
         try await fixture.wait("document.querySelector('#slow').classList.contains('readme-image-loaded')")
         try await fixture.expectSettled("#slow", loaded: true)
-        let previewVisible = try await fixture.webView.evaluateJavaScript("""
-        (() => {
-            document.querySelector('#slow').click();
-            const preview = document.querySelector('.readme-image-preview img');
-            return preview !== null && getComputedStyle(preview).opacity === '1';
-        })()
-        """) as? Bool
-        #expect(previewVisible == true)
+        _ = try await fixture.openGallery("#slow")
+        #expect(fixture.previewRequest?.images.first?.src == "starcat-image-test://fixture/slow.gif")
+        let inlinePreview = try await fixture.webView.evaluateJavaScript("document.querySelector('.readme-image-preview') !== null") as? Bool
+        #expect(inlinePreview == false)
     }
 
     @Test("未知尺寸正文图有临时占位，徽章与行内图不扩高，失败可恢复")
@@ -70,7 +68,7 @@ struct ReadmeImageLoadingWebKitTests {
         <div>Other content<p>Separate paragraph</p><picture>
         <img id="wide" width="600" src="starcat-image-test://fixture/wide.gif"></picture></div>
         """)
-        defer { fixture.webView.stopLoading() }
+        defer { fixture.close() }
         try await fixture.wait("document.querySelector('#unknown')?.classList.contains('readme-image-loading-height')")
         try await fixture.wait("document.querySelector('#themed')?.classList.contains('readme-image-loading-height')")
         try await fixture.wait("document.querySelector('#wide')?.classList.contains('readme-image-loading-height')")
@@ -99,7 +97,7 @@ struct ReadmeImageLoadingWebKitTests {
     func completedImageSkipsPlaceholder() async throws {
         let fixture = ImageFixture(fragment: "<p><img id='fast' src='data:image/gif;base64,\(ImageResponses.gif)'></p>",
                                    enhanceAtDocumentEnd: false)
-        defer { fixture.webView.stopLoading() }
+        defer { fixture.close() }
         try await fixture.wait("document.querySelector('#fast')?.complete && document.querySelector('#fast').naturalWidth > 0")
         _ = try await fixture.webView.evaluateJavaScript(ReadmeWebView.readmeEnhancementScript)
         try await fixture.expectSettled("#fast", loaded: true)
@@ -107,15 +105,635 @@ struct ReadmeImageLoadingWebKitTests {
         try await Task.sleep(for: .milliseconds(220))
         try await fixture.expectSettled("#fast", loaded: true)
     }
+
+    @Test("按正文顺序切换内容图，排除徽章并保留 picture 当前源", arguments: [false, true])
+    func galleryOrderAndKeyboard(dark: Bool) async throws {
+        let fixture = ImageFixture(fragment: """
+        <p><img id="badge" alt="Build" src="starcat-image-test://img.shields.io/badge/build-passing-green.svg"></p>
+        <p><img id="small" width="80" height="20" alt="Small" src="data:image/gif;base64,\(ImageResponses.gif)"></p>
+        <picture><source srcset="\(ImageResponses.largeSVG)">
+        <img id="chosen" alt="Diagram" src="data:image/gif;base64,\(ImageResponses.gif)"></picture>
+        <p hidden><img alt="Hidden theme" src="data:image/gif;base64,\(ImageResponses.gif)"></p>
+        <p><img id="last" alt="Last" src="data:image/gif;base64,\(ImageResponses.gif)"></p>
+        """, dark: dark)
+        defer { fixture.close() }
+        try await fixture.wait("document.querySelector('#chosen')?.dataset.readmeZoomable === 'true'")
+        _ = try await fixture.webView.evaluateJavaScript("""
+        document.querySelector('#chosen').focus();
+        document.querySelector('#chosen').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+        """)
+        let gallery = try await fixture.waitForGallery()
+        #expect(fixture.previewRequest?.images.map(\.alt) == ["Small", "Diagram", "Last"])
+        #expect(fixture.previewRequest?.images[1].src == ImageResponses.largeSVG)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.naturalWidth === 1200")
+        let state = try await gallery.evaluateJavaScript("""
+        (() => {
+            const overlay = document.querySelector('.readme-image-preview');
+            const stage = overlay.querySelector('.readme-image-preview-stage').getBoundingClientRect();
+            const controls = overlay.querySelector('.readme-image-preview-controls').getBoundingClientRect();
+            return [
+                overlay.getAttribute('role') === 'dialog' && overlay.getAttribute('aria-modal') === 'true',
+                overlay.querySelector('.readme-image-preview-counter').textContent === '2 / 3',
+                overlay.querySelector('img').src === window.starcatImagePreviewRequest.images[1].src,
+                overlay.querySelector('img').alt === 'Diagram',
+                controls.top >= stage.bottom && controls.bottom <= innerHeight,
+                document.activeElement.dataset.action === 'close'
+            ];
+        })()
+        """) as? [Bool]
+        #expect(state == Array(repeating: true, count: 6))
+        _ = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="previous"]').click();
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.alt === 'Small'")
+        let first = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="previous"]').disabled &&
+            document.querySelector('.readme-image-preview-counter').textContent === '1 / 3'
+        """) as? Bool
+        #expect(first == true)
+        _ = try await gallery.evaluateJavaScript("""
+        for (let index = 0; index < 3; index++) {
+            window.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight'}));
+        }
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.alt === 'Last'")
+        let last = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="next"]').disabled &&
+            document.querySelector('.readme-image-preview-counter').textContent === '3 / 3'
+        """) as? Bool
+        #expect(last == true)
+        _ = try await gallery.evaluateJavaScript("""
+        window.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowLeft'}));
+        document.querySelector('[data-action="close"]').focus();
+        window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Tab', shiftKey: true, cancelable: true}));
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-counter')?.textContent === '2 / 3'")
+        let trapped = try await gallery.evaluateJavaScript("""
+        document.querySelector('.readme-image-preview').contains(document.activeElement)
+            && document.activeElement.dataset.action !== 'close'
+        """) as? Bool
+        #expect(trapped == true)
+    }
+
+    @Test("徽章加载后保留原链接与键盘行为，普通小图和相似域名图片仍可预览")
+    func galleryExcludesBadgesAndKeepsLinks() async throws {
+        let fixture = ImageFixture(fragment: """
+        <p><a id="badge-link" href="#build"><img id="provider"
+        src="starcat-image-test://img.shields.io/github/stars/owner/repo"></a>
+        <img id="workflow" src="starcat-image-test://github.com/owner/repo/actions/workflows/ci.yml/badge.svg">
+        <img id="proxied" src="starcat-image-test://camo.githubusercontent.com/hash/opaque"
+        data-canonical-src="https://badge.fury.io/js/example.svg">
+        <img id="local" src="starcat-image-test://fixture/assets/build/badge.png">
+        <img id="travis" src="starcat-image-test://api.travis-ci.org/owner/repo.svg">
+        <img id="query" src="starcat-image-test://pkg.go.dev/example?status.svg"></p>
+        <p><img id="small" width="80" height="20" alt="Small" src="data:image/gif;base64,\(ImageResponses.gif)"></p>
+        <p><img id="similar" alt="Similar host" src="starcat-image-test://shields.io.example.com/screenshot.png"></p>
+        """)
+        defer { fixture.close() }
+        for path in [
+            "/github/stars/owner/repo", "/owner/repo/actions/workflows/ci.yml/badge.svg",
+            "/hash/opaque", "/assets/build/badge.png", "/owner/repo.svg", "/example", "/screenshot.png"
+        ] {
+            try await fixture.waitForRequest(path)
+            try fixture.responses.finish(path)
+        }
+        try await fixture.wait("""
+        ['provider', 'workflow', 'proxied', 'local', 'travis', 'query', 'small', 'similar'].every(
+            id => document.getElementById(id).classList.contains('readme-image-loaded'))
+        """)
+        let preserved = try await fixture.webView.evaluateJavaScript("""
+        (() => {
+            const badges = ['provider', 'workflow', 'proxied', 'local', 'travis', 'query'].map(
+                id => document.getElementById(id));
+            let linkReceivedClick = false;
+            document.querySelector('#badge-link').addEventListener('click', event => {
+                linkReceivedClick = !event.defaultPrevented;
+                // 只在外层观察完原始默认行为后拦截，避免测试真的跳转或依赖网络。
+                event.preventDefault();
+            }, {once: true});
+            document.querySelector('#provider').click();
+            return linkReceivedClick && badges.every(image => {
+                const enter = new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true});
+                const space = new KeyboardEvent('keydown', {key: ' ', bubbles: true, cancelable: true});
+                image.dispatchEvent(enter);
+                image.dispatchEvent(space);
+                return !enter.defaultPrevented && !space.defaultPrevented
+                    && !image.hasAttribute('data-readme-zoomable') && !image.hasAttribute('tabindex')
+                    && !image.hasAttribute('role') && !image.hasAttribute('aria-haspopup');
+            });
+        })()
+        """) as? Bool
+        #expect(preserved == true)
+        #expect(fixture.previewRequest == nil)
+        _ = try await fixture.openGallery("#small")
+        #expect(fixture.previewRequest?.index == 0)
+        #expect(fixture.previewRequest?.images.map(\.alt) == ["Small", "Similar host"])
+    }
+
+    @Test("统一过滤常见徽标来源和推广外链，同站普通截图仍可预览")
+    func galleryCommonBadgesAndPromotionalLinks() async throws {
+        let gif = "data:image/gif;base64,\(ImageResponses.gif)"
+        let badges = ReadmeAttachmentImageCacheTests.commonBadgeSources.enumerated().map { index, source in
+            "<img class='badge-sample' id='badge-\(index)' src='\(gif)' data-canonical-src='\(source)'>"
+        }.joined()
+        let links = [
+            "https://skills.sh/mattpocock/skills",
+            "https://www.producthunt.com/products/tic?utm_source=badge-follow&utm_medium=badge",
+            "https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis",
+            "https://hellogithub.com/en/repository/ZhuLinsen/daily_stock_analysis"
+        ].map { "<a href='\($0)'><img class='badge-sample' src='\(gif)'></a>" }.joined()
+        let fixture = ImageFixture(fragment: """
+        <p>\(badges)\(links)</p>
+        <p><img id="small" alt="Small" width="80" height="20" src="\(gif)"></p>
+        <p><img alt="Product screenshot" src="\(gif)" data-canonical-src="https://producthunt.com/screenshots/app.png"></p>
+        <p><img alt="Sponsor wall" src="\(gif)" data-canonical-src="https://opencollective.com/example/sponsors/0/avatar.svg"></p>
+        <p><img alt="Skills screenshot" src="\(gif)" data-canonical-src="https://skills.sh/images/demo.png"></p>
+        """)
+        defer { fixture.close() }
+        // 空文档的 every 也会返回 true；先确认目标图已增强，避免在 document-end 前点击。
+        try await fixture.wait("""
+        document.querySelector('#small')?.dataset.readmeZoomable === 'true' &&
+            Array.from(document.querySelectorAll('img')).every(image => image.classList.contains('readme-image-loaded'))
+        """)
+        let filtered = try await fixture.webView.evaluateJavaScript("""
+        Array.from(document.querySelectorAll('.badge-sample')).every(image =>
+            !image.hasAttribute('data-readme-zoomable') && !image.hasAttribute('role') &&
+            !image.hasAttribute('tabindex'))
+        """) as? Bool
+        #expect(filtered == true)
+        _ = try await fixture.openGallery("#small")
+        #expect(fixture.previewRequest?.images.map(\.alt) == ["Small", "Product screenshot", "Sponsor wall", "Skills screenshot"])
+    }
+
+    @Test("切图保留旧图并交叉淡化，快速切换忽略迟到结果，减少动态效果直接交接", arguments: [false, true])
+    func galleryImageTransition(reduceMotion: Bool) async throws {
+        let fixture = ImageFixture(fragment: """
+        <img id="first" alt="First" src="data:image/gif;base64,\(ImageResponses.gif)">
+        <img alt="Skipped" width="600" height="240" src="starcat-image-test://fixture/skipped.gif">
+        <img alt="Final" width="600" height="240" src="starcat-image-test://fixture/final.gif">
+        """, reduceMotion: reduceMotion)
+        defer { fixture.close() }
+        try await fixture.wait("document.querySelector('#first')?.dataset.readmeZoomable === 'true'")
+        let gallery = try await fixture.openGallery("#first")
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.hidden === false")
+        let waiting = try await gallery.evaluateJavaScript("""
+        (() => {
+            window.previewAnimations = [];
+            const animate = Element.prototype.animate;
+            Element.prototype.animate = function(frames, options) {
+                const animation = animate.call(this, frames, options);
+                window.previewAnimations.push({frames: frames, duration: options.duration, animation: animation});
+                return animation;
+            };
+            document.querySelector('[data-action="next"]').click();
+            window.skippedImage = Array.from(document.querySelectorAll('.readme-image-preview-image')).find(image => image.hidden);
+            return document.querySelector('.readme-image-preview-image').alt === 'First' &&
+                !document.querySelector('.readme-image-preview-image').hidden &&
+                document.querySelector('.readme-image-preview-status').hidden &&
+                document.querySelector('[data-action="zoomIn"]').disabled;
+        })()
+        """) as? Bool
+        #expect(waiting == true)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-loading') !== null")
+        _ = try await gallery.evaluateJavaScript("document.querySelector('[data-action=\"next\"]').click()")
+        try await fixture.finishGalleryImage("/final.gif")
+        try await fixture.waitGallery("""
+        document.querySelector('.readme-image-preview-image')?.alt === 'Final' &&
+            document.querySelector('.readme-image-preview-image').hidden === false
+        """)
+        let outcome = try await gallery.evaluateJavaScript("""
+        (() => {
+            window.skippedImage.dispatchEvent(new Event('load'));
+            window.skippedImage.dispatchEvent(new Event('error'));
+            const reduced = document.body.classList.contains('readme-reduce-motion') ||
+                matchMedia('(prefers-reduced-motion: reduce)').matches;
+            return document.querySelector('.readme-image-preview-image').alt === 'Final' &&
+                document.querySelector('.readme-image-preview-counter').textContent === '3 / 3' &&
+                document.querySelector('.readme-image-preview-status').hidden &&
+                !document.querySelector('[data-action="zoomIn"]').disabled &&
+                window.previewAnimations.length === (reduced ? 0 : 2) &&
+                window.previewAnimations.every(animation => animation.duration === 180 &&
+                    animation.frames.every(frame => Object.keys(frame).join() === 'opacity'));
+        })()
+        """) as? Bool
+        #expect(outcome == true)
+        // 离屏 WebView 的动画时间轴可能停驻；推进真实 Animation，验证生产完成回调会清掉旧图。
+        let animationState = try await gallery.evaluateJavaScript("""
+        (() => {
+            const state = {
+                visibility: document.visibilityState,
+                timeline: document.timeline.currentTime,
+                animations: window.previewAnimations.map(item => ({
+                    currentTime: item.animation.currentTime,
+                    playState: item.animation.playState
+                }))
+            };
+            window.previewAnimations.forEach(item => item.animation.finish());
+            return state;
+        })()
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-outgoing') === null")
+        let settled = try await gallery.evaluateJavaScript("document.querySelectorAll('.readme-image-preview-stage img').length") as? Int
+        #expect(settled == 1, Comment(rawValue: "动画结束后的旧图应被清理：\(String(describing: animationState))"))
+    }
+
+    @Test("缩放按钮、滚轮与捏合生效，拖动有边界，切图恢复适应窗口")
+    func galleryZoomAndPan() async throws {
+        let fixture = ImageFixture(fragment: """
+        <p><img id="large" src="\(ImageResponses.largeSVG)"></p>
+        <p><img id="small" src="data:image/gif;base64,\(ImageResponses.gif)"></p>
+        """)
+        defer { fixture.close() }
+        try await fixture.wait("document.querySelector('#large')?.dataset.readmeZoomable === 'true'")
+        let gallery = try await fixture.openGallery("#large")
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.hidden === false")
+        let fitted = try await gallery.evaluateJavaScript("""
+        (() => {
+            const image = document.querySelector('.readme-image-preview-image').getBoundingClientRect();
+            const stage = document.querySelector('.readme-image-preview-stage').getBoundingClientRect();
+            return image.width < 1200 && image.width <= stage.width && image.height <= stage.height;
+        })()
+        """) as? Bool
+        #expect(fitted == true)
+        _ = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="actualSize"]').click();
+        document.querySelector('[data-action="zoomIn"]').click();
+        """)
+        let enlarged = try await gallery.evaluateJavaScript("""
+        document.querySelector('.readme-image-preview-image').width === 1500 &&
+            document.querySelector('.readme-image-preview-zoom').textContent === '125%'
+        """) as? Bool
+        #expect(enlarged == true)
+        let panned = try await gallery.evaluateJavaScript("""
+        (() => {
+            const stage = document.querySelector('.readme-image-preview-stage');
+            const image = stage.querySelector('img');
+            // 合成 PointerEvent 不在 WebKit 的活动指针表内；只替代捕获 API，保留生产拖动计算与收尾。
+            stage.setPointerCapture = function() {};
+            image.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, pointerId: 1, clientX: 200, clientY: 200}));
+            stage.dispatchEvent(new PointerEvent('pointermove', {bubbles: true, pointerId: 1, clientX: 10000, clientY: 10000}));
+            stage.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, pointerId: 1}));
+            stage.click();
+            const bounds = image.getBoundingClientRect();
+            const viewport = stage.getBoundingClientRect();
+            return {
+                covered: !!document.querySelector('.readme-image-preview')
+                    && bounds.left <= viewport.left + 1 && bounds.right >= viewport.right - 1
+                    && bounds.top <= viewport.top + 1 && bounds.bottom >= viewport.bottom - 1,
+                image: bounds.toJSON(),
+                stage: viewport.toJSON(),
+                inlineTransform: image.style.transform,
+                renderedTransform: getComputedStyle(image).transform
+            };
+        })()
+        """) as? [String: Any]
+        #expect(panned?["covered"] as? Bool == true, Comment(rawValue: String(describing: panned)))
+        let wheel = try await gallery.evaluateJavaScript("""
+        (() => {
+            const stage = document.querySelector('.readme-image-preview-stage');
+            stage.dispatchEvent(new WheelEvent('wheel', {deltaY: -100000, cancelable: true}));
+            const maxed = document.querySelector('[data-action="zoomIn"]').disabled
+                && document.querySelector('.readme-image-preview-zoom').textContent === '800%';
+            stage.dispatchEvent(new WheelEvent('wheel', {deltaY: 100000, cancelable: true}));
+            return maxed && document.querySelector('[data-action="zoomOut"]').disabled
+                && document.querySelector('.readme-image-preview-zoom').textContent === '10%';
+        })()
+        """) as? Bool
+        #expect(wheel == true)
+        let pinch = try await gallery.evaluateJavaScript("""
+        (() => {
+            document.querySelector('[data-action="actualSize"]').click();
+            const stage = document.querySelector('.readme-image-preview-stage');
+            stage.dispatchEvent(new Event('gesturestart', {cancelable: true}));
+            const change = new Event('gesturechange', {cancelable: true});
+            Object.defineProperty(change, 'scale', {value: 2});
+            stage.dispatchEvent(change);
+            stage.dispatchEvent(new WheelEvent('wheel', {deltaY: -100, cancelable: true}));
+            const doubled = document.querySelector('.readme-image-preview-zoom').textContent === '200%';
+            stage.dispatchEvent(new Event('gestureend', {cancelable: true}));
+            document.querySelector('[data-action="fit"]').click();
+            return doubled && document.querySelector('.readme-image-preview-image').width < 1200;
+        })()
+        """) as? Bool
+        #expect(pinch == true)
+        _ = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="zoomIn"]').click();
+        document.querySelector('[data-action="next"]').click();
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-zoom')?.textContent === '100%'")
+        let reset = try await gallery.evaluateJavaScript("""
+        document.querySelector('.readme-image-preview-image').width === 1 &&
+            !document.querySelector('.readme-image-preview-stage').classList.contains('readme-image-preview-pannable')
+        """) as? Bool
+        #expect(reset == true)
+    }
+
+    @Test("慢图与失败图不阻塞切换，关闭恢复焦点、滚动和原始 overflow")
+    func galleryPendingFailureAndRestoration() async throws {
+        let fixture = ImageFixture(fragment: """
+        <p><img id="first" src="data:image/gif;base64,\(ImageResponses.gif)"></p>
+        <img width="600" height="240" src="starcat-image-test://fixture/pending.gif">
+        <img width="600" height="240" src="data:image/png;base64,invalid">
+        <div style="height:2000px">Long README</div>
+        """)
+        defer { fixture.close() }
+        try await fixture.wait("document.querySelector('#first')?.dataset.readmeZoomable === 'true'")
+        _ = try await fixture.webView.evaluateJavaScript("""
+        document.documentElement.style.overflow = 'auto';
+        document.body.style.overflow = 'visible';
+        document.querySelector('#first').focus({preventScroll: true});
+        window.scrollTo(0, 500);
+        """)
+        try await fixture.wait("window.scrollY === 500")
+        let gallery = try await fixture.openGallery("#first")
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.hidden === false")
+        _ = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="next"]').click();
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-loading') !== null")
+        let waiting = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="zoomIn"]').disabled &&
+            !document.querySelector('[data-action="next"]').disabled &&
+            document.querySelector('.readme-image-preview-counter').textContent === '2 / 3' &&
+            document.querySelector('article').inert && document.documentElement.style.overflow === 'hidden'
+        """) as? Bool
+        #expect(waiting == true)
+        _ = try await gallery.evaluateJavaScript("document.querySelector('[data-action=\"next\"]').click()")
+        try await fixture.waitGallery("""
+        document.querySelector('.readme-image-preview-counter')?.textContent === '3 / 3' &&
+            document.querySelector('.readme-image-preview-status').hidden === false &&
+            !document.querySelector('.readme-image-preview-status').classList.contains('readme-image-preview-loading')
+        """)
+        let failed = try await gallery.evaluateJavaScript("""
+        !document.querySelector('.readme-image-preview-status').hidden &&
+            document.querySelector('[data-action="zoomIn"]').disabled &&
+            !document.querySelector('[data-action="previous"]').disabled
+        """) as? Bool
+        #expect(failed == true)
+        _ = try await gallery.evaluateJavaScript("""
+        window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}));
+        """)
+        try await fixture.waitForGalleryClosed()
+        let restored = try await fixture.webView.evaluateJavaScript("""
+        window.scrollY === 500 && document.documentElement.style.overflow === 'auto' &&
+            document.body.style.overflow === 'visible' && !document.querySelector('article').inert &&
+            document.activeElement.id === 'first'
+        """) as? Bool
+        #expect(restored == true)
+        for _ in 0..<3 {
+            let reopened = try await fixture.openGallery("#first")
+            _ = try await reopened.evaluateJavaScript("window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))")
+            try await fixture.waitForGalleryClosed()
+        }
+        let reopened = try await fixture.openGallery("#first")
+        let count = try await reopened.evaluateJavaScript("document.querySelectorAll('.readme-image-preview').length") as? Int
+        #expect(count == 1)
+        _ = try await reopened.evaluateJavaScript("document.querySelector('.readme-image-preview-stage').click()")
+        try await fixture.waitForGalleryClosed()
+    }
+
+    @Test("窄窗口底部控件不溢出，单图禁用切换，App 关动画生效")
+    func galleryNarrowLayoutAndReducedMotion() async throws {
+        let fixture = ImageFixture(fragment: "<img id='only' src='\(ImageResponses.largeSVG)'>", reduceMotion: true)
+        defer { fixture.close() }
+        fixture.gallerySize = CGSize(width: 320, height: 500)
+        try await fixture.wait("document.querySelector('#only')?.dataset.readmeZoomable === 'true'")
+        let gallery = try await fixture.openGallery("#only")
+        _ = try await gallery.evaluateJavaScript("""
+        document.querySelector('[data-action="fit"]').textContent = 'Aan venster aanpassen';
+        """)
+        try await fixture.waitGallery("document.querySelector('.readme-image-preview-image')?.hidden === false")
+        let result = try await gallery.evaluateJavaScript("""
+        (() => {
+            const overlay = document.querySelector('.readme-image-preview');
+            const controls = overlay.querySelector('.readme-image-preview-controls').getBoundingClientRect();
+            const stage = overlay.querySelector('.readme-image-preview-stage').getBoundingClientRect();
+            const image = overlay.querySelector('img').getBoundingClientRect();
+            return [
+                controls.left >= 0 && controls.right <= innerWidth && controls.bottom <= innerHeight,
+                stage.bottom <= controls.top && stage.height > 0,
+                image.width <= stage.width && image.height <= stage.height,
+                overlay.querySelector('[data-action="previous"]').disabled && overlay.querySelector('[data-action="next"]').disabled,
+                Array.from(overlay.querySelectorAll('button')).every(button => button.getBoundingClientRect().right <= innerWidth),
+                getComputedStyle(overlay).transitionDuration === '0s'
+            ];
+        })()
+        """) as? [Bool]
+        #expect(result == Array(repeating: true, count: 6))
+        _ = try await gallery.evaluateJavaScript("document.querySelector('[data-action=\"close\"]').click()")
+        try await fixture.waitForGalleryClosed()
+    }
+
+    @Test("图片浏览器覆盖整个宿主，随窗口内容尺寸变化，关闭不移动原阅读器")
+    func galleryUsesWindowContentBounds() async throws {
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 1400, height: 900))
+        let sourceView = NSView(frame: NSRect(x: 850, y: 0, width: 550, height: 900))
+        contentView.addSubview(sourceView)
+        let sourceFrame = sourceView.frame
+        let request = try #require(ReadmeImagePreviewRequest(messageBody: [
+            "images": [["src": ImageResponses.largeSVG, "alt": "Diagram"]], "index": 0
+        ]))
+        let controller = ReadmeImagePreviewController(
+            request: request, accountID: nil, isDark: false, interfaceScale: .standard, reduceMotion: true
+        )
+        defer { controller.dismiss(animated: false) }
+        controller.present(over: contentView, restoringFocusTo: sourceView)
+        // 配置级测试会绕过生产导航代理；必须等真实宿主收到就绪消息并显示，不能只检查布局。
+        var isVisible = false
+        for _ in 0..<150 {
+            let hasGallery = try? await controller.webView.evaluateJavaScript(
+                "document.querySelector('.readme-image-preview') !== null"
+            ) as? Bool
+            if hasGallery == true, controller.webView.superview?.alphaValue == 1 {
+                isVisible = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let documentState = try? await controller.webView.evaluateJavaScript("""
+        ({
+            url: document.URL,
+            readyState: document.readyState,
+            hasGallery: !!document.querySelector('.readme-image-preview')
+        })
+        """)
+        #expect(isVisible, Comment(rawValue: "生产图片浏览器应显示窗口级浮层：\(String(describing: documentState))"))
+        #expect(controller.webView.superview?.superview === contentView)
+        #expect(controller.webView.bounds.width == 1400)
+        #expect(controller.webView.bounds.height == 900)
+        #expect(controller.webView.bounds.width > sourceView.bounds.width)
+        #expect(sourceView.superview === contentView && sourceView.frame == sourceFrame)
+        contentView.setFrameSize(NSSize(width: 1600, height: 1000))
+        contentView.layoutSubtreeIfNeeded()
+        #expect(controller.webView.bounds.size == NSSize(width: 1600, height: 1000))
+        controller.dismiss(animated: false)
+        #expect(contentView.subviews == [sourceView])
+        #expect(sourceView.frame == sourceFrame)
+    }
+
+    @Test("正文点击打开覆盖标题栏的整窗浮层，关闭恢复窗口并可再次打开", arguments: [
+        NSWindow.StyleMask.borderless,
+        [.titled, .closable, .resizable],
+        [.titled, .closable, .resizable, .fullSizeContentView]
+    ])
+    func clickOpensNativeGallery(styleMask: NSWindow.StyleMask) async throws {
+        // 不依赖 SwiftUI / WebKit 私有视图名称，沿宿主层级找到实际阅读器。
+        func firstWebView(in view: NSView) -> WKWebView? {
+            if let webView = view as? WKWebView { return webView }
+            return view.subviews.lazy.compactMap { firstWebView(in: $0) }.first
+        }
+
+        // 只建立不显示的宿主，覆盖生产对 window.contentView 的查找；不操作用户窗口或屏幕。
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900),
+                              styleMask: styleMask, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        if styleMask.contains(.titled) {
+            window.toolbar = NSToolbar(identifier: "ReadmeImagePreviewTests")
+            window.toolbarStyle = .unified
+        }
+        let originalToolbar = window.toolbar
+        var visibility: [Bool] = []
+        let contentView = NSHostingView(rootView: ImageClickHost(onVisibilityChange: { visibility.append($0) }))
+        window.contentView = contentView
+        contentView.layoutSubtreeIfNeeded()
+        let sourceView = try #require(firstWebView(in: contentView))
+        let overlayContainer = try #require(contentView.superview)
+        let closeButton = window.standardWindowButton(.closeButton)
+        // SwiftUI 宿主首次布局可能调整窗口大小，每次命中都从当前按钮位置重新换算坐标。
+        func titlebarPoint() -> NSPoint? {
+            closeButton.map {
+                $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: overlayContainer.superview)
+            }
+        }
+        if styleMask.contains(.titled) {
+            #expect(window.contentLayoutRect.height < overlayContainer.bounds.height)
+        }
+        defer {
+            window.contentView = nil
+            window.close()
+        }
+        for _ in 0..<150 {
+            let loaded = try? await sourceView.evaluateJavaScript(
+                "document.querySelector('#preview')?.dataset.readmeZoomable === 'true'"
+            ) as? Bool
+            if loaded == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let sourcePoint = sourceView.convert(
+            NSPoint(x: sourceView.bounds.midX, y: sourceView.bounds.midY), to: contentView.superview
+        )
+        let sourceHit = contentView.hitTest(sourcePoint)
+        #expect(sourceHit === sourceView || sourceHit?.isDescendant(of: sourceView) == true,
+                Comment(rawValue: "正文命中：\(sourceHit.map { String(describing: type(of: $0)) } ?? "nil")，frame=\(sourceView.frame)"))
+        for _ in 0..<2 {
+            let originalTitlebarHit = titlebarPoint().flatMap { overlayContainer.hitTest($0) }
+            if styleMask.contains(.titled) {
+                #expect(originalTitlebarHit != nil, "浏览前原标题栏按钮应可命中")
+            }
+            _ = try await sourceView.evaluateJavaScript("document.querySelector('#preview').click()")
+            var gallery: WKWebView?
+            for _ in 0..<150 {
+                gallery = overlayContainer.subviews.compactMap { ($0 as? NSVisualEffectView)?.subviews.first as? WKWebView }.first
+                if let gallery, gallery.superview?.alphaValue == 1 { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let preview = try #require(gallery, "正文点击应在当前窗口创建图片浏览器")
+            let backdrop = try #require(preview.superview)
+            #expect(preview.superview?.alphaValue == 1)
+            // WebView 的 bounds 非零并不代表浮层可见；SwiftUI 曾把其父容器布局成零尺寸。
+            #expect(backdrop.frame == overlayContainer.bounds)
+            #expect(backdrop.superview === overlayContainer)
+            #expect(preview.bounds.size == overlayContainer.bounds.size)
+            #expect(preview.bounds.width > sourceView.bounds.width)
+            #expect(visibility.last == true)
+            for horizontalPosition in [0.25, 0.75] {
+                let previewPoint = preview.convert(
+                    NSPoint(x: preview.bounds.width * horizontalPosition, y: preview.bounds.midY),
+                    to: overlayContainer.superview
+                )
+                let hitView = overlayContainer.hitTest(previewPoint)
+                #expect(hitView === preview || hitView?.isDescendant(of: preview) == true,
+                        Comment(rawValue: "整窗浮层应接收鼠标，实际命中：\(hitView.map { String(describing: type(of: $0)) } ?? "nil")"))
+            }
+            // 真实标题栏按钮处也必须命中图片浏览器，不能只扩大背景却把原工具栏留在上层。
+            if let titlebarPoint = titlebarPoint() {
+                let hitView = overlayContainer.hitTest(titlebarPoint)
+                #expect(hitView === preview || hitView?.isDescendant(of: preview) == true,
+                        Comment(rawValue: "图片浏览器应覆盖标题栏：point=\(titlebarPoint)，bounds=\(overlayContainer.bounds)，命中=\(hitView.map { String(describing: type(of: $0)) } ?? "nil")"))
+            }
+            _ = try await preview.evaluateJavaScript("window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))")
+            for _ in 0..<150 {
+                if preview.superview?.superview == nil { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(preview.superview?.superview == nil)
+            #expect(firstWebView(in: contentView) === sourceView)
+            #expect(window.toolbar === originalToolbar)
+            if let titlebarPoint = titlebarPoint() {
+                #expect(overlayContainer.hitTest(titlebarPoint) === originalTitlebarHit,
+                        "关闭浏览器后应恢复原标题栏按钮")
+            }
+        }
+    }
 }
 
-/// 保留生产 HTML / user script；测试只控制图片响应，不注入替代实现。
+/// 模拟正文回调触发 SwiftUI 更新，避免仅在普通 NSView 中验证而遗漏真实宿主的视图交接。
+private struct ImageClickHost: View {
+    var onVisibilityChange: (Bool) -> Void
+    @State private var previewVisible = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 850)
+            ReadmeWebContentView(
+                htmlFragment: "<p><img id='preview' src='\(ImageResponses.largeSVG)'></p>",
+                accountID: nil,
+                documentID: "native-gallery",
+                baseURL: URL(string: "https://github.com/owner/repo/blob/HEAD/"),
+                onScrollReportChange: { _ in },
+                readmeFontSizeAdjustment: 0,
+                scrollToTopRequestID: 0,
+                findRequest: ReadmeFindRequest(),
+                onFindResult: { _ in },
+                translationRenderState: .hidden,
+                onTranslationSourceChange: { _ in },
+                starHistoryRenderState: .empty,
+                onApproachingBottom: {},
+                onDocumentReady: { _ in },
+                onDocumentFailed: { _ in },
+                onImagePreviewVisibilityChange: {
+                    previewVisible = $0
+                    onVisibilityChange($0)
+                },
+                allowsSameDocumentAnchors: false,
+                openRepositoryMarkdownInApp: false,
+                markdownLinkRepositoryOwner: nil,
+                markdownLinkRepositoryName: nil,
+                onOpenRepositoryMarkdown: nil
+            )
+            .overlay(alignment: .bottomTrailing) {
+                Text("Toolbar").opacity(previewVisible ? 0 : 1)
+            }
+        }
+        .frame(width: 1400, height: 900)
+    }
+}
+
+/// 保留两份独立的生产文档与脚本；只替代窗口呈现，不把图片浏览器塞回原 README。
 @MainActor
-private final class ImageFixture {
+private final class ImageFixture: NSObject, WKScriptMessageHandler {
     let responses = ImageResponses()
     let webView: WKWebView
+    private let galleryResponses = ImageResponses()
+    private let dark: Bool
+    private let reduceMotion: Bool
+    private var gallery: WKWebView?
+    private(set) var previewRequest: ReadmeImagePreviewRequest?
+    var gallerySize = CGSize(width: 900, height: 700)
 
-    init(fragment: String, dark: Bool = false, enhanceAtDocumentEnd: Bool = true) {
+    init(fragment: String, dark: Bool = false, enhanceAtDocumentEnd: Bool = true, reduceMotion: Bool = false) {
+        self.dark = dark
+        self.reduceMotion = reduceMotion
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(responses, forURLScheme: "starcat-image-test")
@@ -128,11 +746,77 @@ private final class ImageFixture {
             ))
         }
         webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700), configuration: config)
+        super.init()
+        config.userContentController.add(self, name: ReadmeImagePreviewController.messageName)
         webView.loadHTMLString(ReadmeWebView.assembleDocument(fragment: fragment, isDark: dark), baseURL: nil)
+    }
+
+    /// 来源点击按生产消息格式启动另一个 WebView，不替换任何 DOM 浏览行为。
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.webView === webView, let request = ReadmeImagePreviewRequest(messageBody: message.body) {
+            closeGallery()
+            previewRequest = request
+            let configuration = ReadmeImagePreviewController.configuration(request: request, accountID: nil, reduceMotion: reduceMotion)
+            configuration.websiteDataStore = .nonPersistent()
+            configuration.setURLSchemeHandler(galleryResponses, forURLScheme: "starcat-image-test")
+            configuration.userContentController.add(self, name: ReadmeImagePreviewController.messageName)
+            let created = WKWebView(frame: CGRect(origin: .zero, size: gallerySize), configuration: configuration)
+            gallery = created
+            created.loadHTMLString(ReadmeWebView.assembleDocument(fragment: "", isDark: dark), baseURL: nil)
+        } else if message.webView === gallery,
+                  let payload = message.body as? [String: Any], payload["visible"] as? Bool == false {
+            closeGallery()
+        }
+    }
+
+    func openGallery(_ selector: String) async throws -> WKWebView {
+        _ = try await webView.evaluateJavaScript("document.querySelector('\(selector)').click()")
+        return try await waitForGallery()
+    }
+
+    /// 等待真实的消息与 DOM 就绪，不用固定时间猜测跨 WebView 的交接。
+    func waitForGallery() async throws -> WKWebView {
+        for _ in 0..<150 {
+            if let gallery {
+                try await wait("document.querySelector('.readme-image-preview') !== null", in: gallery)
+                return gallery
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw NSError(domain: "ReadmeImageLoading", code: 3)
+    }
+
+    func waitGallery(_ condition: String) async throws {
+        let gallery = try #require(gallery)
+        try await wait(condition, in: gallery)
+    }
+
+    func waitForGalleryClosed() async throws {
+        for _ in 0..<150 {
+            if gallery == nil { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw NSError(domain: "ReadmeImageLoading", code: 4)
+    }
+
+    private func closeGallery() {
+        gallery?.stopLoading()
+        gallery?.configuration.userContentController.removeScriptMessageHandler(forName: ReadmeImagePreviewController.messageName)
+        gallery = nil
+    }
+
+    func close() {
+        closeGallery()
+        webView.stopLoading()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: ReadmeImagePreviewController.messageName)
     }
 
     /// 轮询有界条件，不能等待整页 load：挂起的图片正是本测试需要保留的状态。
     func wait(_ condition: String) async throws {
+        try await wait(condition, in: webView)
+    }
+
+    private func wait(_ condition: String, in webView: WKWebView) async throws {
         for _ in 0..<150 {
             if let result = try? await webView.evaluateJavaScript("Boolean(\(condition))"), result as? Bool == true { return }
             try await Task.sleep(for: .milliseconds(20))
@@ -147,6 +831,18 @@ private final class ImageFixture {
             try await Task.sleep(for: .milliseconds(20))
         }
         throw NSError(domain: "ReadmeImageLoading", code: 2)
+    }
+
+    /// 正文和浏览器持有不同 handler，只放行浏览器请求才能验证跨文档等待和交接。
+    func finishGalleryImage(_ path: String) async throws {
+        for _ in 0..<150 {
+            if galleryResponses.pending[path] != nil {
+                try galleryResponses.finish(path)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw NSError(domain: "ReadmeImageLoading", code: 5)
     }
 
     /// 成功和失败都必须撤销临时尺寸 / 动画；失败仍显示替代内容且不可预览。
@@ -171,6 +867,10 @@ private final class ImageFixture {
 @MainActor
 private final class ImageResponses: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     static let gif = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+    /// 使用真实大 SVG 测量适应 / 原始尺寸，避免 1px GIF 掩盖缩放和拖动错误。
+    static let largeSVG = "data:image/svg+xml;base64," + Data(
+        #"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><rect width="1200" height="900" fill="teal"/></svg>"#.utf8
+    ).base64EncodedString()
     var pending: [String: any WKURLSchemeTask] = [:]
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {

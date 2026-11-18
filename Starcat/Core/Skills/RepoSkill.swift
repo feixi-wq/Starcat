@@ -55,10 +55,33 @@ struct RepoSkill: Identifiable, Codable, Equatable, Sendable {
     var symbol: String { "shippingbox" }
 }
 
+/// 徽标和列表只保留证据摘要；正文与安装文件清单由阅读窗口按仓库读取。
+struct RepoSkillSummary: Equatable, Sendable {
+    let repositoryID: Int64
+    let commitSHA: String
+    let sourcePushedAt: String?
+    let sourceBranch: String?
+    let expiresAt: Date
+    let skillCount: Int
+    let complete: Bool
+    let version: Int
+
+    func isFresh(for repo: Repo, now: Date = .now) -> Bool {
+        version == RepoSkillScan.rulesVersion && expiresAt > now
+            && (repo.pushedAt == nil || sourcePushedAt == repo.pushedAt)
+            && (repo.defaultBranch == nil || sourceBranch == repo.defaultBranch)
+    }
+
+    var presence: RepoSkillPresence {
+        if skillCount > 0 { return .contains }
+        return complete ? .absent : .unknown
+    }
+}
+
 /// 整仓扫描快照可重建，不参与 CloudKit 用户数据同步。
 struct RepoSkillScan: Codable, Equatable, Sendable {
-    /// v2：预览正文排除 frontmatter；旧缓存仍含元数据，须整体重扫。
-    static let rulesVersion = 2
+    /// v4：无效 frontmatter 也保留预览；旧缓存丢弃了这些候选，须整体重扫。
+    static let rulesVersion = 4
     let repositoryID: Int64
     let commitSHA: String
     let sourcePushedAt: String?
@@ -72,11 +95,18 @@ struct RepoSkillScan: Codable, Equatable, Sendable {
     let manifestChecked: Int?
     let version: Int
 
+    var summary: RepoSkillSummary {
+        RepoSkillSummary(
+            repositoryID: repositoryID, commitSHA: commitSHA,
+            sourcePushedAt: sourcePushedAt, sourceBranch: sourceBranch,
+            expiresAt: checkedAt.addingTimeInterval(86_400), skillCount: skills.count,
+            complete: complete, version: version
+        )
+    }
+
     func isFresh(for repo: Repo, now: Date = .now) -> Bool {
-        version == Self.rulesVersion && checkedAt.addingTimeInterval(86_400) > now
-            // 探索卡片可能没有分支或 pushedAt；缺少字段不是“仓库已更新”的证据。
-            && (repo.pushedAt == nil || sourcePushedAt == repo.pushedAt)
-            && (repo.defaultBranch == nil || sourceBranch == repo.defaultBranch)
+        // 探索卡片可能没有分支或 pushedAt；缺少字段不是“仓库已更新”的证据。
+        summary.isFresh(for: repo, now: now)
     }
 
     var presence: RepoSkillPresence {
@@ -85,16 +115,24 @@ struct RepoSkillScan: Codable, Equatable, Sendable {
     }
 }
 
-/// 预设安装目录。Codex 等大多数 Agent 工具默认读取通用 Agents 目录，Claude Code 使用专属目录。
+/// 已核对用户级 Skill 目录的工具；展示信息与本机检测集中在 RepoSkillAgentCatalog。
 enum RepoSkillTargetPreset: String, CaseIterable, Codable, Identifiable, Sendable {
     case agents
     case claudeCode
+    case codex, cursor, githubCopilot, geminiCLI, windsurf, cline, rooCode, kiloCode
+    case continueAgent, openCode, amp, goose, droid, trae, traeCN, qwenCode, kimiCode
+    case iFlow, pi, augment, antigravity, antigravityCLI, junie, kiro, qoder, qoderCN
+    case codeBuddy, lingma, warp, zed, mistralVibe, openHands, openClaw, miniMax
+    case grok, hermes, cortex, crush, devin, deepAgents, firebender, mux, ona
+    case commandCode, tabnine, aiderDesk, astrBot, autohand, bob, codeArts
+    case codeMaker, codeStudio, dexto, forgeCode, fx, inference, jazz, kimchi, kode
+    case loaf, mcpJam, moxby, posit, replit, reasonix, rovoDev, sarvam, terramind
+    case tinycloud, zcode, zencoder, zenflow, neovate, pochi, adal
 
     var id: Self { self }
-    var directory: String { self == .agents ? "~/.agents/skills/" : "~/.claude/skills/" }
-    var defaultURL: URL {
-        URL(fileURLWithPath: (directory as NSString).expandingTildeInPath, isDirectory: true)
-    }
+    var directory: String { (defaultURL.path as NSString).abbreviatingWithTildeInPath + "/" }
+    var defaultURL: URL { agent.directoryURL() }
+    var agent: RepoSkillAgent { RepoSkillAgentCatalog.entries[self]! }
 }
 
 /// 一个安装目标目录；身份使用实际路径，预设目录与自选目录不能重复发布同一份文件。
@@ -102,8 +140,16 @@ struct RepoSkillDestination: Identifiable, Hashable, Codable, Sendable {
     let preset: RepoSkillTargetPreset?
     let url: URL
 
-    /// 工具目录本身可能是软链接；解析到真实位置后，安装记录才能跨路径核对同一份文件。
-    var id: String { url.resolvingSymlinksInPath().standardizedFileURL.path }
+    /// 目录身份是一次解析后的快照；SwiftUI 的 diff 和状态查询不能重复访问文件系统。
+    /// 安装仍使用原始授权 URL，并在发布前重新解析实际目录。
+    let id: String
+
+    init(preset: RepoSkillTargetPreset?, url: URL) {
+        self.preset = preset
+        self.url = url
+        self.id = url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     var displayPath: String { (url.path as NSString).abbreviatingWithTildeInPath }
 }
 

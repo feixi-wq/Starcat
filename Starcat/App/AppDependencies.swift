@@ -20,6 +20,12 @@ import Foundation
 @MainActor
 @Observable
 final class AppDependencies {
+    /// 窗口拥有工作台；公共 API 仅复用其业务编排，不负责创建窗口或延长窗口生命周期。
+    @ObservationIgnored weak var activeKnowledgeRAGWorkspace: KnowledgeRAGWorkspaceViewModel?
+    /// 公共后台请求与窗口可能同时存活；弱集合协调同一会话的取消，不延长窗口生命周期。
+    @ObservationIgnored let knowledgeRAGWorkspaces = NSHashTable<KnowledgeRAGWorkspaceViewModel>.weakObjects()
+    /// 删除等待旧回答退出时，所有入口都不能再为该会话启动新回答。
+    @ObservationIgnored var deletingRAGConversationIDs: Set<UUID> = []
 
     // MARK: - 配置
 
@@ -36,6 +42,14 @@ final class AppDependencies {
     /// 不能直接使用 `AuthSession.state.user.id`：冷启动会先从磁盘 profile 提前恢复登录 UI，
     /// 此时数据库仍可能指向 `_anonymous`，必须等 `database.reopen` 完成后再刷新账号级缓存。
     private(set) var databaseScopeRevision: UInt64 = 0
+    /// 多窗口共用批次与历史；长期反馈存入当前账号数据库，JSON 仅保存批次偏好。
+    let dailyRecommendationStore: DailyRecommendationStore
+    /// 可重建 AI 理由缓存与长期历史分离，卡片和历史详情共享同一份生成结果。
+    let dailyRecommendationExplanationStore = DailyRecommendationExplanationStore()
+    /// 整批 owner 头像先准备为内嵌数据，网页打开时无需重新联网。
+    let dailyRecommendationAvatarStore = DailyRecommendationAvatarStore()
+    /// 原生宿主共用可取消的准备任务，关闭用户换批不依赖 SwiftUI 的任务继承。
+    let dailyRecommendationPreparation = DailyRecommendationPreparation()
     /// AI Chat / Embedding 原始用量事件与面板聚合查询的本地仓储。
     let aiUsageRepository: any AIUsageRepositoryProtocol
     /// D-02：注入类型从 actor 改为协议，便于 Preview / 测试替换为 Mock。
@@ -146,6 +160,10 @@ final class AppDependencies {
     let undoStarHistoryRepository: any UndoStarHistoryRepositoryProtocol
     /// 搜索浮层 `⌘K` 的关键词历史 Repository（GRDB SQLite，CloudKit-ready 字段已就绪，W5 同步接入）。
     let searchHistoryRepository: any SearchHistoryRepositoryProtocol
+    /// Search Center 自然语言查询的决策分流与受控规划器。
+    let searchIntentRouter: SearchIntentRouter
+    /// Search Center 智能发现编排；与决策分流共享 Planner 契约。
+    let repositoryDiscoveryService: RepositoryDiscoveryService
     /// 用户自定义智能集合 Repository。内置集合不入库，只有用户保存的规则在这里。
     let smartCollectionRepository: any SmartCollectionRepositoryProtocol
     /// W6 AI：repo embedding SQLite 缓存。
@@ -197,6 +215,7 @@ final class AppDependencies {
     let githubIssueSummaryStore = GitHubNotificationIssueSummaryStore(persistenceCache: .shared)
     /// 单仓 AI 摘要的进程内会话表。按 repo 保留生成 Task 与 UI 状态，切换详情不取消。
     let repoAIInsightSessionStore: RepoAIInsightSessionStore
+    let aiBackgroundBillingAlerts: AIBackgroundBillingAlerts
     /// RepoContextPacker 的共享入口。单仓 AI 与知识库 RAG 必须复用同一缓存、设置和临时目录清理约束。
     let repoAIContextProvider: RepoAIContextProvider
     /// RepoContext 文件系统真源。知识库浏览器只通过该对象读写 XML，不跨 security scope 持有 URL。
@@ -316,6 +335,8 @@ final class AppDependencies {
     /// 本地联调改 env 即可；② `RepoMetadataHeaderView` 通过 environment 拿到这个实例，
     /// 不再 new；③ 未来要做 ShareAPI 单测，从 environment 注入 mock 即可。
     let shareAPI: ShareAPI
+    /// UI 多窗口与 CLI 共用任务，连 AI 准备阶段也只运行一次。
+    let repoShareTaskStore: RepoShareTaskStore
 
     // MARK: - Wiki 外部文档索引
 
@@ -443,12 +464,14 @@ final class AppDependencies {
     /// 装配顺序约束：service 必须在 AuthSession 之后建（service.authSession = session 反向 weak 引用）；
     /// 同时 session.userProfileService = service（强引用，session 持有 service）。
     let userProfileService: UserProfileService
+    /// 浮层专属资料与公开分享资料分开存储，首次打开时才拉取。
+    let profileExtrasService: ProfileExtrasService
 
     /// 分享卡开发语言统计服务（当前用户拥有的公开、非 fork 仓库语言聚合）。
     ///
     /// 与 `HomeViewModel.languageStats` 刻意分离：后者统计 starred 项目的语言，表达兴趣；
-    /// 这里统计用户自己的公开仓库，表达开发画像。服务内部有 12h TTL + UserDefaults 快照，
-    /// 登录后异步预热，分享卡打开时直接消费已缓存数据。
+    /// 这里统计用户自己的公开仓库，表达开发画像。服务内部有 7 天 TTL + UserDefaults 快照，
+    /// 启动先恢复本地统计，登录验证后按需刷新；侧栏与分享卡共用同一快照。
     let developerLanguageService: DeveloperLanguageService
 
     // MARK: - R-01 三场景共用架构（2026-06-09）
@@ -808,6 +831,24 @@ final class AppDependencies {
         )
     }
 
+    /// 公共检索沿用 RAG 后端与权益，但在召回及 parent packing 前移除未授权笔记来源。
+    /// 没有 Generator 配置仍能走关键词检索；此入口不会启动索引或回答生成。
+    func makeMCPKnowledgeSearchExecutor(includePrivateNotes: Bool) throws -> KnowledgeSearchCapabilityExecutor {
+        try entitlementGate.requirePro(.knowledgeRAG, usesLocalOnly: settings.isRAGPipelineResolvedToLocalAI)
+        var retrieval = settings.ragRetrievalSettings.normalized()
+        if !includePrivateNotes { retrieval.enabledSources.remove(.notes) }
+        let embedding = try? settings.resolveEmbeddingSelection()
+        let chatModel = (try? resolveRAGChatSelection(selectedModelID: nil))?.modelName ?? ""
+        return KnowledgeSearchCapabilityExecutor(
+            candidateProvider: RAGKnowledgeSearchCandidateProvider(repository: ragCandidateRepository),
+            retriever: try makeKnowledgeRAGRetriever(
+                chatModel: chatModel, embeddingSelection: embedding,
+                retrievalSettings: retrieval, usageFeature: .mcp
+            ),
+            maxEvidenceTokens: min(retrieval.evidenceTokenBudget, 1_600)
+        )
+    }
+
     private struct RAGModelSelection {
         var profile: AIProviderProfile
         var modelName: String
@@ -861,6 +902,7 @@ final class AppDependencies {
         return try AIClientFactory.make(configuration: AIClientConfiguration(
             providerID: profile.id,
             provider: profile.provider,
+            profileName: profile.displayName,
             apiKey: apiKey,
             baseURL: profile.baseURL,
             chatModel: chatModel,
@@ -912,6 +954,7 @@ final class AppDependencies {
         // 发生在任何 Service 创建 OpenAIClient 之前，避免启动早期请求漏记。
         AIUsageRecorder.shared.configure(database: db)
         self.aiUsageRepository = GRDBAIUsageRepository(database: db)
+        self.dailyRecommendationStore = DailyRecommendationStore(history: RecommendationHistoryRepository(database: db))
 
         let api = GitHubAPIClient()
         self.apiClient = api
@@ -1193,11 +1236,15 @@ final class AppDependencies {
         let githubStarListRepo = GRDBGitHubStarListRepository(database: db)
         self.tagRepository = tagRepo
         self.repoTagRepository = repoTagRepo
+        let billingAlerts = AIBackgroundBillingAlerts()
+        self.aiBackgroundBillingAlerts = billingAlerts
+        self.repoShareTaskStore = RepoShareTaskStore(billingAlerts: billingAlerts)
         // Session store 同时依赖 AI service 与标签仓储，因此必须在两组依赖都完成装配后创建。
         self.repoAIInsightSessionStore = RepoAIInsightSessionStore(
             service: aiInsight,
             tagRepository: tagRepo,
-            repoTagRepository: repoTagRepo
+            repoTagRepository: repoTagRepo,
+            billingAlerts: billingAlerts
         )
         self.githubStarListRepository = githubStarListRepo
         self.githubStarListSyncService = GitHubStarListSyncService(
@@ -1212,6 +1259,41 @@ final class AppDependencies {
             base: GRDBSmartCollectionRepository(database: db),
             entitlementGate: self.entitlementGate
         )
+
+        // Search Center 智能发现：Router 只做查询分类/规划，Discovery Service 负责受控
+        // 检索、核验和重排。三个服务共享同一 AppSettings；Keychain 仍按所选模型动态读取。
+        let searchQueryPlanner = SearchLLMQueryPlanner(
+            settings: self.settings, keychain: KeychainManager.shared, entitlementGate: self.entitlementGate
+        )
+        // 网页展示开关不授权 AI 联网；只检查所选服务商，不能隐式切换到其他服务商。
+        let webEvidenceAllowed: (ExternalSearchProviderID) -> Bool = { [settings = self.settings] provider in
+            settings.externalContextEnabled
+                && ExternalSearchRegistry(settings: settings).usableProviderIDs().contains(provider)
+        }
+        let searchIntentRouter = SearchIntentRouter(
+            settings: self.settings,
+            engineRegistry: decisionEngineRegistry,
+            planner: searchQueryPlanner,
+            webEvidenceAllowed: webEvidenceAllowed
+        )
+        let repositoryDiscoveryService = RepositoryDiscoveryService(
+            planner: searchQueryPlanner,
+            articleExtractor: searchQueryPlanner,
+            githubProvider: GitHubRepositorySearchProvider(
+                client: api,
+                noteRepository: self.repoNoteRepository
+            ),
+            webProvider: ExternalSearchWebProvider(),
+            verifier: GitHubRepositoryVerifier(client: api),
+            ranker: DynamicSearchDiscoveryRanker(
+                settings: self.settings,
+                keychain: KeychainManager.shared,
+                entitlementGate: self.entitlementGate
+            ),
+            webEvidenceAllowed: webEvidenceAllowed
+        )
+        self.searchIntentRouter = searchIntentRouter
+        self.repositoryDiscoveryService = repositoryDiscoveryService
 
         // HOM-52：批量整理服务装在 AI insight + 标签 + 标签关联 + AI 摘要 Repo 之后。
         // 注：onTagsChanged 由 HomeView 在 environment 注入后挂接，刷新 Sidebar 计数。
@@ -1232,7 +1314,8 @@ final class AppDependencies {
             aiSummaryRepository: summaryRepo,
             entitlementGate: self.entitlementGate,
             notificationService: notificationService,
-            draftRepository: aiOrganizationDraftRepository
+            draftRepository: aiOrganizationDraftRepository,
+            billingAlerts: billingAlerts
         )
         self.batchAIQueueService = batchSvc
 
@@ -1241,7 +1324,8 @@ final class AppDependencies {
             listService: self.githubStarListSyncService,
             insightService: decisionGroupingRouter,
             entitlementGate: self.entitlementGate,
-            draftRepository: aiOrganizationDraftRepository
+            draftRepository: aiOrganizationDraftRepository,
+            billingAlerts: billingAlerts
         )
 
         // HOM-126：自动后台 AI 整理调度器。
@@ -1728,6 +1812,8 @@ final class AppDependencies {
         userProfileSvc.authSession = session
         session.userProfileService = userProfileSvc
         self.userProfileService = userProfileSvc
+        let profileExtrasSvc = ProfileExtrasService(api: api)
+        self.profileExtrasService = profileExtrasSvc
 
         // 分享卡开发语言服务：从用户拥有的公开仓库聚合 `/languages` 字节数。
         // 与 ContributionService 同样持有具体 GitHubAPIClient，避免把分享卡专属端点扩进全局 mock 协议。
@@ -1817,6 +1903,7 @@ final class AppDependencies {
             }
         )
         self.starsSyncFollowUp = followUp
+        mcpFacade.publicCapabilities = StarcatMCPPublicFacade(dependencies: self, facade: mcpFacade)
         self.syncManager.onSyncSettled = { [session, followUp] userID, trigger in
             guard let user = session.state.user, user.id == userID else { return }
             followUp.schedule(userID: userID, login: user.login, retryPendingMemberships: trigger == .manual)
@@ -1847,6 +1934,10 @@ final class AppDependencies {
         // 还能看到自己的数据，不会进入"无 DB 可用"的死状态。
         session.onUserSessionChanged = { [weak self] userId in
             guard let self else { return }
+            // 先等公共任务真实退出，再让任何领域服务切换数据库，避免旧账号句柄串库。
+            await mcpFacade.publicCapabilities?.prepareForAccountChange()
+            // 启动校验 401 不经过 onSignOut；在共用会话出口清理，覆盖退出和凭据失效。
+            if userId == nil { self.profileExtrasService.reset() }
             self.externalStarInbox.resetForAccountChange()
             // 自定义索引跨账号共用同一名称。真实登出/切号必须先清空；冷启动从
             // anonymous 占位库恢复同一账号时可保留到切库后的内容指纹核验。
@@ -1889,8 +1980,10 @@ final class AppDependencies {
                     category: "database",
                     operation: "database.switchUser",
                     message: "Failed to switch the active user database",
+                    summary: .databaseUnavailable,
+                    impact: .blocked,
                     underlying: DiagnosticEvent.summarize(error),
-                    context: ["targetUser": userId.map(String.init) ?? "anonymous"]
+                    context: ["targetUser": userId.map(String.init) ?? "anonymous"], error: error
                 )
                 self.widgetRefreshCoordinator.publishEmpty(state: .unavailable)
             }
@@ -1919,6 +2012,7 @@ final class AppDependencies {
                 await self.widgetRefreshCoordinator.publishReady()
                 await self.screensaverRefreshCoordinator.publishReady()
             }
+            mcpFacade.publicCapabilities?.finishAccountChange(succeeded: didSwitchDatabase)
         }
 
         // 启动期 reload：异步 Task，不阻塞 init。测试 host 跳过避免触发 DB 启动期成本。
@@ -1966,6 +2060,7 @@ final class AppDependencies {
     func switchUserDatabase(to userId: Int64?) async throws {
         let previousUserId = database.currentUserId
         if previousUserId != userId {
+            await repoShareTaskStore.resetForAccountChange()
             await repoSkillStore.resetForAccountChange()
             await RepoFileTreeSessionCache.shared.reset()
             // 先阻断旧账号计数回写，再 await 数据库切换；新账号恢复不依赖活动页是否打开。
@@ -1978,6 +2073,7 @@ final class AppDependencies {
             // 新账号库恢复；把屏障放在数据库所有者内部，避免 View 生命周期竞态。
             await batchAIQueueService.resetForAccountChange()
             await githubStarListAIGroupingSession.resetForAccountChange()
+            aiBackgroundBillingAlerts.reset()
             // 屏障从清理前一直保持到 reopen 结束；新请求会等待并在 end 后重新读取 Token。
             await repositoryMetricsClient.beginDatabaseScopeChange()
             await repositoryInsightsCache.clearTransientState()
@@ -1999,6 +2095,9 @@ final class AppDependencies {
         guard database.currentUserId != previousUserId else { return }
         activityCategoryCountService.activate(accountID: database.currentUserId)
         databaseScopeRevision &+= 1
+        dailyRecommendationStore.activate(accountID: database.currentUserId, scopeRevision: databaseScopeRevision)
+        dailyRecommendationExplanationStore.activate(accountID: database.currentUserId, revision: databaseScopeRevision)
+        dailyRecommendationAvatarStore.activate(accountID: database.currentUserId, revision: databaseScopeRevision)
         githubIssueSummaryStore.reset(scopeRevision: databaseScopeRevision)
         repositoryInsightsContextScopeState.update(
             userID: database.currentUserId,
@@ -2024,6 +2123,7 @@ final class AppDependencies {
     /// 全流程只动本机，不调用 GitHub / CloudKit / 自建后端删除远端数据。
     func resetLocalAppData(for target: AppDataResetTarget) async throws {
         mcpService.stop()
+        defer { dailyRecommendationPreparation.resume() }
 
         let resetter = AppDataResetService(
             database: database,
@@ -2031,6 +2131,12 @@ final class AppDependencies {
         )
         try await resetter.resetLocalData(
             for: target,
+            prepareAccountReset: {
+                // JSON 与理由目录不在账号 DB 内；先停生成并排空反馈写入，再删文件、注销和切库。
+                await self.dailyRecommendationPreparation.suspendAndWait()
+                try await self.dailyRecommendationStore.clearForFactoryReset(accountID: target.userID)
+                try await self.dailyRecommendationExplanationStore.clearForFactoryReset(accountID: target.userID)
+            },
             releaseCurrentSession: { [authSession] in
                 await authSession.signOut()
             },
@@ -2100,8 +2206,10 @@ final class AppDependencies {
             category: "factory-reset",
             operation: "factoryReset.cleanup",
             message: "Factory reset left generated user data on disk",
+            summary: .dataCleanupFailed,
+            impact: .dataRisk,
             underlying: DiagnosticEvent.summarize(error),
-            context: ["component": component]
+            context: ["component": component], error: error
         )
     }
 

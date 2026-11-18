@@ -158,7 +158,7 @@ Contrast — too technical and verbose (DON'T do this):
 
 ### Bullet writing rules
 
-写法以主规范为准：[`docs/5-规范/Changelog-更新规范.md`](../../../docs/5-规范/Changelog-更新规范.md) 第 4 节（App 更新说明友好）。摘要：
+写法以主规范为准：[`docs/5-规范/Changelog-更新规范.md`](../../docs/5-规范/Changelog-更新规范.md) 第 4 节（App 更新说明友好）。摘要：
 
 - **短标题 + 冒号 + 说明**：中文用全角 `：`；英文用半角 `: `（冒号后必须有空格）。不要靠第一个逗号拆标题；新条目不要用 em dash。
 - **不要**以 `Added` / `Improved` / `Fixed` 或「新增 / 优化 / 修复」开头——分区标题已表达类别。
@@ -227,7 +227,7 @@ and before the first existing `## <version>` section.
 
 ### Rules
 - Categories with no entries → omit the section entirely
-- Blank line between sections and between bullets
+- Blank line between sections only; never between list items inside one section
 - Bullets start with `- ` (dash + space)
 - Bullets use `短标题：说明`（中文全角冒号）或 `Short title: detail`（英文冒号+空格）；不要句首分类动词、不要用 em dash
 - The version link reference goes at the bottom of the file（主仓库 releases 若在用）
@@ -258,6 +258,7 @@ Before touching any file, present the complete proposed changelog to the user:
 
 After writing, verify:
 - Both files have identical bullet counts per category
+- No blank lines between bullets in the same section
 - Version number matches across both files
 - Format matches existing entries exactly
 - Version link references are present and in correct order

@@ -176,6 +176,7 @@ final class BatchAIQueueService {
     /// 闭包参数：本次结束时的 (completed, ignored, failed, total) 快照。
     /// 仅在 isFinished 触发，cancel 路径不触发（避免污染"上次运行结果"）。
     var onBatchFinished: ((_ completed: Int, _ ignored: Int, _ failed: Int, _ total: Int) -> Void)?
+    private let billingAlerts: AIBackgroundBillingAlerts?
 
     init(
         insightService: any BatchAIInsightProviding,
@@ -184,7 +185,8 @@ final class BatchAIQueueService {
         aiSummaryRepository: any AISummaryRepositoryProtocol,
         entitlementGate: EntitlementGate? = nil,
         notificationService: ReleaseNotificationService? = nil,
-        draftRepository: (any AIOrganizationDraftRepositoryProtocol)? = nil
+        draftRepository: (any AIOrganizationDraftRepositoryProtocol)? = nil,
+        billingAlerts: AIBackgroundBillingAlerts? = nil
     ) {
         self.insightService = insightService
         self.tagRepository = tagRepository
@@ -193,6 +195,7 @@ final class BatchAIQueueService {
         self.entitlementGate = entitlementGate
         self.notificationService = notificationService
         self.draftRepository = draftRepository
+        self.billingAlerts = billingAlerts
     }
 
     // MARK: - 派生状态（panel UI 用）
@@ -1547,20 +1550,44 @@ final class BatchAIQueueService {
 
     /// 单仓请求完成后立即整合结果；无论成功、失败或取消，都释放 Worker 的 processing 占位。
     private func processClaimedJob(repoID: Int64, options: BatchAIQueueOptions) async {
+        let diagnostic = DiagnosticOperation(category: "ai", name: "batchAI.job")
+        await DiagnosticContext.$current.withValue(diagnostic) {
+            await processClaimedJob(repoID: repoID, options: options, diagnostic: diagnostic)
+        }
+    }
+
+    /// 每次尝试仅保存有界上下文；是否耗尽重试仍由原队列状态机决定。
+    private func processClaimedJob(repoID: Int64, options: BatchAIQueueOptions, diagnostic: DiagnosticOperation) async {
         defer { processingJobIDs.remove(repoID) }
+        defer {
+            let failed = jobs.first { $0.repoId == repoID }?.status == .failed
+            diagnostic.finish(Task.isCancelled || cancelRequested ? .cancelled : failed ? .failed : .succeeded)
+        }
+        var outputAvailable = false
+        let didRequestSummary = options.shouldRun(.summary, forRepoID: repoID)
+        let didRequestTags = options.shouldRun(.tags, forRepoID: repoID)
         do {
             // processing 必须先 durable 再请求 AI。若 App 在请求期间退出，恢复时才能明确
             // 标成“处理中断”，而不是把同一 queued 项静默再调用一次并重复消耗 token。
             try await persistJob(repoID: repoID)
+            diagnostic.event(phase: "jobPersisted")
             let result = try await processSingle(jobId: repoID, options: options)
             try Task.checkCancellation()
             guard !cancelRequested else { return }
+            outputAvailable = true
+            diagnostic.event(phase: "response", fields: ["outputAvailable": .boolean(true)])
             try await applyResult(jobId: repoID, result: result, options: options)
             retryNotBeforeByRepoID[repoID] = nil
             try await persistJob(repoID: repoID)
+            if !cancelRequested, !Task.isCancelled {
+                if didRequestSummary { billingAlerts?.resolve(kind: .summary, repoID: repoID) }
+                if didRequestTags { billingAlerts?.resolve(kind: .tags, repoID: repoID) }
+            }
         } catch {
             guard !cancelRequested, !Task.isCancelled, !(error is CancellationError) else { return }
-            handleFailure(jobId: repoID, error: error, options: options)
+            let summaryFinished = jobs.first(where: { $0.repoId == repoID })?.didGenerateSummary == true
+            handleFailure(jobId: repoID, error: error, options: options, outputAvailable: outputAvailable,
+                          billingKind: didRequestSummary && !summaryFinished ? .summary : .tags)
             await persistJobBestEffort(repoID: repoID)
         }
     }
@@ -1594,7 +1621,9 @@ final class BatchAIQueueService {
             hints = .empty
         }
 
+        // 摘要成功、标签失败时草稿保留摘要完成标记；重试只请求尚未完成的标签。
         let includesSummary = options.shouldRun(.summary, forRepoID: jobId)
+            && jobs.first(where: { $0.repoId == jobId })?.didGenerateSummary != true
         let includesTags = options.shouldRun(.tags, forRepoID: jobId)
         let rawSuggestions: [AITagSuggestion]
         var reuseOnlyPolicy = options.tagGenerationPolicy
@@ -1622,6 +1651,15 @@ final class BatchAIQueueService {
                 externalContextEnabledOverride: includesSummary ? options.externalContextEnabledOverride : nil,
                 tagGenerationPolicy: reuseOnlyPolicy
             )
+            if let error = insight.tagBillingError {
+                try Task.checkCancellation()
+                guard !cancelRequested, let index = jobs.firstIndex(where: { $0.repoId == jobId }) else {
+                    throw CancellationError()
+                }
+                jobs[index].didGenerateSummary = true
+                billingAlerts?.resolve(kind: .summary, repoID: jobId)
+                throw error
+            }
             rawSuggestions = insight.insight.suggestedTags
         } else {
             rawSuggestions = []
@@ -1833,6 +1871,8 @@ final class BatchAIQueueService {
                 tagHintsByRepoID: hintsByRepositoryID,
                 purpose: .newOnly
             )
+            guard !cancelRequested, !Task.isCancelled else { return }
+            for repo in repositories { billingAlerts?.resolve(kind: .tags, repoID: repo.id) }
             let session = makeTagExpansionSession(
                 repositories: repositories,
                 suggestionsByRepositoryID: discovered
@@ -1845,6 +1885,8 @@ final class BatchAIQueueService {
                 uncoveredTagRepositoryIDs = []
             }
         } catch {
+            guard !cancelRequested, !Task.isCancelled, !(error is CancellationError) else { return }
+            for repo in repositories { billingAlerts?.record(error, kind: .tags, repo: repo) }
             tagExpansionError = Self.userVisibleFailureMessage(for: error)
             AppLog.ai.error(
                 "[batch-ai] pooled tag discovery failed: \(error.localizedDescription, privacy: .public)"
@@ -2041,6 +2083,7 @@ final class BatchAIQueueService {
             let vocabularyKeys = initialTagCanonicalKeys ?? []
             for repository in session.targetRepositories {
                 guard let index = jobs.firstIndex(where: { $0.repoId == repository.id }) else { continue }
+                if !Task.isCancelled { billingAlerts?.resolve(kind: .tags, repoID: repository.id) }
                 let suggestions = (reclassified[repository.id] ?? []).filter { suggestion in
                     vocabularyKeys.contains(AITagSuggestionPolicy.canonicalKey(suggestion.name))
                 }
@@ -2075,6 +2118,7 @@ final class BatchAIQueueService {
             return nil
         } catch {
             if createdAnyTag { onTagsChanged?() }
+            for repo in session.targetRepositories { billingAlerts?.record(error, kind: .tags, repo: repo) }
             let message = Self.userVisibleFailureMessage(for: error)
             tagExpansionError = message
             await persistDraftHeaderBestEffort()
@@ -2175,13 +2219,16 @@ final class BatchAIQueueService {
     }
 
     /// 处理单个 job 的失败：分流"重试" vs "终态失败"。
-    private func handleFailure(jobId: Int64, error: Error, options: BatchAIQueueOptions) {
+    private func handleFailure(jobId: Int64, error: Error, options: BatchAIQueueOptions,
+                               outputAvailable: Bool, billingKind: AIBackgroundBillingAlerts.Kind) {
         guard let idx = jobs.firstIndex(where: { $0.repoId == jobId }) else { return }
 
         let friendly = UserFacingError.map(
             error,
             operation: String.l10n("diagnostics.operation.generateAIInsight"),
-            service: "AI"
+            service: "AI",
+            impact: outputAvailable ? .dataRisk : .blocked,
+            summary: outputAvailable ? .dataSaveFailed : .aiUnavailable
         )
         let failure = BatchAIFailure(error: error)
         let shortMessage = failure.localizedMessage
@@ -2198,7 +2245,6 @@ final class BatchAIQueueService {
         AppLog.ai.error(
             "[batch-ai] job failed: repo=\(jobId, privacy: .public), attempt=\(self.jobs[idx].attempts, privacy: .public), error=\(shortMessage, privacy: .public)"
         )
-        friendly.record(category: "ai", operation: "batchAI.job", service: "ai-provider")
 
         // 即使当前 job 已达到重试上限，剩余 queued jobs 仍需立即继承降速窗口，
         // 不能继续以五路并发撞击同一个已限流 Provider。
@@ -2207,6 +2253,10 @@ final class BatchAIQueueService {
         }
 
         if isPermanentError(error) || jobs[idx].attempts >= options.maxRetries {
+            // 单次尝试失败不落盘；现有重试已耗尽或确定不可重试时才确认请求失败。
+            friendly.record(category: "ai", operation: "batchAI.job", service: "ai-provider",
+                context: ["repoID": String(jobId)],
+                fields: ["attempt": .integer(jobs[idx].attempts), "outputAvailable": .boolean(outputAvailable)])
             jobs[idx].status = .failed
             jobs[idx].failure = failure
             jobs[idx].errorDiagnostic = diagnostic
@@ -2214,6 +2264,9 @@ final class BatchAIQueueService {
             jobs[idx].ignoreReason = nil
             jobs[idx].finishedAt = .now
             retryNotBeforeByRepoID[jobId] = nil
+            if let repo = repoCache[jobId] {
+                billingAlerts?.record(error, kind: billingKind, repo: repo)
+            }
         } else {
             // 可重试：指数退避后回到队列，避免 429 / 5xx 立即空转轰炸 Provider。
             // 少量 jitter 让两批同时失败后不要在同一毫秒再次撞上限流窗口。

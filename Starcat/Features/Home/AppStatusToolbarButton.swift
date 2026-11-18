@@ -19,10 +19,9 @@ import SwiftUI
 struct AppStatusToolbarButton: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(AppDependencies.self) private var dependencies
-    @Environment(AppSettings.self) private var settings
     @Environment(SyncManager.self) private var syncManager
-    @Environment(\.locale) private var locale
     @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(\.starcatReduceMotion) private var reduceMotion
 
     let lastSyncedAt: Date?
     let onShowBatchAIPanel: (() -> Void)?
@@ -31,8 +30,8 @@ struct AppStatusToolbarButton: View {
 
     @State private var isPresented = false
     /// 先结束 popover 的展示生命周期，再交给主窗口挂载模态 sheet。
-    @State private var pendingTaskWindow: (id: AppBackgroundTask.ID, accountID: Int64?)?
-    @State private var diagnosticSummary: DiagnosticLogSummary = .empty
+    @State private var afterDismiss: (() -> Void)?
+    @State private var diagnostics = AppStatusDiagnostics()
     /// Toolbar 与设置页必须观察同一个配置实例，端口冲突才能即时反映到全局状态。
     @State private var pluginConfiguration = CompanionConfiguration.shared
 
@@ -64,83 +63,37 @@ struct AppStatusToolbarButton: View {
         }
         .help("toolbar.status.help")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            ScrollView {
-                AppStatusPanel(
-                    lastSyncedAt: lastSyncedAt,
-                    syncState: syncManager.state,
-                    syncProgress: syncManager.progress,
-                    initialWarmupCoordinator: dependencies.initialWarmupCoordinator,
-                    undoStarCleanup: dependencies.undoStarCleanupScheduler,
-                    backgroundTasks: backgroundTasks,
-                    mcpState: dependencies.mcpService.state,
-                    mcpEnabled: settings.mcpServiceEnabled,
-                    browserPluginState: pluginConfiguration.serverStatus,
-                    browserPluginEnabled: pluginConfiguration.isEnabled,
-                    githubStatusMonitor: dependencies.githubStatusMonitor,
-                    serviceSummary: dependencies.serviceAvailabilityMonitor.summary,
-                    diagnosticSummary: diagnosticSummary,
-                    aiUsageRepository: dependencies.aiUsageRepository,
-                    relativePastDate: relativePastDate,
-                    relativeFutureDate: relativeFutureDate,
-                    onOpenDiagnostics: { openSettings(tab: "diagnostics") },
-                    onClearDiagnostics: {
-                        Task { await clearDiagnostics() }
-                    },
-                    onOpenServices: { openSettings(tab: "services") },
-                    onOpenMCP: { openSettings(tab: "mcp") },
-                    onOpenBrowserPlugin: { openSettings(tab: "integrations.browserPlugin") },
-                    onOpenAIUsage: { AIUsageWindowController.show(dependencies: dependencies) },
-                    onOpenTask: { kind in
-                        guard backgroundTasks.task(kind)?.opensWindow == true else { return }
-                        pendingTaskWindow = (kind, dependencies.authSession.state.user?.id)
-                        isPresented = false
-                    },
-                    onCancelTask: cancelBackgroundTask,
-                    onOpenGeneralSettings: { openSettings(tab: "general") },
-                    onOpenAbout: { AboutWindowController.show() },
-                    onOpenStorage: { openSettings(tab: "storage") },
-                    onOpenLocalAI: { openSettings(tab: "ai") },
-                    onOpenLabs: { openSettings(tab: "labs") },
-                    onOpenLocalAILogs: { modelID in
-                        LocalAILogWindowSelection.shared.select(modelID)
-                        isPresented = false
-                        openWindow(id: LocalAILogWindowSelection.sceneID)
+            AppStatusPopover(
+                diagnostics: diagnostics,
+                lastSyncedAt: lastSyncedAt,
+                dismissThen: { action in
+                    afterDismiss = action
+                    isPresented = false
+                },
+                onOpenWorkspaceTask: { id in
+                    switch id.kind {
+                    case .grouping: onShowGitHubGrouping?()
+                    case .tags: onShowBatchAIPanel?()
+                    case .indexing: onShowKnowledgeWorkspace?()
+                    default: break
                     }
-                )
-                .frame(width: AppStatusPanelMetrics.width)
-                .padding(14)
-            }
-            .frame(maxHeight: 640)
-            .appLocaleEnvironment()
-            .onDisappear {
-                guard let request = pendingTaskWindow else { return }
-                pendingTaskWindow = nil
-                // 不在 SwiftUI 拆除 popover 的回调栈里 beginSheet，避免重入 presentation bridge。
-                DispatchQueue.main.async {
-                    // 浮层关闭期间若切换了账号，旧点击不能打开新账号的同类任务。
-                    guard request.accountID == dependencies.authSession.state.user?.id else { return }
-                    openTaskWindow(request.id)
+                },
+                onOpenLocalAILogs: {
+                    openWindow(id: LocalAILogWindowSelection.sceneID)
                 }
-            }
-            .task {
-                await refreshDiagnostics()
-                await dependencies.serviceAvailabilityMonitor.refreshNow()
-                await dependencies.githubStatusMonitor.refreshNow()
+            )
+            .onDisappear {
+                guard let action = afterDismiss else { return }
+                afterDismiss = nil
+                DispatchQueue.main.async { action() }
             }
         }
         .task {
-            await refreshDiagnostics()
+            await diagnostics.refresh(reduceMotion: reduceMotion)
         }
         .onReceive(NotificationCenter.default.publisher(for: .diagnosticIssuesDidChange)) { _ in
-            Task { await refreshDiagnostics() }
-        }
-        .onChange(of: isPresented) { _, newValue in
-            guard newValue else { return }
-            Task {
-                await refreshDiagnostics()
-                await dependencies.serviceAvailabilityMonitor.refreshNow()
-                await dependencies.githubStatusMonitor.refreshNow()
-            }
+            guard !isPresented else { return }
+            Task { await diagnostics.refresh(reduceMotion: reduceMotion) }
         }
     }
 
@@ -150,49 +103,10 @@ struct AppStatusToolbarButton: View {
 
     private var backgroundTasks: AppBackgroundTaskSnapshot { .current(dependencies) }
 
-    /// 延迟到浮层消失后再复核任务，不能误开已结束任务的新开始页或抢占自动分组。
-    private func openTaskWindow(_ id: AppBackgroundTask.ID) {
-        guard let task = backgroundTasks.task(id), task.opensWindow else { return }
-        if let target = task.settingsTarget {
-            openSettings(tab: target)
-            return
-        }
-        switch task.kind {
-        case .grouping: onShowGitHubGrouping?()
-        case .tags: onShowBatchAIPanel?()
-        case .indexing: onShowKnowledgeWorkspace?()
-        case .projectSync: dependencies.mainWindowNavigationDispatcher.navigate(to: .manage(.myProjects))
-        case .notificationSync: dependencies.mainWindowNavigationDispatcher.navigate(to: .githubNotifications)
-        case .warmup, .readme, .openSSF, .health, .repositoryIndexing,
-             .localModel, .layaModel, .screensaverAvatars, .chatHistoryMigration, .runtimeInstall: break
-        }
-    }
-
-    /// 只停止被点击的这一轮，沿用服务取消语义，不关闭周期调度或回滚结果。
-    private func cancelBackgroundTask(_ id: AppBackgroundTask.ID) {
-        guard let task = backgroundTasks.task(id), task.canCancel else { return }
-        switch task.kind {
-        case .grouping: dependencies.githubStarListAIGroupingSession.stopAnalysis()
-        case .tags: dependencies.batchAIQueueService.cancel()
-        case .warmup: dependencies.initialWarmupCoordinator.cancel()
-        case .readme: dependencies.readmePrefetchPoller.cancelCurrentRun()
-        case .openSSF: dependencies.openSSFScorePoller.cancelCurrentRefresh()
-        case .health: dependencies.repoHealthPoller.cancelCurrentRefresh()
-        case .indexing: dependencies.knowledgeRAGIndexBuilder.cancel()
-        case .repositoryIndexing: dependencies.semanticIndexBuilder.cancel()
-        case .localModel:
-            if let entryID = task.instanceID { LocalAIModelManager.shared.pause(entryID: entryID) }
-        case .layaModel: LayaDecisionModelManager.shared.pause()
-        case .runtimeInstall:
-            if let value = task.instanceID, let runtime = DownloadableRuntime(rawValue: value) {
-                RuntimeDownloadManager.shared.cancel(runtime)
-            }
-        case .screensaverAvatars, .chatHistoryMigration, .projectSync, .notificationSync: break
-        }
-    }
-
     private var hasIssue: Bool {
-        diagnosticSummary.issueCount > 0
+        diagnostics.summary.issueCount > 0
+            || !dependencies.aiBackgroundBillingAlerts.alerts.isEmpty
+            || diagnostics.summary.storageUnavailable
             || isMCPFailed
             || isBrowserPluginFailed
             || dependencies.githubStatusMonitor.hasRelevantIssue
@@ -230,14 +144,164 @@ struct AppStatusToolbarButton: View {
         if activeTaskCount > 0 { return LocalizedStringKey(backgroundTasks.captionKey) }
         return "toolbar.status.caption.ok"
     }
+}
 
-    private func refreshDiagnostics() async {
-        diagnosticSummary = await DiagnosticLogStore.shared.issueSummary()
+/// 菜单栏和工具栏共用展示和操作，宿主负责先关浮层再打开目标窗口。
+struct AppStatusPopover: View {
+    static let contentWidth = AppStatusPanelMetrics.width + 28
+    static let maximumHeight: CGFloat = 640
+
+    @Environment(AppDependencies.self) private var dependencies
+    @Environment(AppSettings.self) private var settings
+    @Environment(SyncManager.self) private var syncManager
+    @Environment(\.locale) private var locale
+    @Environment(\.starcatReduceMotion) private var reduceMotion
+    @State private var pluginConfiguration = CompanionConfiguration.shared
+    @State private var storedSyncDate: Date?
+
+    let diagnostics: AppStatusDiagnostics
+    var lastSyncedAt: Date? = nil
+    var loadsStoredSyncDate = false
+    let dismissThen: (@escaping () -> Void) -> Void
+    let onOpenWorkspaceTask: (AppBackgroundTask.ID) -> Void
+    let onOpenLocalAILogs: () -> Void
+
+    var body: some View {
+        ScrollView {
+            AppStatusPanel(
+                lastSyncedAt: displayedSyncDate,
+                syncState: syncManager.state,
+                syncProgress: syncManager.progress,
+                initialWarmupCoordinator: dependencies.initialWarmupCoordinator,
+                undoStarCleanup: dependencies.undoStarCleanupScheduler,
+                backgroundTasks: backgroundTasks,
+                mcpState: dependencies.mcpService.state,
+                mcpEnabled: settings.mcpServiceEnabled,
+                browserPluginState: pluginConfiguration.serverStatus,
+                browserPluginEnabled: pluginConfiguration.isEnabled,
+                githubStatusMonitor: dependencies.githubStatusMonitor,
+                serviceSummary: dependencies.serviceAvailabilityMonitor.summary,
+                diagnosticSummary: diagnostics.summary,
+                isClearingDiagnostics: diagnostics.isClearing,
+                aiUsageRepository: dependencies.aiUsageRepository,
+                billingAlerts: dependencies.aiBackgroundBillingAlerts,
+                onOpenModelSettings: { openSettings(tab: "ai.models") },
+                relativePastDate: relativePastDate,
+                relativeFutureDate: relativeFutureDate,
+                onOpenDiagnostics: { openSettings(tab: "diagnostics") },
+                onClearDiagnostics: {
+                    Task { await diagnostics.clear(reduceMotion: reduceMotion) }
+                },
+                onOpenServices: { openSettings(tab: "services") },
+                onOpenMCP: { openSettings(tab: "mcp") },
+                onOpenBrowserPlugin: { openSettings(tab: "integrations.browserPlugin") },
+                onOpenAIUsage: { dismissThen { AIUsageWindowController.show(dependencies: dependencies) } },
+                onOpenTask: requestTaskWindow,
+                onCancelTask: cancelBackgroundTask,
+                onOpenGeneralSettings: { openSettings(tab: "general") },
+                onOpenAbout: { dismissThen { AboutWindowController.show() } },
+                onOpenStorage: { openSettings(tab: "storage") },
+                onOpenLocalAI: { openSettings(tab: "ai") },
+                onOpenLabs: { openSettings(tab: "labs") },
+                onOpenLocalAILogs: { modelID in
+                    dismissThen {
+                        LocalAILogWindowSelection.shared.select(modelID)
+                        onOpenLocalAILogs()
+                    }
+                }
+            )
+            .frame(width: AppStatusPanelMetrics.width)
+            .padding(14)
+        }
+        .frame(maxHeight: Self.maximumHeight)
+        .appLocaleEnvironment()
+        .task {
+            await diagnostics.refresh(reduceMotion: reduceMotion)
+            await dependencies.serviceAvailabilityMonitor.refreshNow()
+            await dependencies.githubStatusMonitor.refreshNow()
+        }
+        .task(id: dependencies.authSession.state.user?.id) {
+            guard loadsStoredSyncDate else { return }
+            await loadStoredSyncDate()
+        }
+        .onChange(of: syncManager.state) { _, state in
+            if loadsStoredSyncDate, case .completed(let date) = state {
+                storedSyncDate = date
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .diagnosticIssuesDidChange)) { _ in
+            Task { await diagnostics.refresh(reduceMotion: reduceMotion) }
+        }
     }
 
-    private func clearDiagnostics() async {
-        await DiagnosticLogStore.shared.markIssuesAcknowledged()
-        await refreshDiagnostics()
+    private var backgroundTasks: AppBackgroundTaskSnapshot { .current(dependencies) }
+
+    private var displayedSyncDate: Date? {
+        if case .completed(let date) = syncManager.state { return date }
+        return lastSyncedAt ?? storedSyncDate
+    }
+
+    /// 菜单栏没有 Manage 窗口的同步时间缓存，直接读取当前账号的同一份同步记录。
+    private func loadStoredSyncDate() async {
+        storedSyncDate = nil
+        guard let accountID = dependencies.authSession.state.user?.id else { return }
+        if case .completed(let date) = syncManager.state {
+            storedSyncDate = date
+            return
+        }
+        guard let value = try? await dependencies.repoRepository.fetchLastSyncAt(userID: accountID),
+              !Task.isCancelled,
+              storedSyncDate == nil
+        else { return }
+        storedSyncDate = ISO8601DateFormatter.shared.date(from: value)
+    }
+
+    private func requestTaskWindow(_ id: AppBackgroundTask.ID) {
+        guard backgroundTasks.task(id)?.opensWindow == true else { return }
+        let accountID = dependencies.authSession.state.user?.id
+        dismissThen {
+            guard accountID == dependencies.authSession.state.user?.id else { return }
+            openTaskWindow(id)
+        }
+    }
+
+    /// 延迟到浮层消失后再复核任务，不能误开已结束任务的新开始页或抢占自动分组。
+    private func openTaskWindow(_ id: AppBackgroundTask.ID) {
+        guard let task = backgroundTasks.task(id), task.opensWindow else { return }
+        if let target = task.settingsTarget {
+            AppDelegate.openSettingsWindow(target: target)
+            return
+        }
+        switch task.kind {
+        case .grouping, .tags, .indexing: onOpenWorkspaceTask(id)
+        case .projectSync: dependencies.mainWindowNavigationDispatcher.navigate(to: .manage(.myProjects))
+        case .notificationSync: dependencies.mainWindowNavigationDispatcher.navigate(to: .githubNotifications)
+        case .warmup, .readme, .openSSF, .health, .repositoryIndexing,
+             .localModel, .layaModel, .screensaverAvatars, .chatHistoryMigration, .runtimeInstall: break
+        }
+    }
+
+    /// 只停止被点击的这一轮，沿用服务取消语义，不关闭周期调度或回滚结果。
+    private func cancelBackgroundTask(_ id: AppBackgroundTask.ID) {
+        guard let task = backgroundTasks.task(id), task.canCancel else { return }
+        switch task.kind {
+        case .grouping: dependencies.githubStarListAIGroupingSession.stopAnalysis()
+        case .tags: dependencies.batchAIQueueService.cancel()
+        case .warmup: dependencies.initialWarmupCoordinator.cancel()
+        case .readme: dependencies.readmePrefetchPoller.cancelCurrentRun()
+        case .openSSF: dependencies.openSSFScorePoller.cancelCurrentRefresh()
+        case .health: dependencies.repoHealthPoller.cancelCurrentRefresh()
+        case .indexing: dependencies.knowledgeRAGIndexBuilder.cancel()
+        case .repositoryIndexing: dependencies.semanticIndexBuilder.cancel()
+        case .localModel:
+            if let entryID = task.instanceID { LocalAIModelManager.shared.pause(entryID: entryID) }
+        case .layaModel: LayaDecisionModelManager.shared.pause()
+        case .runtimeInstall:
+            if let value = task.instanceID, let runtime = DownloadableRuntime(rawValue: value) {
+                RuntimeDownloadManager.shared.cancel(runtime)
+            }
+        case .screensaverAvatars, .chatHistoryMigration, .projectSync, .notificationSync: break
+        }
     }
 
     private func relativePastDate(_ date: Date) -> String {
@@ -249,7 +313,50 @@ struct AppStatusToolbarButton: View {
     }
 
     private func openSettings(tab: String) {
-        AppDelegate.openSettingsWindow(target: tab)
+        dismissThen { AppDelegate.openSettingsWindow(target: tab) }
+    }
+}
+
+/// 将同一宿主中的提醒、刷新和清理合并，避免清理期间展示旧的摘要。
+@MainActor
+@Observable
+final class AppStatusDiagnostics {
+    private(set) var summary: DiagnosticLogSummary = .empty
+    private(set) var isClearing = false
+    @ObservationIgnored private var diagnosticRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var diagnosticRefreshPending = false
+    @ObservationIgnored private var diagnosticRefreshRevision = 0
+
+    func refresh(reduceMotion: Bool) async {
+        diagnosticRefreshPending = true
+        if let diagnosticRefreshTask {
+            await diagnosticRefreshTask.value
+            return
+        }
+        let task = Task { @MainActor in
+            defer { diagnosticRefreshTask = nil }
+            while diagnosticRefreshPending {
+                diagnosticRefreshPending = false
+                let revision = diagnosticRefreshRevision
+                let summary = await DiagnosticLogStore.shared.issueSummary()
+                // 清理前已在途的结果不能重新点亮旧提醒；清理会再请求最新摘要。
+                guard revision == diagnosticRefreshRevision else { continue }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                    self.summary = summary
+                }
+            }
+        }
+        diagnosticRefreshTask = task
+        await task.value
+    }
+
+    func clear(reduceMotion: Bool) async {
+        guard !isClearing else { return }
+        isClearing = true
+        diagnosticRefreshRevision += 1
+        defer { isClearing = false }
+        await DiagnosticLogStore.shared.markIssuesAcknowledged()
+        await refresh(reduceMotion: reduceMotion)
     }
 }
 
@@ -268,7 +375,10 @@ private struct AppStatusPanel: View {
     let githubStatusMonitor: GitHubStatusMonitor
     let serviceSummary: ServiceAvailabilitySummary
     let diagnosticSummary: DiagnosticLogSummary
+    let isClearingDiagnostics: Bool
     let aiUsageRepository: any AIUsageRepositoryProtocol
+    let billingAlerts: AIBackgroundBillingAlerts
+    let onOpenModelSettings: () -> Void
     let relativePastDate: (Date) -> String
     let relativeFutureDate: (Date) -> String
     let onOpenDiagnostics: () -> Void
@@ -291,10 +401,14 @@ private struct AppStatusPanel: View {
     @State private var aiUsagePeakTokens = 0
     @Environment(\.starcatInterfaceScale) private var interfaceScale
     @Environment(\.locale) private var locale
+    @Environment(\.starcatReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            ForEach(billingAlerts.alerts) { alert in
+                billingCard(alert)
+            }
             overviewGrid
             if tasksExpanded, !backgroundTasks.tasks.isEmpty {
                 AppBackgroundTaskList(tasks: backgroundTasks.tasks, onOpen: onOpenTask, onCancel: onCancelTask)
@@ -311,8 +425,79 @@ private struct AppStatusPanel: View {
             footer
         }
         .task { await loadAIUsageSummary() }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: billingAlerts.alerts)
         .onChange(of: backgroundTasks.tasks.isEmpty) { _, isEmpty in
             if isEmpty { tasksExpanded = false }
+        }
+    }
+
+    /// 首屏展示受影响的配置和工作量，打开设置时沿用宿主已有的浮层关闭顺序。
+    private func billingCard(_ alert: AIBackgroundBillingAlerts.Alert) -> some View {
+        let brand = alert.provider.kind.defaultProfileName
+        let title = alert.provider.name == brand ? brand : "\(alert.provider.name) · \(brand)"
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Label { Text(verbatim: title) } icon: {
+                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+                }
+                .font(interfaceScale.font(.body, weight: .semibold))
+                Spacer(minLength: 4)
+                Text(verbatim: String(format: String.l10n("batchAI.panel.failedSummaryFormat"), alert.taskCount))
+                    .monospacedDigit()
+            }
+            Text("ai.client.error.paymentRequired")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(AIBackgroundBillingAlerts.Kind.allCases, id: \.self) { kind in
+                if let repos = alert.reposByKind[kind], !repos.isEmpty {
+                    BillingTaskRow(kind: kind, repositories: repos)
+                }
+            }
+            HStack {
+                Button("rag.workspace.error.action.openAISettings.modelsSettings", action: onOpenModelSettings)
+                Spacer()
+                Button("toolbar.status.diagnostics.clear") { billingAlerts.dismiss(providerID: alert.id) }
+            }
+            .controlSize(.small)
+            .focusEffectDisabled()
+        }
+        .font(interfaceScale.font(.caption))
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .appStatusCardSurface(in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// 仓库可能较多，默认仅展示各任务数量，需要识别具体失败项时再展开。
+    private struct BillingTaskRow: View {
+        let kind: AIBackgroundBillingAlerts.Kind
+        let repositories: [Int64: String]
+        @State private var expanded = false
+        @Environment(\.starcatReduceMotion) private var reduceMotion
+
+        var body: some View {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    Text(LocalizedStringKey(kind.titleKey))
+                    Spacer()
+                    Text(repositories.count, format: .number).monospacedDigit()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            if expanded {
+                LazyVStack(alignment: .leading) {
+                    ForEach(repositories.sorted { $0.value < $1.value }, id: \.key) { entry in
+                        Text(verbatim: entry.value)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.leading, 14)
+            }
         }
     }
 
@@ -347,12 +532,29 @@ private struct AppStatusPanel: View {
     @ViewBuilder
     private var diagnosticAccessory: some View {
         HStack(spacing: 6) {
-            if diagnosticSummary.issueCount > 0 {
-                Button("toolbar.status.diagnostics.clear") {
+            if diagnosticSummary.issueCount > 0 || isClearingDiagnostics {
+                Button {
                     onClearDiagnostics()
+                } label: {
+                    // 原文案占位保持按钮宽度；处理中立即反馈，减少动态效果时用静态图标。
+                    Text("toolbar.status.diagnostics.clear")
+                        .opacity(isClearingDiagnostics ? 0 : 1)
+                        .overlay {
+                            if isClearingDiagnostics {
+                                if reduceMotion {
+                                    Image(systemName: "hourglass")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                }
+                            }
+                        }
                 }
                 .controlSize(.small)
+                .disabled(isClearingDiagnostics)
                 .focusEffectDisabled()
+                .accessibilityLabel(Text("toolbar.status.diagnostics.clear"))
             }
             Button("toolbar.status.diagnostics.open") {
                 onOpenDiagnostics()
@@ -565,6 +767,7 @@ private struct AppStatusPanel: View {
         ) {
             diagnosticAccessory
         }
+        .help(diagnosticSubtitle)
     }
 
     private var undoStarRow: some View {
@@ -613,7 +816,9 @@ private struct AppStatusPanel: View {
     }
 
     private var panelHasIssue: Bool {
+        if !billingAlerts.alerts.isEmpty { return true }
         if diagnosticSummary.issueCount > 0 { return true }
+        if diagnosticSummary.storageUnavailable { return true }
         if githubStatusMonitor.hasRelevantIssue { return true }
         if serviceSummary.hasIssue { return true }
         if initialWarmupCoordinator.job?.phase == .paused { return true }
@@ -875,19 +1080,28 @@ private struct AppStatusPanel: View {
     }
 
     private var diagnosticIcon: String {
-        diagnosticSummary.issueCount > 0 ? "stethoscope" : "checkmark.seal.fill"
+        if diagnosticSummary.issueCount > 0 { return "stethoscope" }
+        return diagnosticSummary.storageUnavailable ? "externaldrive.badge.exclamationmark" : "checkmark.seal"
     }
 
     private var diagnosticTint: Color {
-        diagnosticSummary.issueCount > 0 ? .orange : .green
+        diagnosticSummary.issueCount > 0 || diagnosticSummary.storageUnavailable ? .orange : .secondary
     }
 
     private var diagnosticSubtitle: String {
         guard diagnosticSummary.issueCount > 0 else {
-            return String.l10n("toolbar.status.diagnostics.clean")
+            if diagnosticSummary.storageUnavailable {
+                return String.l10n("toolbar.status.diagnostics.storageUnavailable")
+            }
+            return String.l10n("toolbar.status.diagnostics.noRecords")
         }
         if let latest = diagnosticSummary.latestIssue {
-            return String(format: String.l10n("toolbar.status.diagnostics.issueFormat"), diagnosticSummary.issueCount, latest.message)
+            let summary = String.l10n(DiagnosticIssue.summaryKey(for: latest.summaryKey))
+            let occurredAt = latest.date.formatted(.dateTime.locale(locale).month().day().hour().minute())
+            let detail = String(format: String.l10n("toolbar.status.diagnostics.summaryFormat"), locale: locale,
+                          diagnosticSummary.issueCount, diagnosticSummary.latestOccurrenceCount, summary, occurredAt)
+            return diagnosticSummary.storageUnavailable
+                ? String.l10n("toolbar.status.diagnostics.storageUnavailable") + "\n" + detail : detail
         }
         return String(format: String.l10n("toolbar.status.diagnostics.countFormat"), diagnosticSummary.issueCount)
     }

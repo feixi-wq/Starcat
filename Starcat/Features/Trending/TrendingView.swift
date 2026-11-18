@@ -33,6 +33,7 @@ extension EnvironmentValues {
 }
 
 struct TrendingView: View {
+    @Namespace private var selectionSpace
 
     /// "为你推荐"卡片开关。暂时关闭（dong4j 2026-06-01），需要时改回 true 即可。
     private static let showsRecommendations = false
@@ -277,7 +278,7 @@ struct TrendingView: View {
             searchQuery: quickSearchQuery,
             licenseFilter: settings.licenseFilter,
             skillFilter: settings.skillFilter,
-            skillPresence: settings.skillFilter == .any ? [:] : dependencies.repoSkillStore.scans.mapValues {
+            skillPresence: settings.skillFilter == .any ? [:] : dependencies.repoSkillStore.summaries.mapValues {
                 dependencies.repoSkillStore.presence(repositoryID: $0.repositoryID)
             }
         )
@@ -631,7 +632,8 @@ struct TrendingView: View {
                         ),
                         isSelected: store.isActive
                             ? store.contains(ghRepoId: repo.ghRepoId)
-                            : (selectedRepoID == repo.id)
+                            : (selectedRepoID == repo.id),
+                        selectionNamespace: store.isActive ? nil : selectionSpace
                     )
                 }
                 .buttonStyle(.plain)

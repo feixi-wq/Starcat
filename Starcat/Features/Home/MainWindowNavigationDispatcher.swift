@@ -96,12 +96,20 @@ final class MainWindowNavigationDispatcher {
     enum Destination: Equatable {
         case manage(SidebarItem)
         case revealTags
+        case globalSearch
+        case knowledgeRAGWorkspace
+        case agentWorkspace
+        case explore(ExploreMode)
+        case dailyRadar(category: String?)
+        case resetListPreferences
         /// Widget 没有具体 Release ID 的空态入口打开完整 Release 时间线。
         case releaseTimeline
         /// 收藏趋势 Widget 打开“我的洞察”根页面，不覆盖 Manage 的用户筛选。
         case insights
         /// 状态面板查看同步只定位通知列表，不要求已有具体 thread。
         case githubNotifications
+        /// 菜单栏明确选择的审核任务，由主窗口在自己的宿主上打开。
+        case statusTask(AppBackgroundTask.ID, accountID: Int64?)
         /// Universal Link 只携带稳定的 owner / repo，不把网页端数据写入本地库。
         case repository(RepositoryDeepLink)
         /// Spotlight 只按稳定 ID 打开当前数据库实体，允许用户已授权索引的 private repository。
@@ -117,7 +125,19 @@ final class MainWindowNavigationDispatcher {
         let returnPage: SidebarRootPage?
     }
 
-    var pendingRequest: Request?
+    private(set) var pendingRequest: Request?
+    @ObservationIgnored private let activateMainWindow: () -> Void
+
+    init(activateMainWindow: @escaping () -> Void = { AppDelegate.activateMainWindowIfPossible() }) {
+        self.activateMainWindow = activateMainWindow
+    }
+
+    /// 重开的主窗口需要先恢复默认页、挂载窗口宿主，再取走请求，避免丢失目标或把搜索挂错窗口。
+    func takePendingRequest(whenHomeIsReady isReady: Bool) -> Request? {
+        guard isReady else { return nil }
+        defer { pendingRequest = nil }
+        return pendingRequest
+    }
 
     /// 发布一次主窗口跳转。`temporaryFilters == nil` 表示只导航，不覆盖用户筛选。
     func navigate(
@@ -130,6 +150,6 @@ final class MainWindowNavigationDispatcher {
             temporaryFilters: temporaryFilters,
             returnPage: returnPage
         )
-        AppDelegate.activateMainWindowIfPossible()
+        activateMainWindow()
     }
 }

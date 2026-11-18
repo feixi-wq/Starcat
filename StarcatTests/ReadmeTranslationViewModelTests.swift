@@ -173,7 +173,142 @@ struct ReadmeTranslationViewModelTests {
         fake.finishHangingWork()
     }
 
+    @Test("README 与同仓不同路径的 Skill 分别命中缓存，译文可切回原文")
+    func skillTranslationCachesAreIsolated() async throws {
+        let (vm, fake) = makeHarness()
+        let readme = try await makeControl(viewModel: vm)
+        var first = readme
+        first.documentPath = "skills/review/SKILL.md"
+        var second = readme
+        second.documentPath = "other/review/SKILL.md"
+
+        #expect(readme.identity == ReadmeTranslationViewModel.readmeIdentity(owner: readme.owner, repo: readme.name))
+        #expect(readme.cacheOwner == readme.owner && readme.cacheRepo == readme.name)
+        #expect(first.cacheOwner != readme.cacheOwner)
+        #expect(first.identity != second.identity && first.cacheRepo != second.cacheRepo)
+        #expect(!first.cacheRepo.contains("/"))
+
+        let pages = [
+            makePage(control: readme, translatedText: "README"),
+            makePage(control: first, translatedText: "FIRST-SKILL"),
+            makePage(control: second, translatedText: "SECOND-SKILL")
+        ]
+        pages.forEach { fake.store($0) }
+        for page in pages {
+            vm.prepare(page: page)
+            await settle()
+            vm.toggle(page: page)
+            await settle()
+            #expect(vm.renderState.translations.map(\.translatedText) == [page.translatedText])
+            #expect(vm.isShowingTranslation(matching: page.identity))
+            #expect(vm.errorMessage == nil)
+            vm.toggle(page: page)
+            #expect(!vm.renderState.isVisible)
+            #expect(vm.displayMode == .showingOriginal)
+        }
+        fake.finishHangingWork()
+    }
+
+    @Test("下载窗口无需入库仓库，同路径复用 Skill 缓存且不同文件相互隔离")
+    func fileBrowserTranslationIdentity() async throws {
+        let (vm, fake) = makeHarness()
+        var skill = try await makeControl(viewModel: vm)
+        skill.documentPath = "skills/review/SKILL.md"
+        let file = ReadmeTranslationControl(
+            owner: skill.owner, name: skill.name, translationVM: vm, settings: skill.settings,
+            documentPath: skill.documentPath
+        )
+        var other = file
+        other.documentPath = "docs/guide.md"
+        #expect(file.repositoryID == nil)
+        #expect(file.identity == skill.identity && file.cacheRepo == skill.cacheRepo)
+        #expect(other.identity != file.identity && other.cacheRepo != file.cacheRepo)
+        let firstPage = makePage(control: file, translatedText: "FILE")
+        let secondPage = makePage(control: other, translatedText: "GUIDE")
+        fake.store(firstPage)
+        fake.store(secondPage)
+        vm.prepare(page: firstPage)
+        await settle()
+        vm.toggle(page: firstPage)
+        await settle()
+        #expect(vm.visibleRenderState(matching: file.identity).translations.map(\.translatedText) == ["FILE"])
+        vm.prepare(page: secondPage)
+        #expect(!vm.visibleRenderState(matching: file.identity).isVisible)
+        await settle()
+        vm.toggle(page: secondPage)
+        await settle()
+        #expect(vm.visibleRenderState(matching: other.identity).translations.map(\.translatedText) == ["GUIDE"])
+        fake.finishHangingWork()
+    }
+
+    @Test("Skill 正文更新复用原缓存位置，并标记旧译文过期")
+    func updatedSkillMarksTranslationStale() async throws {
+        let (vm, fake) = makeHarness()
+        var control = try await makeControl(viewModel: vm)
+        control.documentPath = "skills/review/SKILL.md"
+        let page = makePage(control: control, translatedText: "CACHED-SKILL")
+        fake.store(page)
+        vm.prepare(page: page)
+        await settle()
+        #expect(!vm.cacheIsStale)
+
+        vm.prepare(
+            identity: control.identity, cacheOwner: control.cacheOwner, cacheRepo: control.cacheRepo,
+            sourceHtml: "<p>Updated skill instructions with a different source fingerprint.</p>",
+            targetLanguage: .simplifiedChinese, mode: .segmented
+        )
+        await settle()
+        #expect(vm.cacheIsStale)
+        #expect(!vm.renderState.isVisible)
+        fake.finishHangingWork()
+    }
+
+    @Test("切换同仓 Skill 或关闭阅读窗口后，旧翻译批次不得上屏", arguments: [false, true])
+    func staleSkillBatchDoesNotPaintCurrentDocument(closingWindow: Bool) async throws {
+        let (vm, fake) = makeHarness()
+        var first = try await makeControl(viewModel: vm)
+        first.documentPath = "skills/review/SKILL.md"
+        var second = first
+        second.documentPath = "skills/implement/SKILL.md"
+        let page = makePage(control: first, translatedText: "OLD-SKILL")
+        fake.hangTranslate = true
+        vm.prepare(page: page)
+        vm.toggle(page: page)
+        await waitUntil { fake.hasHangingTranslate }
+
+        if closingWindow {
+            vm.prepare(repo: nil, sourceHtml: nil, targetLanguage: .simplifiedChinese, mode: .segmented)
+        } else {
+            vm.prepare(page: makePage(control: second, translatedText: "NEW-SKILL"))
+        }
+        fake.fireLatestBatch(id: page.segment.id, translatedText: "LATE-SKILL")
+        await settle()
+
+        #expect(!vm.isTranslating)
+        #expect(!vm.visibleRenderState(matching: second.identity).isVisible)
+        #expect(vm.renderState.translations.isEmpty)
+        fake.finishHangingWork()
+    }
+
     // MARK: - 辅助
+
+    /// 使用真实仓库模型与隔离偏好验证控件的缓存路由，测试不访问用户翻译目录或模型服务。
+    private func makeControl(viewModel: ReadmeTranslationViewModel) async throws -> ReadmeTranslationControl {
+        let database = try InMemoryDatabaseManager()
+        try await database.insertRepoFixture(id: 1)
+        let repo = try #require(try await GRDBRepoRepository(database: database).findById(1))
+        let defaults = try #require(UserDefaults(suiteName: "skill-translation-\(UUID().uuidString)"))
+        return ReadmeTranslationControl(
+            repo: repo, translationVM: viewModel, settings: AppSettings(defaults: defaults)
+        )
+    }
+
+    private func makePage(control: ReadmeTranslationControl, translatedText: String) -> TranslationTestPage {
+        makePage(
+            owner: control.cacheOwner, repo: control.cacheRepo,
+            translatedText: translatedText, identity: control.identity
+        )
+    }
 
     private func makeHarness() -> (ReadmeTranslationViewModel, HangingReadmeTranslationServiceStub) {
         let fake = HangingReadmeTranslationServiceStub()
@@ -183,7 +318,8 @@ struct ReadmeTranslationViewModelTests {
     private func makePage(
         owner: String,
         repo: String,
-        translatedText: String
+        translatedText: String,
+        identity: String? = nil
     ) -> TranslationTestPage {
         let segment = ReadmeSourceSegment(
             id: "p-0",
@@ -194,7 +330,8 @@ struct ReadmeTranslationViewModelTests {
             repo: repo,
             sourceHtml: "<p>Hello world this is a repository description.</p>",
             segment: segment,
-            translatedText: translatedText
+            translatedText: translatedText,
+            documentIdentity: identity
         )
     }
 
@@ -336,8 +473,9 @@ private struct TranslationTestPage {
     let sourceHtml: String
     let segment: ReadmeSourceSegment
     let translatedText: String
+    var documentIdentity: String? = nil
 
-    var identity: String { "readme:\(owner)/\(repo)" }
+    var identity: String { documentIdentity ?? "readme:\(owner)/\(repo)" }
 }
 
 @MainActor

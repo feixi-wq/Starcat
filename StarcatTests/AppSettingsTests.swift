@@ -33,6 +33,8 @@ struct AppSettingsTests {
         restored.resetListPreferences(login: "dong4j")
         #expect(restored.exploreCatalogPreferences == preferences)
         #expect(preferences.isGroupEnabled("linuxDo"), "Linux.do 不继承普通发现的显隐")
+        #expect(!preferences.isGroupEnabled("discover"))
+        #expect(!preferences.isGroupEnabled("awesome"))
         #expect(preferences.visibleDailyRadarCategories([
             .init(id: "ai-cli", title: "AI CLI", period: "daily"),
             .init(id: "ai-agents", title: "AI Agents", period: "daily")
@@ -48,6 +50,25 @@ struct AppSettingsTests {
         let preferences = ExploreCatalogPreferences(hiddenModes: Set(ExploreCatalogPreferences.groupIDs))
         #expect(preferences.visibleGroupIDs == ["discover"])
         #expect(ExploreCatalogPreferences().weeklyQuerySources(availableCodes: ["weekly"]) == nil)
+    }
+
+    @Test("推荐历史在默认及持久化隐藏设置下始终可进入", arguments: [
+        Set<String>(),
+        Set(["discover"]),
+        Set(ExploreCatalogPreferences.groupIDs + ["recommendations"])
+    ])
+    func recommendationHistoryNavigationStaysEnabled(hiddenModes: Set<String>) throws {
+        let preferences = ExploreCatalogPreferences(hiddenModes: hiddenModes)
+        let restored = try JSONDecoder().decode(
+            ExploreCatalogPreferences.self, from: JSONEncoder().encode(preferences)
+        )
+
+        // HomeView 点击和恢复导航均用此校验；固定历史入口不能被回退到其它目录。
+        #expect(preferences.isGroupEnabled(ExploreMode.recommendations.rawValue))
+        #expect(restored.isGroupEnabled(ExploreMode.recommendations.rawValue))
+        #expect(!ExploreCatalogPreferences.groupIDs.contains(ExploreMode.recommendations.rawValue))
+        #expect(restored.hiddenModes == hiddenModes)
+        #expect(!restored.isGroupEnabled("unknown-group"))
     }
 
     @Test("新增每日热点偏好后仍保留旧版保存的隐藏分类和来源")
@@ -107,6 +128,24 @@ struct AppSettingsTests {
         #expect(settings.decisionEngineID == .jev)
         #expect(!settings.decisionGroupingSuggestionsEnabled)
         #expect(!settings.decisionTagSuggestionsEnabled)
+        #expect(!settings.decisionSearchRoutingEnabled)
+    }
+
+    @Test("决策引擎:搜索分流独立持久化且重置回默认关闭")
+    func decisionSearchRoutingPersistsAndResetsIndependently() throws {
+        let defaults = makeIsolatedDefaults()
+        let keychain = InMemoryKeychain()
+        let settings = AppSettings(defaults: defaults, keychain: keychain)
+
+        settings.decisionSearchRoutingEnabled = true
+        let restored = AppSettings(defaults: defaults, keychain: keychain)
+        #expect(restored.decisionSearchRoutingEnabled)
+        #expect(!restored.decisionGroupingSuggestionsEnabled)
+        #expect(!restored.decisionTagSuggestionsEnabled)
+
+        try settings.resetToDefaults()
+        #expect(!settings.decisionSearchRoutingEnabled)
+        #expect(!AppSettings(defaults: defaults, keychain: keychain).decisionSearchRoutingEnabled)
     }
 
     // R-01 §3.1.1（2026-06-10 P1）：RepoListDensity 枚举 + AppSettings.listDensity
@@ -178,7 +217,7 @@ struct AppSettingsTests {
         settings.setExternalSearchSettings(anySearchSettings, for: .anySearch)
         settings.notificationsEnabled = false
         settings.githubIssueEventTimelineEnabled = true
-        settings.openRepositoryMarkdownInApp = true
+        settings.repositoryMarkdownOpenMode = .currentDetail
         settings.hideDockIcon = true
         settings.snakeStyle = .greedy
         settings.keyboardShortcutsEnabled = false
@@ -188,8 +227,7 @@ struct AppSettingsTests {
         )
         settings.mcpServiceEnabled = true
         settings.mcpServicePort = 7777
-        settings.mcpAllowGitHubStarWrites = true
-        settings.mcpAllowDestructiveWrites = true
+        settings.mcpAllowWrites = true
         settings.aiRepoContextMaximumArchiveMB = 90
         settings.setCustomURL("https://example.com", for: .trending)
         settings.setCustomAPIKey("service-key", for: .weekly)
@@ -217,7 +255,7 @@ struct AppSettingsTests {
         #expect(settings.externalSearchSettings(for: .anySearch).isEnabled == false)
         #expect(settings.notificationsEnabled == true)
         #expect(settings.githubIssueEventTimelineEnabled == false)
-        #expect(settings.openRepositoryMarkdownInApp == false)
+        #expect(settings.repositoryMarkdownOpenMode == .newWindow)
         #expect(settings.hideDockIcon == false)
         #expect(settings.snakeStyle == .off)
         #expect(settings.keyboardShortcutsEnabled == true)
@@ -225,8 +263,7 @@ struct AppSettingsTests {
         #expect(settings.refreshCurrentContentShortcut == StarcatShortcutCatalog.refreshCurrentContentDefault)
         #expect(settings.mcpServiceEnabled == false)
         #expect(settings.mcpServicePort == AppSettings.defaultMCPServicePort)
-        #expect(settings.mcpAllowGitHubStarWrites == false)
-        #expect(settings.mcpAllowDestructiveWrites == false)
+        #expect(settings.mcpAllowWrites == false)
         #expect(settings.aiRepoContextMaximumArchiveMB == AppSettings.defaultAIRepoContextMaximumArchiveMB)
         #expect(settings.customServiceURL(for: .trending) == nil)
         #expect(settings.customServiceAPIKey(for: .weekly) == nil)
@@ -247,16 +284,42 @@ struct AppSettingsTests {
         #expect(restored.githubIssueEventTimelineEnabled == true)
     }
 
-    @Test("同仓 Markdown 应用内打开: 默认关闭并持久化")
-    func openRepositoryMarkdownInAppDefaultsOffAndPersists() {
+    @Test("同仓 Markdown 打开方式: 默认新窗口，三种方式均持久化")
+    func repositoryMarkdownOpenModeDefaultsToNewWindowAndPersists() {
         let defaults = makeIsolatedDefaults()
         let settings = AppSettings(defaults: defaults)
-        #expect(settings.openRepositoryMarkdownInApp == false)
+        #expect(settings.repositoryMarkdownOpenMode == .newWindow)
 
-        settings.openRepositoryMarkdownInApp = true
+        for mode in RepositoryMarkdownOpenMode.allCases {
+            settings.repositoryMarkdownOpenMode = mode
+            #expect(AppSettings(defaults: defaults).repositoryMarkdownOpenMode == mode)
+        }
+    }
 
-        let restored = AppSettings(defaults: defaults)
-        #expect(restored.openRepositoryMarkdownInApp == true)
+    @Test("同仓 Markdown 旧开关一次迁移，已选的新方式优先")
+    func repositoryMarkdownOpenModeMigratesLegacyPreference() {
+        let legacyKey = "settings.readme.openRepositoryMarkdownInApp.v1"
+        let currentKey = "settings.readme.repositoryMarkdownOpenMode.v1"
+        for legacyValue in [false, true] {
+            let defaults = makeIsolatedDefaults()
+            defaults.set(legacyValue, forKey: legacyKey)
+            let settings = AppSettings(defaults: defaults)
+            #expect(settings.repositoryMarkdownOpenMode == (legacyValue ? .newWindow : .browser))
+            #expect(defaults.object(forKey: legacyKey) == nil)
+            #expect(defaults.string(forKey: currentKey) == settings.repositoryMarkdownOpenMode.rawValue)
+
+            settings.repositoryMarkdownOpenMode = .currentDetail
+            defaults.set(true, forKey: legacyKey)
+            #expect(AppSettings(defaults: defaults).repositoryMarkdownOpenMode == .currentDetail)
+            #expect(defaults.object(forKey: legacyKey) == nil)
+        }
+    }
+
+    @Test("同仓 Markdown 无效设置回到新窗口")
+    func repositoryMarkdownOpenModeRejectsUnknownValue() {
+        let defaults = makeIsolatedDefaults()
+        defaults.set("unknown", forKey: "settings.readme.repositoryMarkdownOpenMode.v1")
+        #expect(AppSettings(defaults: defaults).repositoryMarkdownOpenMode == .newWindow)
     }
 
     @Test("macOS 集成: 隐藏 Dock 图标默认关闭并持久化")

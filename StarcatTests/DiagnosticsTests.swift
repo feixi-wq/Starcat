@@ -12,6 +12,75 @@ import Testing
 @Suite("Diagnostics")
 struct DiagnosticsTests {
 
+    @Test("对话配置错误保留具体原因且不显示类型名", arguments: [
+        AIChatSelectionError.missingProvider,
+        .providerUnavailable, .missingModel, .incompatibleModel("private-model-detail")
+    ])
+    func chatSelectionErrorsHaveConfigurationRecovery(selection: AIChatSelectionError) {
+        let mapped = UserFacingError.map(selection, operation: "Planning")
+        #expect(mapped.title == String.l10n("error.user.aiConfiguration.title"))
+        #expect(mapped.recovery == String.l10n("error.user.aiProvider.recovery.modelsSettings"))
+        #expect(!mapped.message.contains("AIChatSelectionError"))
+        #expect(!mapped.message.contains("private-model-detail"))
+        #expect(!mapped.shouldRecordDiagnostic)
+        let diagnostic = SearchDiscoveryDiagnostic.failure(stage: .planning, error: selection)
+        #expect(diagnostic.settingsTarget == "ai.chat")
+    }
+
+    @Test("外部搜索错误保留状态与搜索设置入口", arguments: [
+        ExternalSearchError.disabled(provider: .exa),
+        .missingAPIKey(provider: .exa), .unverifiedCredential(provider: .exa),
+        .invalidCredential(provider: .exa, statusCode: 401, message: "private-server-body"),
+        .invalidCredential(provider: .exa, statusCode: 403, message: "private-server-body"),
+        .paymentRequired(provider: .exa, statusCode: 402, message: "private-server-body"),
+        .rateLimited(provider: .exa, retryAfter: 12, message: "private-server-body"),
+        .serviceUnavailable(provider: .exa, statusCode: 503, message: "private-server-body"),
+        .invalidResponse(provider: .exa, message: "private-server-body"),
+        .network(provider: .exa, message: "private-server-body")
+    ])
+    func externalSearchErrorsKeepTheirCategory(error: ExternalSearchError) {
+        let mapped = UserFacingError.map(error, operation: "Web search")
+        #expect(mapped.message == error.friendlyMessage)
+        #expect(!mapped.message.contains("private-server-body"))
+        #expect(!mapped.message.contains("ExternalSearchError"))
+        if case .disabled = error { #expect(mapped.diagnosticOutcome == .skipped) }
+        let diagnostic = SearchDiscoveryDiagnostic.failure(stage: .webSearch, error: error)
+        #expect(diagnostic.settingsTarget == "ai.externalSearch")
+        switch error {
+        case .invalidCredential(_, let status, _), .paymentRequired(_, let status, _),
+             .serviceUnavailable(_, let status, _): #expect(diagnostic.statusCode == status)
+        case .rateLimited: #expect(diagnostic.statusCode == 429)
+        default: break
+        }
+    }
+
+    @Test("Rerank HTTP 错误按鉴权余额限流和服务异常分类", arguments: [401, 402, 403, 429, 500, 503])
+    func rerankHTTPFailuresKeepStatusAndSettings(status: Int) {
+        let error = RAGExternalBackendError.http(
+            backend: "Rerank", status: status, message: "private-server-body"
+        )
+        let diagnostic = SearchDiscoveryDiagnostic.failure(stage: .ranking, error: error)
+        #expect(diagnostic.statusCode == status)
+        #expect(diagnostic.settingsTarget == "rag.retrieval")
+        #expect(!diagnostic.message.contains("private-server-body"))
+        #expect(!diagnostic.message.contains("RAGExternalBackendError"))
+        #expect(diagnostic.recovery?.isEmpty == false)
+    }
+
+    @Test("Rerank 配置和无效响应不归为未知错误")
+    func rerankConfigurationAndDecodingHaveSpecificRecovery() {
+        let configuration = UserFacingError.map(
+            RAGExternalBackendError.invalidConfiguration("private-endpoint"),
+            operation: "Rerank"
+        )
+        #expect(configuration.title == String.l10n("error.user.aiConfiguration.title"))
+        #expect(!configuration.message.contains("private-endpoint"))
+        let decoding = UserFacingError.map(
+            RAGExternalBackendError.invalidResponse("Rerank"), operation: "Rerank"
+        )
+        #expect(decoding.title == String.l10n("error.user.decoding.title"))
+    }
+
     @Test("DecodingError 摘要包含 codingPath，而不是只留本地化笼统句")
     func diagnosticEventSummarizesDecodingErrorPath() throws {
         struct Box: Decodable {
@@ -148,12 +217,12 @@ struct DiagnosticsTests {
         #expect(!error.shouldRecordDiagnostic)
     }
 
-    @Test("本地数据库错误会进入开发者诊断")
+    @Test("业务确认数据库不可用后才进入开发者诊断")
     func userFacingDatabaseErrorRequiresDiagnostic() {
         let error = UserFacingError.map(
             DatabaseError.applicationSupportNotFound,
             operation: "loading local data",
-            service: "Starcat"
+            service: "Starcat", impact: .blocked, summary: .databaseUnavailable
         )
 
         #expect(error.shouldRecordDiagnostic)
@@ -188,10 +257,13 @@ struct DiagnosticsTests {
 
         let store = DiagnosticLogStore(directoryURL: root)
         await store.record(DiagnosticEvent(
-            level: .warning,
+            level: .error,
+            visibility: .issue,
             category: "sync",
             operation: "test",
-            message: "hello token: secret"
+            message: "hello token: secret",
+            summaryKey: DiagnosticIssue.syncFailed.rawValue,
+            outcome: .failed, impact: .blocked
         ))
 
         let text = await store.readAllText()
@@ -267,7 +339,8 @@ struct DiagnosticsTests {
             category: "ai",
             operation: "same",
             message: "same failure",
-            underlying: "response pointer 0x1"
+            summaryKey: DiagnosticIssue.aiUnavailable.rawValue,
+            underlying: "response pointer 0x1", outcome: .failed, impact: .blocked
         ))
         await store.record(DiagnosticEvent(
             timestamp: base.addingTimeInterval(1),
@@ -276,7 +349,8 @@ struct DiagnosticsTests {
             category: "ai",
             operation: "same",
             message: "same failure",
-            underlying: "response pointer 0x2"
+            summaryKey: DiagnosticIssue.aiUnavailable.rawValue,
+            underlying: "response pointer 0x2", outcome: .failed, impact: .blocked
         ))
 
         let lines = await diagnosticLogLines(in: store)
@@ -294,11 +368,12 @@ struct DiagnosticsTests {
         let base = Date(timeIntervalSince1970: 1_800_000_000)
         await store.record(DiagnosticEvent(
             timestamp: base,
-            level: .warning,
+            level: .error,
             visibility: .issue,
             category: "activity",
             operation: "old",
-            message: "old warning"
+            message: "Old failure",
+            summaryKey: DiagnosticIssue.contentUnavailable.rawValue, outcome: .failed, impact: .blocked
         ))
 
         let beforeAcknowledgement = await store.issueSummary(since: base.addingTimeInterval(-1))
@@ -311,11 +386,12 @@ struct DiagnosticsTests {
 
         await store.record(DiagnosticEvent(
             timestamp: base.addingTimeInterval(2),
-            level: .warning,
+            level: .error,
             visibility: .issue,
             category: "activity",
             operation: "new",
-            message: "new warning"
+            message: "New failure",
+            summaryKey: DiagnosticIssue.contentUnavailable.rawValue, outcome: .failed, impact: .blocked
         ))
 
         let afterNewIssue = await store.issueSummary(since: base.addingTimeInterval(-1))
@@ -323,7 +399,7 @@ struct DiagnosticsTests {
         #expect(afterNewIssue.latestIssue?.operation == "new")
     }
 
-    @Test("上下文事件写入导出日志但不计入问题摘要")
+    @Test("普通上下文事件既不落盘也不计入问题摘要")
     func diagnosticContextEventDoesNotBecomeIssue() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("starcat-diagnostics-test-\(UUID().uuidString)", isDirectory: true)
@@ -342,7 +418,7 @@ struct DiagnosticsTests {
 
         let text = await store.readAllText()
         let summary = await store.issueSummary(since: now.addingTimeInterval(-1))
-        #expect(text.contains("\"operation\":\"recoverable\""))
+        #expect(text.isEmpty)
         #expect(summary.issueCount == 0)
     }
 
@@ -353,14 +429,15 @@ struct DiagnosticsTests {
     ) -> DiagnosticEvent {
         DiagnosticEvent(
             timestamp: timestamp,
-            level: .warning,
+            level: .error,
+            visibility: .issue,
             category: "activity",
             operation: "securityAdvisories.fetch",
-            message: "加载安全公告 在访问 GitHub 时失败。",
+            message: "Security advisories unavailable without usable cache",
+            summaryKey: DiagnosticIssue.contentUnavailable.rawValue,
             service: "github",
             statusCode: statusCode,
-            underlying: "已取消",
-            context: context
+            context: context, outcome: .failed, impact: .blocked
         )
     }
 

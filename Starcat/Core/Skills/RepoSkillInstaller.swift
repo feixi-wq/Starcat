@@ -5,7 +5,6 @@
 //  复用 blob 下载器，在目标卷暂存完整目录后一次发布。失败不暴露半成品、不执行内容。
 //
 
-import CryptoKit
 import Foundation
 
 /// 本机 receipt 与实际文件逐项核对；跨目标工具和路径独立，文件被修改后恢复为冲突。
@@ -27,8 +26,8 @@ actor RepoSkillInstaller {
     /// “已安装”必须包含相同来源、提交和文件内容，不能只判断同名文件夹是否存在。
     func existing(_ skill: RepoSkill, destination: RepoSkillDestination) throws -> Existing {
         let folder = destination.url.appendingPathComponent(skill.name, isDirectory: true)
-        guard FileManager.default.fileExists(atPath: folder.path) || isSymbolicLink(folder) else { return .missing }
-        guard !isSymbolicLink(folder),
+        guard SkillFilePrimitives.exists(folder) else { return .missing }
+        guard !SkillFilePrimitives.isSymbolicLink(folder),
               let data = try? Data(contentsOf: folder.appendingPathComponent(Self.receiptName)),
               let receipt = try? JSONDecoder().decode(Receipt.self, from: data),
               receipt.repositoryID == skill.repositoryID, receipt.directory == skill.directory,
@@ -37,6 +36,19 @@ actor RepoSkillInstaller {
               try verifyFiles(at: folder, hashes: receipt.files, skill: skill)
         else { return .conflict }
         return .installed
+    }
+
+    /// 卸载前复用完整来源与内容核对；同名外部目录、本地修改和 Skill 软链接都不能被误删。
+    /// 校验到删除之间没有 await，取消只在操作开始前生效，已完成删除仍报告成功。
+    func uninstall(_ skill: RepoSkill, destination: RepoSkillDestination) throws {
+        guard SkillFrontmatter.isValidName(skill.name) else { throw RepoSkillError.invalidManifest }
+        try Task.checkCancellation()
+        switch try existing(skill, destination: destination) {
+        case .missing: return
+        case .conflict: throw RepoSkillError.conflict
+        case .installed:
+            try FileManager.default.removeItem(at: destination.url.appendingPathComponent(skill.name, isDirectory: true))
+        }
     }
 
     /// 同名替换只在显式确认后发生，发布失败回滚旧目录。取消点只在事务发布之前。
@@ -56,12 +68,12 @@ actor RepoSkillInstaller {
         // 目标根目录允许工具自身使用软链接；真正发布位置以解析后的目录为准。
         let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
         let destination = resolvedRoot.appendingPathComponent(skill.name, isDirectory: true)
-        let stage = resolvedRoot.appendingPathComponent(".starcat-stage-\(UUID().uuidString)", isDirectory: true)
-        let backup = resolvedRoot.appendingPathComponent(".starcat-backup-\(UUID().uuidString)", isDirectory: true)
+        let paths = SkillStagingPaths(parent: resolvedRoot)
+        let stage = paths.stage
         try fm.createDirectory(at: stage, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: stage) }
         let downloadRoot = stage.appendingPathComponent("download", isDirectory: true)
-        let payload = stage.appendingPathComponent("payload", isDirectory: true)
+        let payload = paths.payload
         try fm.createDirectory(at: payload, withIntermediateDirectories: true)
         var hashes: [String: String] = [:]
         for (index, file) in skill.files.enumerated() {
@@ -82,7 +94,7 @@ actor RepoSkillInstaller {
             guard try await downloader.verifyDownloadedFile(
                 owner: repo.owner, repo: repo.name, sha: file.sha, fileURL: installedFile
             ) else { throw RepoSkillError.verification }
-            hashes[file.path] = Self.digest(bytes)
+            hashes[file.path] = SkillFilePrimitives.digest(bytes)
             onProgress(Double(index + 1) / count)
         }
         let receipt = Receipt(
@@ -91,17 +103,10 @@ actor RepoSkillInstaller {
         try JSONEncoder().encode(receipt).write(to: payload.appendingPathComponent(Self.receiptName), options: .atomic)
         guard try verifyFiles(at: payload, hashes: hashes, skill: skill) else { throw RepoSkillError.verification }
         try Task.checkCancellation()
-        let exists = fm.fileExists(atPath: destination.path) || isSymbolicLink(destination)
-        guard !exists || replacing else { throw RepoSkillError.conflict }
-        if exists { try fm.moveItem(at: destination, to: backup) }
-        do {
-            // 同卷 rename 发布；无 await，取消不能把已提交的目录误报为失败。
-            try fm.moveItem(at: payload, to: destination)
-        } catch {
-            if exists { try fm.moveItem(at: backup, to: destination) }
-            throw error
-        }
-        if exists { try? fm.removeItem(at: backup) }
+        let hadPrevious = try SkillFilePrimitives.publish(
+            paths: paths, destination: destination, replacing: replacing
+        )
+        if hadPrevious { try? fm.removeItem(at: paths.backup) }
     }
 
     private func verifyFiles(at directory: URL, hashes: [String: String], skill: RepoSkill) throws -> Bool {
@@ -129,18 +134,11 @@ actor RepoSkillInstaller {
         guard !enumerationFailed, actual == Set(hashes.keys) else { return false }
         for file in skill.files {
             let url = directory.appendingPathComponent(file.path)
-            guard Self.digest(try Data(contentsOf: url, options: .mappedIfSafe)) == hashes[file.path] else { return false }
+            guard SkillFilePrimitives.digest(try Data(contentsOf: url, options: .mappedIfSafe)) == hashes[file.path] else { return false }
             let mode = try fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
             if file.mode == "100755", (mode?.intValue ?? 0) & 0o111 == 0 { return false }
         }
         return true
     }
 
-    private func isSymbolicLink(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
-    }
-
-    private static func digest(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
 }

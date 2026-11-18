@@ -44,7 +44,8 @@ enum SidebarRootPage: String, CaseIterable, Identifiable {
         case .manage:   return .business(.stars)
         case .trending: return .business(.discovery)
         case .activity: return .business(.notifications)
-        case .insights: return .business(.repositoryInsights)
+        // 无坐标轴柱状图兼顾高度与轻量：gauge 偏矮，dashboard 四格视觉过重。
+        case .insights: return .business(.insightsOverview)
         }
     }
 }

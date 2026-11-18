@@ -17,21 +17,14 @@ struct AppBackgroundTaskList: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                ForEach(tasks) { task in
+                ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
                     AppBackgroundTaskRow(task: task, onOpen: { onOpen(task.id) }, onCancel: { onCancel(task.id) })
+                        .listRowSurface(index: index)
                     if task.id != tasks.last?.id { Divider() }
                 }
             }
         }
         .frame(height: CGFloat(min(tasks.count, 4)) * interfaceScale.scaled(52) + CGFloat(max(0, min(tasks.count, 4) - 1)))
-        .background(
-            AppStatusPanelSurface.card(
-                colorScheme: colorScheme,
-                lightColor: StarcatSurface.panel(colorScheme: colorScheme)
-            ),
-            in: RoundedRectangle(cornerRadius: 8)
-        )
+        .appStatusCardSurface(in: RoundedRectangle(cornerRadius: 8))
     }
-
-    @Environment(\.colorScheme) private var colorScheme
 }

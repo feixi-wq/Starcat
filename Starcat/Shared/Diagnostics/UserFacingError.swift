@@ -25,16 +25,60 @@ struct UserFacingError: Equatable, Sendable {
     var diagnosticSummary: String
     var statusCode: Int?
     var errorCode: String?
-    /// 是否需要提醒开发者协助；不再作为证据采集开关，保留字段名避免影响调用方。
+    /// 持久化准入开关：默认映射只负责用户提示，业务确认功能影响后才允许记录。
     var shouldRecordDiagnostic: Bool
     var diagnosticOutcome: DiagnosticEvent.Outcome = .failed
-    var operationID: String? = DiagnosticContext.current?.id
+    var operationID: String? = DiagnosticContext.active?.id
+    var diagnosticImpact: DiagnosticEvent.Impact = .none
+    var diagnosticIssue: DiagnosticIssue?
+    var diagnosticUnderlying: String?
+    var diagnosticErrorChain: [DiagnosticErrorCause] = []
 
     static func map(
         _ error: Error,
         operation: String,
-        service: String? = nil
+        service: String? = nil,
+        impact: DiagnosticEvent.Impact = .none,
+        summary: DiagnosticIssue? = nil
     ) -> UserFacingError {
+        var result = presentation(error, operation: operation, service: service)
+        result.diagnosticImpact = impact
+        result.diagnosticIssue = summary
+        result.diagnosticUnderlying = DiagnosticEvent.summarize(error)
+        result.diagnosticErrorChain = DiagnosticFailure.causes(error)
+        result.errorCode = result.errorCode ?? DiagnosticFailure.code(error)
+        result.shouldRecordDiagnostic = summary != nil && [.blocked, .dataRisk].contains(impact)
+            && result.diagnosticOutcome == .failed
+        return result
+    }
+
+    /// 提示分类与严重故障准入分开；错误类型不能证明缓存、重试或回退是否有效。
+    private static func presentation(
+        _ error: Error,
+        operation: String,
+        service: String?
+    ) -> UserFacingError {
+        if let runtime = error as? ExternalAgentRuntimeError {
+            switch runtime {
+            case .directOnly, .executableNotFound, .executableNotRunnable, .unsupportedArchitecture, .missingConfiguration:
+                return make(kind: .recoverable, operation: operation, service: service,
+                            diagnostic: DiagnosticEvent.summarize(error))
+            default: break
+            }
+        }
+        if let session = error as? AgentRunSessionError {
+            switch session {
+            case .terminal, .waitingForConfirmation, .iterationLimit, .toolCallLimit, .tokenLimit, .durationLimit:
+                return make(kind: .recoverable, operation: operation, service: service,
+                            diagnostic: DiagnosticEvent.summarize(error))
+            case .invalidRunID: break
+            }
+        }
+        if let loop = error as? LoopAgentRuntimeError,
+           case .approvalRequired = loop {
+            return make(kind: .recoverable, operation: operation, service: service,
+                        diagnostic: DiagnosticEvent.summarize(error))
+        }
         if DiagnosticFailure.isCancellation(error) || error is EntitlementGateError {
             var mapped = make(
                 kind: .recoverable,
@@ -69,18 +113,48 @@ struct UserFacingError: Equatable, Sendable {
         if let ai = error as? AIClientError {
             return mapAI(ai, operation: operation, service: service)
         }
+        if let selection = error as? AIChatSelectionError {
+            let message: String = switch selection {
+            case .missingProvider:
+                String(format: String.l10n("ai.insight.error.missingTaskProviderFormat.modelsSettings"), operation)
+            case .providerUnavailable: String.l10n("search.discovery.configuration.providerUnavailable")
+            case .missingModel: String.l10n("search.discovery.configuration.missingModel")
+            case .incompatibleModel: String.l10n("search.discovery.configuration.incompatibleModel")
+            }
+            return UserFacingError(
+                title: String.l10n("error.user.aiConfiguration.title"),
+                message: message,
+                recovery: String.l10n("error.user.aiProvider.recovery.modelsSettings"),
+                diagnosticSummary: DiagnosticEvent.redact(String(describing: selection)),
+                shouldRecordDiagnostic: false,
+                diagnosticOutcome: .skipped
+            )
+        }
+        if let external = error as? ExternalSearchError {
+            return mapExternalSearch(external, operation: operation)
+        }
+        if let backend = error as? RAGExternalBackendError {
+            return mapRAGBackend(backend, operation: operation, service: service ?? "Rerank")
+        }
         if let insight = error as? RepoAIInsightError {
             return mapRepoAIInsight(insight, operation: operation, service: service)
         }
         if let localAI = error as? LocalAIError {
             // 本地模型超上下文 / 重复输出等已有专用文案，不能再套「访问 AI 失败」。
-            return UserFacingError(
+            var result = UserFacingError(
                 title: String.l10n("error.user.aiProvider.title"),
                 message: localAI.localizedDescription,
                 recovery: String.l10n("error.user.aiProvider.recovery.modelsSettings"),
                 diagnosticSummary: DiagnosticEvent.redact(String(describing: localAI)),
                 shouldRecordDiagnostic: false
             )
+            switch localAI {
+            case .hardwareUnsupported, .unavailableInTests, .modelNotInstalled, .toolsUnsupported,
+                 .contextTooLong, .memoryBudgetExceeded:
+                result.diagnosticOutcome = .skipped
+            case .repetitiveOutput, .embeddingDimensionMismatch: break
+            }
+            return result
         }
         if let translation = error as? ReadmeTranslationError {
             return mapReadmeTranslation(translation, operation: operation, service: service)
@@ -122,21 +196,31 @@ struct UserFacingError: Equatable, Sendable {
         )
     }
 
-    func record(level: DiagnosticEvent.Level = .error, category: String, operation: String, service: String? = nil) {
-        DiagnosticLogStore.shared.enqueue(DiagnosticEvent(
-            level: diagnosticOutcome == .cancelled || diagnosticOutcome == .skipped ? .info : level,
-            visibility: shouldRecordDiagnostic ? .issue : .context,
+    func record(level: DiagnosticEvent.Level = .error, category: String, operation: String,
+                service: String? = nil, context: [String: String] = [:],
+                fields: [String: DiagnosticValue] = [:], store: DiagnosticLogStore = .shared,
+                sourceFile: String = #fileID, sourceFunction: String = #function, sourceLine: Int = #line) {
+        guard shouldRecordDiagnostic else { return }
+        let event = DiagnosticEvent(
+            level: level,
+            visibility: .issue,
             category: category,
             operation: operation,
             message: "User operation result",
+            summaryKey: diagnosticIssue?.rawValue,
             service: service,
             statusCode: statusCode,
             errorCode: errorCode ?? "userOperation.\(diagnosticOutcome.rawValue)",
+            underlying: diagnosticUnderlying,
+            context: context,
             operationID: operationID,
             phase: "finished",
             outcome: diagnosticOutcome,
-            impact: diagnosticOutcome == .failed ? .blocked : .none
-        ))
+            impact: diagnosticImpact,
+            fields: fields,
+            errorChain: diagnosticErrorChain,
+            sourceFile: sourceFile, sourceFunction: sourceFunction, sourceLine: sourceLine)
+        if DiagnosticContext.current?.capture(event) != true { store.enqueue(event) }
     }
 
     private enum Kind {
@@ -234,6 +318,89 @@ struct UserFacingError: Equatable, Sendable {
         )
     }
 
+    /// 外部搜索已有逐 Provider 的友好文案；这里只补齐分类、HTTP 与设置恢复方向，
+    /// 原始服务正文只能进入脱敏后的技术详情。
+    private static func mapExternalSearch(
+        _ error: ExternalSearchError,
+        operation: String
+    ) -> UserFacingError {
+        let kind: Kind
+        let status: Int?
+        switch error {
+        case .disabled, .missingAPIKey, .unverifiedCredential:
+            kind = .aiConfiguration
+            status = nil
+        case .invalidCredential(_, let code, _):
+            kind = .unauthorized
+            status = code
+        case .paymentRequired(_, let code, _):
+            kind = .aiProvider
+            status = code ?? 402
+        case .rateLimited:
+            kind = .rateLimited
+            status = 429
+        case .serviceUnavailable(_, let code, _):
+            kind = .serverUnavailable
+            status = code
+        case .network:
+            kind = .networkUnavailable
+            status = nil
+        case .invalidResponse(_, _, let code):
+            kind = .decoding
+            status = code
+        }
+        var mapped = make(
+            kind: kind, operation: operation, service: error.providerID.displayName,
+            diagnostic: String(describing: error), statusCode: status
+        )
+        mapped.message = error.friendlyMessage
+        switch error {
+        case .disabled, .missingAPIKey, .unverifiedCredential, .invalidCredential:
+            mapped.recovery = String.l10n("settings.externalSearch.copy.verifyBeforeEnabling")
+        default: break
+        }
+        if case .disabled = error { mapped.diagnosticOutcome = .skipped }
+        return mapped
+    }
+
+    /// Rerank 与 Chat 同样区分鉴权、余额、限流和响应错误，不显示服务原始正文。
+    private static func mapRAGBackend(
+        _ error: RAGExternalBackendError,
+        operation: String,
+        service: String
+    ) -> UserFacingError {
+        let kind: Kind
+        var statusCode: Int?
+        switch error {
+        case .invalidConfiguration:
+            kind = .aiConfiguration
+        case .invalidResponse:
+            kind = .decoding
+        case .operationFailed:
+            kind = .serverUnavailable
+        case .http(_, let status, _):
+            statusCode = status
+            switch status {
+            case 401, 403: kind = .unauthorized
+            case 402:
+                return mapAI(
+                    .paymentRequired(detail: String(describing: error)),
+                    operation: operation, service: service
+                )
+            case 429: kind = .rateLimited
+            default: kind = .serverUnavailable
+            }
+        }
+        var mapped = make(
+            kind: kind, operation: operation, service: service,
+            diagnostic: String(describing: error), statusCode: statusCode
+        )
+        if kind == .aiConfiguration {
+            mapped.recovery = String.l10n("error.user.aiProvider.recovery.modelsSettings")
+        }
+        return mapped
+    }
+
     private static func mapAI(
         _ error: AIClientError,
         operation: String,
@@ -247,7 +414,8 @@ struct UserFacingError: Equatable, Sendable {
                 message: error.localizedDescription,
                 recovery: String.l10n("error.user.aiConfiguration.recovery"),
                 diagnosticSummary: DiagnosticEvent.redact(error.localizedDescription),
-                shouldRecordDiagnostic: false
+                shouldRecordDiagnostic: false,
+                diagnosticOutcome: .skipped
             )
         case .authenticationRejected:
             return make(
@@ -503,13 +671,13 @@ struct UserFacingError: Equatable, Sendable {
         if let context {
             diagnostic += " (\(context))"
         }
-        let shouldRecordDiagnostic: Bool
+        let expected: Bool
         switch kind {
-        case .decoding, .localData, .secureStorage:
-            shouldRecordDiagnostic = true
-        case .networkUnavailable, .unauthorized, .rateLimited, .notFound,
-             .serverUnavailable, .aiConfiguration, .aiProvider, .recoverable, .unknown:
-            shouldRecordDiagnostic = false
+        case .unauthorized, .aiConfiguration, .recoverable:
+            expected = true
+        case .decoding, .localData, .secureStorage, .networkUnavailable,
+             .rateLimited, .notFound, .serverUnavailable, .aiProvider, .unknown:
+            expected = false
         }
         return UserFacingError(
             title: String.l10n(titleKey),
@@ -518,7 +686,8 @@ struct UserFacingError: Equatable, Sendable {
             diagnosticSummary: diagnostic,
             statusCode: statusCode,
             errorCode: errorCode,
-            shouldRecordDiagnostic: shouldRecordDiagnostic
+            shouldRecordDiagnostic: false,
+            diagnosticOutcome: expected ? .skipped : .failed
         )
     }
 }

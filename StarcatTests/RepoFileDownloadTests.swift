@@ -11,6 +11,172 @@ import Foundation
 import Testing
 @testable import Starcat
 
+@Suite("RepoFileTreeSessionCache")
+struct RepoFileTreeSessionCacheTests {
+    @Test("同提交并发请求只拉一棵树，普通重开命中缓存，强制刷新重新请求")
+    func mergesRequestsAndRefreshes() async throws {
+        let cache = RepoFileTreeSessionCache()
+        let source = TreeRequestTestSource()
+        let api = MockGitHubAPIClient()
+        api.repositoryGitTreeHandler = { _, _, _ in try await source.fetch() }
+        async let first = cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api, force: true)
+        async let second = cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api, force: true)
+        try await source.waitForCalls(1)
+        // 两个调用都必须停在网络返回之前，才真正覆盖请求合并。
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(await source.callCount == 1)
+        await source.succeed()
+        let results = try await (first, second)
+        #expect(results.0.sha == results.1.sha)
+        #expect(try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api).sha == results.0.sha)
+        let refreshed = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api, force: true)
+        }
+        try await source.waitForCalls(2)
+        await source.succeed()
+        #expect(try await refreshed.value.sha != results.0.sha)
+    }
+
+    @Test("一个窗口取消不影响另一个，最后一个离开才停止请求")
+    func consumerCancellation() async throws {
+        let cache = RepoFileTreeSessionCache()
+        let source = TreeRequestTestSource()
+        let api = MockGitHubAPIClient()
+        api.repositoryGitTreeHandler = { _, _, _ in try await source.fetch() }
+        let first = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api, force: true)
+        }
+        try await source.waitForCalls(1)
+        let second = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api, force: true)
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(await source.callCount == 1)
+        first.cancel()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(await source.cancelCount == 0)
+        await source.succeed()
+        #expect(try await second.value.sha == "tree-1")
+        await #expect(throws: CancellationError.self) { try await first.value }
+
+        let last = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "another", scope: "public", api: api)
+        }
+        try await source.waitForCalls(2)
+        last.cancel()
+        await #expect(throws: CancellationError.self) { try await last.value }
+        #expect(await source.cancelCount == 1)
+        let retry = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "another", scope: "public", api: api)
+        }
+        try await source.waitForCalls(3)
+        await source.succeed()
+        #expect(try await retry.value.sha == "tree-3")
+    }
+
+    @Test("切号拒绝不响应取消的迟到结果，新会话可以重试")
+    func resetRejectsLateResponse() async throws {
+        let cache = RepoFileTreeSessionCache()
+        let source = TreeRequestTestSource(honorsCancellation: false)
+        let api = MockGitHubAPIClient()
+        api.repositoryGitTreeHandler = { _, _, _ in try await source.fetch() }
+        let old = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "private", api: api)
+        }
+        try await source.waitForCalls(1)
+        await cache.reset()
+        await source.succeed()
+        await #expect(throws: CancellationError.self) { try await old.value }
+        let current = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "private", api: api)
+        }
+        try await source.waitForCalls(2)
+        await source.succeed()
+        #expect(try await current.value.sha == "tree-2")
+    }
+
+    @Test("凭据范围独立，共享失败后允许重新请求")
+    func scopeIsolationAndRetry() async throws {
+        let cache = RepoFileTreeSessionCache()
+        let source = TreeRequestTestSource()
+        let api = MockGitHubAPIClient()
+        api.repositoryGitTreeHandler = { _, _, _ in try await source.fetch() }
+        let publicTree = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api)
+        }
+        let privateTree = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "private", api: api)
+        }
+        try await source.waitForCalls(2)
+        await source.fail()
+        await #expect(throws: URLError.self) { try await publicTree.value }
+        await #expect(throws: URLError.self) { try await privateTree.value }
+        let retry = Task {
+            try await cache.load(owner: "o", repo: "r", ref: "fixed", scope: "public", api: api)
+        }
+        try await source.waitForCalls(3)
+        await source.succeed()
+        #expect(try await retry.value.sha == "tree-3")
+    }
+}
+
+/// 可控网络替身只暂停请求，不访问 GitHub；同时可模拟取消被传输层忽略。
+private actor TreeRequestTestSource {
+    private(set) var callCount = 0
+    private(set) var cancelCount = 0
+    private let honorsCancellation: Bool
+    private var pending: [Int: CheckedContinuation<GitHubGitTreeDTO, Error>] = [:]
+
+    init(honorsCancellation: Bool = true) {
+        self.honorsCancellation = honorsCancellation
+    }
+
+    func fetch() async throws -> GitHubGitTreeDTO {
+        callCount += 1
+        let requestID = callCount
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled, honorsCancellation {
+                    cancelCount += 1
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    pending[requestID] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(requestID) }
+        }
+    }
+
+    func waitForCalls(_ expected: Int) async throws {
+        for _ in 0..<2_000 {
+            if callCount >= expected { return }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try #require(callCount >= expected)
+    }
+
+    func succeed() {
+        let requests = pending
+        pending = [:]
+        for (requestID, continuation) in requests {
+            continuation.resume(returning: GitHubGitTreeDTO(sha: "tree-\(requestID)", truncated: false, tree: []))
+        }
+    }
+
+    func fail() {
+        let requests = pending
+        pending = [:]
+        requests.values.forEach { $0.resume(throwing: URLError(.cannotConnectToHost)) }
+    }
+
+    private func cancel(_ requestID: Int) {
+        guard honorsCancellation, let continuation = pending.removeValue(forKey: requestID) else { return }
+        cancelCount += 1
+        continuation.resume(throwing: CancellationError())
+    }
+}
+
 @Suite("RepoFileTreeBuilder")
 struct RepoFileTreeBuilderTests {
 
@@ -117,13 +283,11 @@ struct RepoFileTreeBuilderTests {
 @Suite("RepoFileTypeIcon")
 struct RepoFileTypeIconTests {
 
-    private static let code = BusinessIcon.Source.business(.codeContext)
-
     @Test("常见扩展名映射到对应类型图标，大小写不敏感")
     func mapsCommonExtensions() {
-        #expect(RepoFileTypeIcon.iconSource(forFileName: "eslint.config.js") == Self.code)
-        #expect(RepoFileTypeIcon.iconSource(forFileName: "main.SWIFT") == Self.code)
-        #expect(RepoFileTypeIcon.iconSource(forFileName: "README.md") == .business(.file))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "eslint.config.js") == .asset("javascript"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "main.SWIFT") == .asset("swift"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "README.md") == .business(.readme))
         #expect(RepoFileTypeIcon.iconSource(forFileName: "logo.png") == .business(.image))
         #expect(RepoFileTypeIcon.iconSource(forFileName: "dist.tar.gz") == .business(.fileArchive))
         #expect(RepoFileTypeIcon.iconSource(forFileName: "alert.mp3") == .business(.audio))
@@ -132,16 +296,40 @@ struct RepoFileTypeIconTests {
 
     @Test("dotfile 取点号后的整段当扩展名，无扩展名走整名匹配")
     func mapsDotfilesAndBareNames() {
-        #expect(RepoFileTypeIcon.iconSource(forFileName: ".gitignore") == Self.code)
-        #expect(RepoFileTypeIcon.iconSource(forFileName: "Makefile") == Self.code)
-        #expect(RepoFileTypeIcon.iconSource(forFileName: "Dockerfile") == Self.code)
-        #expect(RepoFileTypeIcon.iconSource(forFileName: "LICENSE") == .business(.file))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: ".gitignore") == .asset("git"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "Makefile") == .system("hammer.fill"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "Dockerfile") == .asset("docker"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "LICENSE") == .business(.license))
     }
 
     @Test("未知类型退回默认 doc 图标")
     func fallsBackToDefault() {
         #expect(RepoFileTypeIcon.iconSource(forFileName: "data.unknownext") == .business(.file))
         #expect(RepoFileTypeIcon.iconSource(forFileName: "") == .business(.file))
+    }
+
+    @Test("特殊文档名称优先，但不能把同名源代码误识别为文档")
+    func specialNamesAndCompoundExtensions() {
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "README.zh-CN.md") == .business(.readme))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "readme.swift") == .asset("swift"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "LICENSE.txt") == .business(.license))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "license.js") == .asset("javascript"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "CHANGELOG.md") == .business(.recentUpdate))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "todo.md") == .system("checklist"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "settings.gradle.kts") == .asset("kotlin"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "build.gradle") == .asset("gradle"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "package.json") == .asset("npm"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "file.json") == .asset("json"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "Dockerfile.md") == .asset("markdown"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: "gradle.properties") == .asset("gradle"))
+        #expect(RepoFileTypeIcon.iconSource(forFileName: ".tool-versions") == .business(.general))
+    }
+
+    @MainActor
+    @Test("所有引用的品牌图标都已内置在应用资源中")
+    func assetsExist() {
+        let assets = Set(RepoFileTypeIcon.technologyAssets.values).union(["git", "docker", "npm", "yarn", "gradle"])
+        for asset in assets { #expect(NSImage(named: asset) != nil, "Missing asset: \(asset)") }
     }
 }
 
@@ -398,6 +586,54 @@ private struct RequiredFileToken: GitHubTokenProviding {
 @Suite("RepoFileBrowserViewModel")
 @MainActor
 struct RepoFileBrowserViewModelTests {
+
+    @Test("Markdown 资源绑定树提交，源码切换不重新请求，过期失败回调被忽略")
+    func markdownSnapshotAndModes() async throws {
+        let source = "---\nname: guide\ndescription: >\n  Original metadata.\n---\n# Guide\n\n![Logo](../logo.png)"
+        let mock = MockGitHubAPIClient()
+        mock.repositoryLatestCommitHandler = { _, _, path, _ in
+            GitHubCommitSummaryDTO(sha: path.isEmpty ? "tree-commit" : "old-file-commit",
+                                   commit: GitHubCommitSummaryPayloadDTO(committer: nil, author: nil))
+        }
+        mock.repositoryGitTreeHandler = { _, _, ref in
+            #expect(ref == "tree-commit")
+            return GitHubGitTreeDTO(sha: "tree-object", truncated: false, tree: [
+                GitHubGitTreeEntryDTO(path: "docs/guide.MD", mode: "100644", type: "blob",
+                                     sha: "blob", size: 100, url: nil)
+            ])
+        }
+        let viewModel = RepoFileBrowserViewModel(
+            target: RepoFileBrowserTarget(owner: "owner", name: "repo", fullName: "owner/repo", ref: "main"),
+            apiClient: mock, downloader: PreviewStubDownloader(preview: .text(source)),
+            folderPicker: FixedFolderPicker(url: nil), treeCache: RepoFileTreeSessionCache()
+        )
+        await viewModel.loadTree()
+        viewModel.reveal(try #require(RepoFileTreeBuilder.find(path: "docs/guide.MD", in: viewModel.nodes)))
+        for _ in 0..<100 {
+            if case .ready = viewModel.markdown { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard case .ready(let document) = viewModel.markdown else {
+            Issue.record("Markdown document did not become ready")
+            return
+        }
+        #expect(document.html.contains("https://raw.githubusercontent.com/owner/repo/tree-commit/logo.png"))
+        #expect(document.html.contains("class=\"starcat-front-matter\""))
+        #expect(viewModel.githubRawURL?.absoluteString.contains("/tree-commit/") == true)
+        let revision = viewModel.previewRevision
+        viewModel.previewMode = .source
+        viewModel.previewMode = .rendered
+        #expect(viewModel.previewRevision == revision)
+        #expect(viewModel.markdown == .ready(document))
+        viewModel.markdownFailed(documentID: "old-document")
+        #expect(viewModel.markdown == .ready(document))
+        viewModel.markdownFailed(documentID: document.id)
+        if case .failed = viewModel.markdown {} else { Issue.record("Current failure must be surfaced") }
+        #expect(viewModel.previewText == source)
+        await viewModel.selectBranch("dev")
+        #expect(viewModel.previewedPath == nil)
+        #expect(viewModel.markdown == .idle)
+    }
 
     @Test("loadTree 成功后可以勾选并下载到指定目录")
     func loadAndDownload() async throws {

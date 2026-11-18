@@ -103,6 +103,47 @@ enum ReadmeAssetURLRewriter {
         )
     }
 
+    /// 文件预览必须绑定整棵树的提交，而不是 HEAD 或该文件的最近提交。
+    /// 显式目录入口不使用 README wrapper 推断和旧 HEAD 缓存修复，避免重复补目录。
+    static func rewrite(in html: String, owner: String, repo: String, ref: String, filePath: String) -> String {
+        let blobRoot = "https://github.com/\(owner)/\(repo)/blob/\(ref)/"
+        guard let blobFile = URL(string: blobRoot)?.appendingPathComponent(filePath) else { return html }
+        let pictures = rewriteFileAssets(in: html, owner: owner, repo: repo, ref: ref, filePath: filePath)
+        guard let regex = try? NSRegularExpression(pattern: #"<a\b[^>]*\shref="([^"]*)""#,
+                                                  options: .caseInsensitive) else { return pictures }
+        let original = pictures as NSString
+        var result = pictures
+        for match in regex.matches(in: pictures, range: NSRange(location: 0, length: original.length)).reversed() {
+            let link = original.substring(with: match.range(at: 1))
+            let resolved = resolveFileURL(link, fileBaseURL: blobFile, repositoryRoot: blobRoot)
+            guard let range = Range(match.range(at: 1), in: result) else { continue }
+            result.replaceSubrange(range, with: resolved)
+        }
+        return result
+    }
+
+    /// GitHub 服务端 HTML 只修复图片资源，链接继续由文档 baseURL 解析。
+    /// 服务端的 `/owner/repo/blob/...` 已是站点路径，不能再次当作仓库根相对路径补前缀。
+    static func rewriteFileAssets(in html: String, owner: String, repo: String, ref: String, filePath: String) -> String {
+        let rawRoot = "https://raw.githubusercontent.com/\(owner)/\(repo)/\(ref)/"
+        guard let rawFile = URL(string: rawRoot)?.appendingPathComponent(filePath) else { return html }
+        let stable = rewriteGitHubAttachmentSources(in: rewriteCamoProxiedImages(in: html))
+        let images = rewriteImageSources(in: stable, rawBase: rawRoot, rawRoot: rawRoot,
+                                         documentDirectory: "", fileBaseURL: rawFile)
+        return rewritePictureSourceSets(in: images, rawBase: rawRoot, rawRoot: rawRoot,
+                                        documentDirectory: "", fileBaseURL: rawFile)
+    }
+
+    /// 绝对资源与页内锚点保留；根路径以仓库根为准，../ 由 Foundation 规范化。
+    private static func resolveFileURL(_ source: String, fileBaseURL: URL, repositoryRoot: String) -> String {
+        guard !source.isEmpty, !source.hasPrefix("#"), !source.hasPrefix("//"),
+              URL(string: source)?.scheme == nil else { return source }
+        if let githubRawURL = githubRootRawURL(from: source) { return githubRawURL }
+        let base = source.hasPrefix("/") ? URL(string: repositoryRoot) : fileBaseURL
+        let relative = source.hasPrefix("/") ? String(source.dropFirst()) : source
+        return URL(string: relative, relativeTo: base)?.absoluteURL.standardized.absoluteString ?? source
+    }
+
     /// 把 GitHub camo 代理的 `<img src>` / `<source srcset>` 改写回 `data-canonical-src`
     /// 保留的原始地址。
     ///
@@ -217,7 +258,8 @@ enum ReadmeAssetURLRewriter {
         in html: String,
         rawBase: String,
         rawRoot: String,
-        documentDirectory: String
+        documentDirectory: String,
+        fileBaseURL: URL? = nil
     ) -> String {
         // <img ...src="xxx"...> ；捕获 1 = src 前的属性串，捕获 2 = src 值
         let pattern = #"<img\b([^>]*?)\bsrc\s*=\s*"([^"]+)""#
@@ -236,7 +278,9 @@ enum ReadmeAssetURLRewriter {
 
             let prefix = nsHtml.substring(with: m.range(at: 1))
             let originalSrc = nsHtml.substring(with: m.range(at: 2))
-            let rewritten = rewriteOne(
+            let rewritten = fileBaseURL.map {
+                resolveFileURL(originalSrc, fileBaseURL: $0, repositoryRoot: rawRoot)
+            } ?? rewriteOne(
                 originalSrc,
                 rawBase: rawBase,
                 rawRoot: rawRoot,
@@ -258,7 +302,8 @@ enum ReadmeAssetURLRewriter {
         in html: String,
         rawBase: String,
         rawRoot: String,
-        documentDirectory: String
+        documentDirectory: String,
+        fileBaseURL: URL? = nil
     ) -> String {
         guard let pictureRegex = try? NSRegularExpression(
             pattern: #"<picture\b[^>]*>.*?</picture\s*>"#,
@@ -281,7 +326,8 @@ enum ReadmeAssetURLRewriter {
                     srcset,
                     rawBase: rawBase,
                     rawRoot: rawRoot,
-                    documentDirectory: documentDirectory
+                    documentDirectory: documentDirectory,
+                    fileBaseURL: fileBaseURL
                 )
                 guard rewritten != srcset, let range = Range(source.range, in: result) else { continue }
                 result.replaceSubrange(range, with: replaceAttributeValue(named: "srcset", inTag: tag, with: rewritten))
@@ -300,17 +346,19 @@ enum ReadmeAssetURLRewriter {
         _ srcset: String,
         rawBase: String,
         rawRoot: String,
-        documentDirectory: String
+        documentDirectory: String,
+        fileBaseURL: URL? = nil
     ) -> String {
         rewriteSourceSet(srcset) { url in
             if let stableURL = stableGitHubAttachmentURL(from: url) { return stableURL }
             guard !url.isEmpty, !url.hasPrefix("//"), !url.hasPrefix("#"),
                   URL(string: url)?.scheme == nil else { return url }
+            if let fileBaseURL { return resolveFileURL(url, fileBaseURL: fileBaseURL, repositoryRoot: rawRoot) }
             return rewriteOne(url, rawBase: rawBase, rawRoot: rawRoot, documentDirectory: documentDirectory)
         }
     }
 
-    /// 仅展示时路由附件图片；数据库始终保留可在外部打开的 HTTPS 地址。
+    /// 仅展示时路由内容图片；数据库始终保留可在外部打开的 HTTPS 地址。
     ///
     /// 在 WebKit 解析 HTML 前替换，避免 document-end 再换 src 导致同图发两次网络请求。
     /// picture 作为完整块处理，所以视频 / 音频的 source 不会误入图片加载器。
@@ -326,19 +374,48 @@ enum ReadmeAssetURLRewriter {
         for block in blocks.matches(in: html, range: NSRange(location: 0, length: nsHTML.length)).reversed() {
             for match in tags.matches(in: html, range: block.range).reversed() {
                 var tag = nsHTML.substring(with: match.range)
+                // Camo 的实际 src 看不出徽标来源，canonical 命中时也保留原 HTTP 加载语义。
+                if let canonical = attributeValue(named: "data-canonical-src", inTag: tag),
+                   ReadmeImageBadgeRules.isBadge(canonical) { continue }
                 if tag.lowercased().hasPrefix("<img"), let src = attributeValue(named: "src", inTag: tag) {
-                    tag = replaceAttributeValue(named: "src", inTag: tag, with: ReadmeAttachmentImageURL.cachedSource(src))
+                    tag = replaceAttributeValue(named: "src", inTag: tag, with: cachedImageAttributeSource(src))
                 }
                 if let srcset = attributeValue(named: "srcset", inTag: tag) {
                     tag = replaceAttributeValue(
                         named: "srcset", inTag: tag,
-                        with: rewriteSourceSet(srcset, transform: ReadmeAttachmentImageURL.cachedSource)
+                        with: rewriteSourceSet(srcset, transform: cachedImageAttributeSource)
                     )
                 }
                 if let range = Range(match.range, in: result) { result.replaceSubrange(range, with: tag) }
             }
         }
         return result
+    }
+
+    /// 原属性中的实体须先解码再嵌入 URL query，否则 &amp; 会被当成远端参数名的一部分。
+    /// 只做单次实体解码，双重转义的字面量与未改写地址保持原样，不重新格式化整段 HTML。
+    private static func cachedImageAttributeSource(_ source: String) -> String {
+        guard let entities = try? NSRegularExpression(pattern: #"&(?:amp|quot|apos|lt|gt|#[0-9]+|#x[0-9a-fA-F]+);"#) else {
+            return source
+        }
+        let original = source as NSString
+        var decoded = source
+        let named = ["&amp;": "&", "&quot;": "\"", "&apos;": "'", "&lt;": "<", "&gt;": ">"]
+        for match in entities.matches(in: source, range: NSRange(location: 0, length: original.length)).reversed() {
+            let entity = original.substring(with: match.range)
+            let digits = entity.dropFirst(entity.hasPrefix("&#x") ? 3 : 2).dropLast()
+            let number = UInt32(digits, radix: entity.hasPrefix("&#x") ? 16 : 10)
+            let replacement = named[entity] ?? number.flatMap(UnicodeScalar.init).map(String.init)
+            if let replacement, let range = Range(match.range, in: decoded) {
+                decoded.replaceSubrange(range, with: replacement)
+            }
+        }
+        let cached = ReadmeAttachmentImageURL.cachedSource(decoded)
+        guard cached != decoded else { return source }
+        return cached.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 
     /// IO 规范化与展示路由共用候选解析，避免两套逗号 / 描述符规则逐渐漂移。

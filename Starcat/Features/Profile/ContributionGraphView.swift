@@ -47,6 +47,7 @@
 //    宿主窗口退出前台；Sheet 展示期间必须由宿主注入暂停状态，避免后台 Canvas 抢占转场预算。
 //
 
+import AppKit
 import SwiftUI
 
 /// 贡献草坪渲染视图。
@@ -84,6 +85,9 @@ struct ContributionGraphView: View {
     /// 调色板只影响后台位图渲染，不改变草坪的动态固有高度。
     var style: ContributionGraphStyle = .standard
 
+    /// 仅侧栏提供范围、玩法与逐日悬停入口，资料卡继续作为只读内容。
+    var allowsStyleCycling: Bool = false
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.starcatReduceMotion) private var reduceMotion
     /// Sheet 不会让宿主窗口失去前台状态，不能依赖 TimelineView 自动停表。
@@ -91,6 +95,7 @@ struct ContributionGraphView: View {
     @Environment(\.starcatContinuousAnimationsPaused) private var continuousAnimationsPaused
     /// 相对时间 helper 需要显式 `\.locale`，否则 formatter 会回到系统语言。
     @Environment(\.locale) private var locale
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
     /// HOM-SNAKE-MODES：读取用户选的玩法。
     @Environment(AppSettings.self) private var settings
 
@@ -98,87 +103,197 @@ struct ContributionGraphView: View {
     /// 动画的重活（371 格 + 蛇身 + 食物）都在后台队列，切换模块/分类时不再掉帧。
     @State private var renderService = SnakeRenderService()
 
-    /// 每格宽度（pt）。
-    ///
-    /// **为什么 width / height 拆开（dong4j 2026-06-05 反馈"草坪太窄"修正）**：
-    /// GitHub 主页的格子是 11×11 正方形（aspect ratio 1:1），53 列横排后整图比例
-    /// 约 7.7:1。sidebar 可用宽度只有 ~212pt（240pt - 横向 padding 28pt），按等比
-    /// 缩放出来高度只剩 ~27pt——视觉上是"一条窄带子"，方块都挤压成像素点。
-    ///
-    /// 修复：让格子拉伸成 10:14 矩形（纵向 +40%）。
-    /// trade-off：格子不再 1:1 但 sidebar 紧凑空间下视觉份量大幅提升。如果以后
-    /// sidebar 能拓宽，可以把 cellHeight 改回 10pt 恢复 GitHub 同款正方形。
-    private let cellWidth: CGFloat = 10
+    /// 只淡化草坪位图，标题、点击区域和后台服务身份保持稳定。
+    @State private var isGridVisible = true
+    @State private var isStyleFadingOut = false
+    @State private var isAwaitingStyleFrame = false
+    /// 侧栏首次显示与切换账号默认展示90天，首帧布局也必须与所选范围一致。
+    @State private var selectedRange: ContributionGraphRange = .recent90
+    /// 旧位图淡出后才交接布局，防止年度图片先被压进两行网格。
+    @State private var renderedRange: ContributionGraphRange = .recent90
+    @State private var hoveredPosition: GridPosition?
+    @State private var hoveredPoint: CGPoint?
+    @State private var isInspecting = false
+    @State private var isRangeHovered = false
 
-    /// 每格高度（pt）。1.4x cellWidth，让方块在 sidebar 紧凑空间下看起来更"实"。
-    private let cellHeight: CGFloat = 14
+    /// 资料卡的汇总仍为年度数据，网格和动画必须使用同一年度范围。
+    private var displayedRange: ContributionGraphRange {
+        allowsStyleCycling ? renderedRange : .year
+    }
 
-    /// 格子间距（pt）。横纵共用同一间距，保留正交栅格感。
-    private let cellSpacing: CGFloat = 2
+    private var rangeSwitchHint: String {
+        guard let days = selectedRange.next.dayCount else {
+            return String.l10n("contribution.range.showYear")
+        }
+        return String(
+            format: String.l10n("contribution.range.showDays"), locale: locale,
+            days.formatted(.number.locale(locale))
+        )
+    }
 
-    /// 圆角（pt）。GitHub 是直角，但 macOS 视觉风格圆一点更柔和。
-    private let cellCornerRadius: CGFloat = 2
-
-    // MARK: - 蛇身渲染常量
-
-    /// 蛇身最多展示几节（在多节 alpha 渐淡之外的硬上限）。FoodChase 蛇可能变得很长，
-    /// 这个上限只影响"渲染时画几节"，不影响 animator 内部状态。
-    private let maxRenderedSegments: Int = 16
-
-    /// 整图固有尺寸（不考虑 aspectRatio 缩放）。
-    /// width = 53 × 10 + 52 × 2 = 634pt
-    /// height = 7 × 14 + 6 × 2 = 110pt
-    /// → aspect ratio ≈ 5.76（旧 10×10 正方形是 7.73，矩形把竖向"撑高"了）
-    private var intrinsicSize: CGSize {
-        let weeksCount = 53
-        let daysPerWeek = 7
-        let w = CGFloat(weeksCount) * cellWidth + CGFloat(weeksCount - 1) * cellSpacing
-        let h = CGFloat(daysPerWeek) * cellHeight + CGFloat(daysPerWeek - 1) * cellSpacing
-        return CGSize(width: w, height: h)
+    private var summaryText: String {
+        if let days = selectedRange.dayCount {
+            let count = ContributionGrid(weeks: payload?.weeks, range: selectedRange).totalContributions
+            return String(
+                format: String.l10n("contribution.range.daysCount"), locale: locale,
+                days.formatted(.number.locale(locale)), count.formatted(.number.locale(locale))
+            )
+        }
+        return String(
+            format: String.l10n("contribution.range.yearCount"), locale: locale,
+            (payload?.totalContributions ?? 0).formatted(.number.locale(locale))
+        )
     }
 
     var body: some View {
+        // 一次视图更新共用日期映射，避免逐格辅助功能描述重复解析整年的日期。
+        let grid = ContributionGrid(weeks: payload?.weeks, range: displayedRange)
         VStack(alignment: .leading, spacing: 6) {
             headerRow
 
-            // 草坪本体 + 蛇身叠加。
-            //
-            // **为什么用 aspectRatio 而不是 GeometryReader + frame(height:)**（v3 修复）：
-            // 旧方案 frame(height: intrinsicSize.height × heightScale=0.56) → 给 46pt 高，
-            // 但内部 GeometryReader 按 width 算 scale 只渲染了 ~27pt → 多 19pt 空白把
-            // sidebar 下面的"管理/趋势/活动"挤下去、遮住 List 顶部分类。
-            //
-            // 新方案：Canvas 直接拿自身 size 算 scale，外层用 aspectRatio 按 intrinsic
-            // 比例自动算高度 → frame 高度 = Canvas 实际渲染高度，零空白。
-            gridContent
-                .aspectRatio(intrinsicSize.width / intrinsicSize.height, contentMode: .fit)
+            // 各范围共用原年度比例的容器；浮层只做 overlay，不能改变草坪布局和命中区域。
+            GeometryReader { proxy in
+                let geometry = ContributionGraphGeometry(
+                    layout: displayedRange.layout, containerSize: proxy.size
+                )
+                gridContent(grid: grid)
+                    .frame(width: geometry.gridRect.width, height: geometry.gridRect.height)
+                    .position(x: geometry.gridRect.midX, y: geometry.gridRect.midY)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        guard allowsStyleCycling, isGridVisible else { return }
+                        switch phase {
+                        case .active(let point):
+                            hoveredPoint = point
+                            isInspecting = geometry.gridRect.contains(point)
+                            hoveredPosition = geometry.inspectionPosition(
+                                at: point, in: grid, previous: hoveredPosition
+                            )
+                        case .ended:
+                            hoveredPosition = nil
+                            hoveredPoint = nil
+                            isInspecting = false
+                        }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if let hoveredPosition, grid.day(at: hoveredPosition) != nil {
+                            let rect = geometry.rect(at: hoveredPosition)
+                            RoundedRectangle(cornerRadius: displayedRange == .year ? 1 : 3)
+                                .strokeBorder(.primary.opacity(0.8), lineWidth: 1)
+                                .frame(width: rect.width, height: rect.height)
+                                .position(x: rect.midX, y: rect.midY)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .background {
+                        // 普通 overlay 的层级受侧栏父容器限制；窗口级宿主才能盖过导航图标。
+                        ContributionTooltipPresenter(
+                            point: hoveredPosition != nil && isGridVisible ? hoveredPoint : nil
+                        ) {
+                            hoverAnnotation(grid: grid)
+                                .padding(8)
+                        }
+                        .allowsHitTesting(false)
+                    }
+            }
+                .opacity(isGridVisible ? 1 : 0)
+                .allowsHitTesting(isGridVisible)
+                .accessibilityHidden(!isGridVisible)
+                .aspectRatio(
+                    SnakeFrameRenderer.Layout.standard.size.width / SnakeFrameRenderer.Layout.standard.size.height,
+                    contentMode: .fit
+                )
         }
-        .help(payload != nil ? Text("contribution.hoverHint") : Text("contribution.loading"))
         .opacity(isLoading && payload == nil ? 0.6 : 1.0)
         // v4 HOM-SNAKE-MODES：根据玩法 / 数据变化重建 animator
         .onAppear { rebuildAnimator() }
-        .onChange(of: settings.snakeStyle) { _, _ in rebuildAnimator() }
+        .onChange(of: settings.snakeStyle) { _, _ in transitionToSelectedStyle() }
+        .onChange(of: selectedRange) { _, _ in transitionToSelectedStyle() }
+        .onChange(of: isInspecting) { _, _ in rebuildAnimator() }
+        .onChange(of: continuousAnimationsPaused) { _, _ in rebuildAnimator() }
+        .onChange(of: renderService.readyRevision) { _, _ in
+            guard isAwaitingStyleFrame, !isStyleFadingOut else { return }
+            isAwaitingStyleFrame = false
+            withAnimation(reduceMotion ? nil : .easeIn(duration: 0.12)) {
+                isGridVisible = true
+            }
+        }
+        .onChange(of: reduceMotion) { _, _ in
+            isStyleFadingOut = false
+            isAwaitingStyleFrame = false
+            isGridVisible = true
+            rebuildAnimator()
+        }
         // payload 从 nil → 有数据时也要重建，让 greedy / foodChase / multiSnake 拿到真实 weeks
-        .onChange(of: payload?.totalContributions) { _, _ in rebuildAnimator() }
+        .onChange(of: payload) { _, _ in
+            hoveredPosition = nil
+            hoveredPoint = nil
+            rebuildAnimator()
+        }
+        .onChange(of: login) { _, _ in
+            hoveredPosition = nil
+            hoveredPoint = nil
+            isInspecting = false
+            selectedRange = .recent90
+            rebuildAnimator()
+        }
         // 明暗主题切换时也要重建：草坪是 CGContext 后台渲染成 CGImage 的，
         // 配色在 configure 时按 colorScheme 固化，不随主题切换自动更新，否则明亮主题下仍显示暗色格子。
         .onChange(of: colorScheme) { _, _ in rebuildAnimator() }
         .onChange(of: style) { _, _ in rebuildAnimator() }
+        .onDisappear {
+            // 退场后使尚未完成的淡出回调失效；再次出现时仍由 onAppear 恢复同一个服务。
+            isStyleFadingOut = false
+            isAwaitingStyleFrame = false
+            isGridVisible = true
+            hoveredPosition = nil
+            hoveredPoint = nil
+            isInspecting = false
+            renderService.stop()
+        }
+    }
+
+    /// 淡出完成后才读取最新设置，连续点击不会排队播放已经过时的玩法。
+    private func transitionToSelectedStyle() {
+        hoveredPosition = nil
+        hoveredPoint = nil
+        isInspecting = false
+        guard !reduceMotion else {
+            rebuildAnimator()
+            return
+        }
+        guard !isStyleFadingOut else { return }
+        isStyleFadingOut = true
+        withAnimation(.easeOut(duration: 0.12), completionCriteria: .removed) {
+            isGridVisible = false
+        } completion: {
+            guard isStyleFadingOut else { return }
+            isStyleFadingOut = false
+            isAwaitingStyleFrame = true
+            rebuildAnimator()
+        }
     }
 
     /// 根据当前 settings.snakeStyle + payload 重建 animator 并驱动后台渲染。
     /// 频次很低（用户切换 / 数据到位），每次 init 可能要做几十毫秒的预计算（greedy 最重），
     /// 但仍在主线程能容忍范围；避免在 frame(at:) 这种每帧路径上做重活。
     private func rebuildAnimator() {
-        let animator = SnakeAnimatorFactory.make(style: settings.snakeStyle,
-                                                 weeks: payload?.weeks)
-        // reduceMotion / 宿主暂停 / off 玩法（animator == nil）→ 只画静态草坪。
-        let shouldAnimate = !reduceMotion && !continuousAnimationsPaused && animator != nil
+        // 数据或主题在淡出期间到达时，也等旧画面退完再使用最新输入重建。
+        guard !isStyleFadingOut else { return }
+        renderedRange = selectedRange
+        // 查日数据时显示真实底图。格子间移动不重建动画，离开整个网格后恢复当前玩法。
+        let shouldAnimate = !reduceMotion && !continuousAnimationsPaused && !isInspecting
+        let animator = shouldAnimate ? SnakeAnimatorFactory.make(
+            style: settings.snakeStyle, weeks: payload?.weeks, range: displayedRange
+        ) : nil
         renderService.configure(
-            animator: shouldAnimate ? animator : nil,
+            animator: animator,
             payload: payload,
             colorScheme: colorScheme,
-            style: style
+            style: style,
+            range: displayedRange
         )
     }
 
@@ -193,7 +308,27 @@ struct ContributionGraphView: View {
     @ViewBuilder
     private var headerRow: some View {
         HStack(spacing: 6) {
-            if let count = payload?.totalContributions {
+            if payload != nil, allowsStyleCycling {
+                Button {
+                    selectedRange = selectedRange.next
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(verbatim: summaryText)
+                            .lineLimit(1)
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 8))
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isRangeHovered ? .primary : .secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .onHover { isRangeHovered = $0 }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isRangeHovered)
+                .help(Text(verbatim: rangeSwitchHint))
+                .accessibilityHint(Text(verbatim: rangeSwitchHint))
+            } else if let count = payload?.totalContributions {
                 // 2026-06-16 i18n root cause #3:`String(localized:)` 在 macOS 上的
                 // `locale:` 参数仅用于 plural/number/date 格式化,**不**用于选 lproj
                 // (实测硬编码 `Locale("en")` 也返回中文)。改用 `String.l10n(_:)`
@@ -234,10 +369,244 @@ struct ContributionGraphView: View {
     /// 避免每帧 371 格重绘占用主线程导致切换模块/分类时动画掉帧。
     /// 外层 aspectRatio 保证 Image 与 intrinsicSize 等比缩放。
     @ViewBuilder
-    private var gridContent: some View {
+    private func gridContent(grid: ContributionGrid) -> some View {
         // 只有这个叶子 View 读取 `frameImage`。把 Observation 依赖隔离在这里后，
         // 每帧发布不会让上方标题、相对时间和整张贡献卡片一起重算。
-        SnakeFrameImageView(renderService: renderService)
+        if allowsStyleCycling {
+            Button {
+                // 与设置页共用枚举顺序，末项回到关闭；直接写设置以同步并保存选择。
+                let nextStyle = SnakeStyle.allCases
+                    .drop(while: { $0 != settings.snakeStyle })
+                    .dropFirst()
+                    .first ?? .off
+                settings.snakeStyle = nextStyle
+            } label: {
+                SnakeFrameImageView(renderService: renderService)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .accessibilityLabel(Text("settings.snakeStyle.title"))
+            .accessibilityValue(Text(LocalizedStringKey(settings.snakeStyle.displayNameKey)))
+            .accessibilityChildren {
+                ForEach(grid.allPositions, id: \.self) { position in
+                    if let day = grid.day(at: position) {
+                        Text(verbatim: "\(dateText(day)) — \(dayCountText(day))")
+                    }
+                }
+            }
+        } else {
+            SnakeFrameImageView(renderService: renderService)
+                .help(payload != nil ? Text("contribution.hoverHint") : Text("contribution.loading"))
+        }
+    }
+
+    /// 内容宽度独立于侧栏；实际位置由窗口级宿主跟随光标，不能反向改变草坪尺寸。
+    @ViewBuilder
+    private func hoverAnnotation(grid: ContributionGrid) -> some View {
+        if let hoveredPosition, let day = grid.day(at: hoveredPosition) {
+            ContributionTooltipCard(
+                metrics: ContributionTooltipMetrics(day: day, weeks: payload?.weeks, locale: locale),
+                color: ContributionPalette.palette(for: colorScheme, style: style)
+                    .color(for: day.contributionLevel)
+            )
+        }
+    }
+
+    private func dayCountText(_ day: ContributionDay) -> String {
+        String(
+            format: String.l10n("contribution.day.count"), locale: locale,
+            day.contributionCount.formatted(.number.locale(locale))
+        )
+    }
+
+    private func dateText(_ day: ContributionDay) -> String {
+        guard let date = ContributionGrid.date(day.date) else { return day.date }
+        let format = Date.FormatStyle(
+            locale: locale,
+            calendar: Calendar(identifier: .gregorian),
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        ).year().month(.abbreviated).day().weekday(.abbreviated)
+        return date.formatted(format)
+    }
+}
+
+/// 隐藏的占位文字只参与布局，实际文字覆盖其上，避免逐日悬停时卡片和单位左右跳动。
+struct ContributionTooltipCard: View {
+    let metrics: ContributionTooltipMetrics
+    let color: Color
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: interfaceScale.scaled(4)) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(verbatim: metrics.datePlaceholder)
+                    .hidden()
+                    .overlay(alignment: .leading) {
+                        Text(verbatim: metrics.dateText)
+                    }
+                // 贡献行在英文等语言下更宽，日期行须吸收剩余宽度，让星期贴齐卡片右侧。
+                Spacer(minLength: interfaceScale.scaled(12))
+                // 星期名称长度因语言和日期而异，始终保留该语言七天中最宽的长度。
+                ZStack(alignment: .trailing) {
+                    ForEach(metrics.weekdayPlaceholders, id: \.self) { weekday in
+                        Text(verbatim: weekday)
+                    }
+                }
+                .hidden()
+                .overlay(alignment: .trailing) {
+                    Text(verbatim: metrics.weekdayText)
+                }
+            }
+            .font(interfaceScale.font(.caption))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+
+            HStack(spacing: interfaceScale.scaled(6)) {
+                RoundedRectangle(cornerRadius: interfaceScale.scaled(2))
+                    .fill(color)
+                    .frame(width: interfaceScale.scaled(7), height: interfaceScale.scaled(7))
+                Text(verbatim: metrics.countPlaceholder)
+                    .hidden()
+                    .overlay(alignment: .trailing) {
+                        Text(verbatim: metrics.countText)
+                    }
+                    .font(interfaceScale.font(.workspaceTitle, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+                Text("contribution.day.unit")
+                    .font(interfaceScale.font(.body))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .lineLimit(1)
+        .padding(interfaceScale.scaled(12))
+        .fixedSize()
+        // 纯色表面隔绝底下的标题和图案；Material 在侧栏里会透出内容，影响可读性。
+        .background(StarcatSurface.panel(colorScheme: colorScheme), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.12))
+        }
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// 将贡献提示挂到窗口内容与 toolbar 的共同父层，跨过 SwiftUI 侧栏内部的绘制层级。
+///
+/// 只承载提示，不创建窗口、不接管焦点；环境必须跨宿主传递，保留应用的语言、主题和字号。
+/// Swift 学习索引关键词：NSViewRepresentable / NSHostingView / 坐标转换。
+@MainActor
+private struct ContributionTooltipPresenter<Content: View>: NSViewRepresentable {
+    let point: CGPoint?
+    @ViewBuilder var content: () -> Content
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.onGeometryChange = { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.position(from: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: AnchorView, context: Context) {
+        context.coordinator.update(
+            from: nsView, point: point,
+            content: AnyView(content().environment(\.self, context.environment))
+        )
+    }
+
+    static func dismantleNSView(_ nsView: AnchorView, coordinator: Coordinator) {
+        nsView.onGeometryChange = nil
+        coordinator.detach()
+    }
+
+    /// 同一个宿主在相邻日期间复用；位置直接更新，不给高频鼠标移动叠加位移动画。
+    @MainActor
+    final class Coordinator {
+        private var hostingView: ContributionTooltipHostingView?
+        private var point: CGPoint?
+
+        func update(from anchor: AnchorView, point: CGPoint?, content: AnyView) {
+            self.point = point
+            guard point != nil else {
+                hostingView?.isHidden = true
+                return
+            }
+            if let hostingView {
+                hostingView.rootView = content
+            } else {
+                let view = ContributionTooltipHostingView(rootView: content)
+                view.sizingOptions = [.intrinsicContentSize]
+                view.safeAreaRegions = []
+                view.setAccessibilityHidden(true)
+                hostingView = view
+            }
+            position(from: anchor)
+        }
+
+        /// 从草坪左上坐标转换到真实窗口坐标，不能用局部 offset 猜测父容器的位置。
+        func position(from anchor: AnchorView) {
+            guard let hostingView else { return }
+            guard let point, let container = anchor.window?.contentView?.superview else {
+                hostingView.removeFromSuperview()
+                return
+            }
+            if hostingView.superview !== container || container.subviews.last !== hostingView {
+                container.addSubview(hostingView, positioned: .above, relativeTo: nil)
+            }
+            hostingView.frame = ContributionTooltipGeometry.frame(
+                at: anchor.convert(point, to: container),
+                size: hostingView.fittingSize,
+                within: container.bounds,
+                isFlipped: container.isFlipped
+            )
+            hostingView.isHidden = false
+        }
+
+        func detach() {
+            hostingView?.removeFromSuperview()
+            hostingView = nil
+            point = nil
+        }
+    }
+
+    /// 坐标与 SwiftUI 的左上原点保持一致；探针自身完全不参与鼠标命中。
+    @MainActor
+    final class AnchorView: NSView {
+        var onGeometryChange: (() -> Void)?
+
+        override var isFlipped: Bool { true }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onGeometryChange?()
+        }
+
+        override func layout() {
+            super.layout()
+            onGeometryChange?()
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+}
+
+/// 提示即使覆盖导航、原生图标或 WebView，也必须让原窗口继续接收鼠标事件。
+@MainActor
+private final class ContributionTooltipHostingView: NSHostingView<AnyView> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
 
@@ -387,7 +756,8 @@ struct SidebarContributionGraphSection: View {
                 localeID: locale.identifier
             )
             .padding(.horizontal, 14)
-            .padding(.top, 4)
+            // 语言条下方热区已留 6pt，这里只补 2pt，保持两区紧凑衔接。
+            .padding(.top, 2)
             // 2026-06-05 v3 follow-up：dong4j 反馈"管理/趋势/活动 再上移 1/3"。
             // 原 .bottom 8 + rootNavigationBar.top 10 = 18pt 间距，减 1/3 → 12pt。
             // 拆成 bottom 4 + top 8 = 12pt，对称收缩、视觉更聚拢。
@@ -418,7 +788,8 @@ private struct EquatableContributionGraphHost: View {
             payload: payload,
             isLoading: isLoading,
             lastFetchedAt: lastFetchedAt,
-            login: login
+            login: login,
+            allowsStyleCycling: true
         )
     }
 }

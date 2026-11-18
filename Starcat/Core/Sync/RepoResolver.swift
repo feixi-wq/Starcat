@@ -91,19 +91,50 @@ final class RepoResolver {
         // 理论不可达：链末尾 MinimalRepoSource 永远命中。
         // 兜底：构造一个最小 Repo 直接返回，避免 force unwrap 崩溃。
         AppLog.sync.error("RepoResolver: all sources failed unexpectedly (chain misconfigured?). Falling back to MinimalRepoSource directly.")
-        DiagnosticLogStore.record(
-            level: .critical,
-            visibility: .issue,
-            category: "repository-resolution",
-            operation: "repoResolver.exhausted",
-            message: "Repository resolver exhausted every source including its mandatory fallback",
-            context: ["repo": "\(owner)/\(name)"]
-        )
+        // 最小仓库回退仍能完成本次解析，异常链路仅保留系统日志。
         return RepoResolution(
             sourceName: "MinimalRepoSource (forced)",
             repo: Repo.makeMinimal(owner: owner, name: name, hint: hint),
             isLocalHit: false,
             isMinimal: true
         )
+    }
+}
+
+/// 精简推荐快照的公开资料补齐，复用 repos 缓存，不创建 Star 或知识库归属。
+@MainActor
+enum PublicRepoMetadataResolver {
+    /// 完整缓存一天内直接复用；离线时允许完整旧缓存，缺字段时必须重试公开详情。
+    /// isCurrent 在挂起后检查账号作用域，防止旧账号的请求落入新账号数据库。
+    static func resolve(
+        owner: String,
+        name: String,
+        repository: any RepoRepositoryProtocol,
+        apiClient: any GitHubAPIClientProtocol,
+        now: Date = Date(),
+        isCurrent: () -> Bool = { true }
+    ) async throws -> Repo {
+        let cached = try await repository.findByOwnerName(owner: owner, name: name)
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
+        let complete = cached.map {
+            $0.subscribersCount != nil && $0.createdAt != nil && $0.updatedAt != nil
+        } ?? false
+        if complete, let cached,
+           let date = ISO8601DateFormatter.githubDate(from: cached.cachedAt),
+           now.timeIntervalSince(date) < 86_400 {
+            return cached
+        }
+        do {
+            let dto = try await apiClient.repo(owner: owner, repo: name)
+            try Task.checkCancellation()
+            guard isCurrent() else { throw CancellationError() }
+            return try await repository.upsertExternalRepoForLibrary(repoDTO: dto, syncedAt: now)
+        } catch {
+            try Task.checkCancellation()
+            guard isCurrent() else { throw CancellationError() }
+            if complete, let cached { return cached }
+            throw error
+        }
     }
 }

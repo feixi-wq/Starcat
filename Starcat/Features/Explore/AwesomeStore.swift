@@ -16,9 +16,15 @@ import Observation
 final class AwesomeStore {
     /// 与主 Repo List 保持一致，首屏只读取 40 条；距离页尾 10 行时预取下一页。
     static let repositoryPageSize = 40
+    /// 页面销毁不等于数据失效；派生快照跟随账户会话，重入时按查询身份复用。
+    let listModel = AwesomeListModel()
 
     private(set) var sources: [AwesomeSource] = []
-    private(set) var repositories: [AwesomeRepositoryItem] = []
+    private(set) var repositories: [AwesomeRepositoryItem] = [] {
+        didSet { repositoryRevision &+= 1 }
+    }
+    /// 任务身份只读取修订号，不能在 SwiftUI body 内为几千个仓库构造 Skills 候选。
+    private(set) var repositoryRevision: UInt64 = 0
     private(set) var resources: [AwesomeResourceItem] = []
     private(set) var repositorySections: [String] = []
     private(set) var repositoryTotalCount = 0
@@ -43,7 +49,12 @@ final class AwesomeStore {
     private let repository: any AwesomeRepositoryProtocol
     private let customSourceService: AwesomeCustomSourceService
     private var loadTask: Task<Void, Never>?
+    private var cachedLoadTask: Task<Void, Never>?
+    private var hasLoadedCachedState = false
+    private var accountGeneration: UInt64 = 0
     private var selectionLoadTask: Task<Void, Never>?
+    private var completeLoadTask: Task<Void, Never>?
+    private var repositoryLoadGeneration: UInt64 = 0
     private var customSourceParseTasks: [String: Task<Void, Never>] = [:]
 
     init(
@@ -84,8 +95,9 @@ final class AwesomeStore {
     /// 已经写入新来源后，又被较早发起的缓存读取覆盖。
     func restoreCachedSidebarSources() async {
         guard sources.isEmpty else { return }
+        let generation = accountGeneration
         let cachedSources = await repository.sources()
-        guard sources.isEmpty else { return }
+        guard !Task.isCancelled, accountGeneration == generation, sources.isEmpty else { return }
         applySourceSnapshot(cachedSources)
     }
 
@@ -94,14 +106,23 @@ final class AwesomeStore {
     /// SwiftUI 的 `.task`、账户数据库切换和导航恢复都会调用这个入口；这些生命周期
     /// 事件不等同于用户点击 Awesome 分类，因此不能擅自打开来源选择 Sheet。
     func loadAwesome() async {
-        loadTask?.cancel()
+        if let loadTask {
+            await loadTask.value
+            return
+        }
+        let generation = accountGeneration
         let task = Task { [weak self] in
             guard let self else { return }
-            self.isLoading = self.sources.isEmpty
+            self.isLoading = !self.hasLoadedCachedState
+            defer {
+                if self.accountGeneration == generation {
+                    self.isLoading = false
+                    self.loadTask = nil
+                }
+            }
             await self.loadCachedState()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.accountGeneration == generation else { return }
             await self.refreshCatalogAndEntries()
-            self.isLoading = false
         }
         loadTask = task
         await task.value
@@ -110,9 +131,11 @@ final class AwesomeStore {
     /// 响应用户明确点击 Awesome 分类；首次配置尚未完成时自动打开来源选择 Sheet。
     ///
     /// 首次状态判断刻意放在可取消的后台刷新任务之外。分类点击与 `AwesomeView.task`
-    /// 可能同时发生，后者可以取消重复刷新，但不能吞掉已经发生的用户展示意图。
+    /// 可能同时发生，两者共享恢复任务；Sheet 不等待目录网络请求完成才展示。
     func enterAwesomeFromUserSelection() async {
+        let generation = accountGeneration
         await loadCachedState()
+        guard !Task.isCancelled, accountGeneration == generation else { return }
         if !hasCompletedSourceSetup {
             showSourceManager()
         }
@@ -120,15 +143,21 @@ final class AwesomeStore {
     }
 
     func presentSourceManager() async {
+        let generation = accountGeneration
         await loadCachedState()
+        guard !Task.isCancelled, accountGeneration == generation else { return }
         showSourceManager()
+        let previousSources = sources
         do {
-            let selectionInvalidated = applySourceSnapshot(try await repository.refreshCatalog())
-            if selectionInvalidated {
+            let snapshot = try await repository.refreshCatalog()
+            guard !Task.isCancelled, accountGeneration == generation else { return }
+            let selectionInvalidated = applySourceSnapshot(snapshot)
+            if selectionInvalidated || previousSources != sources {
                 await reloadRepositories()
             }
             errorMessage = nil
         } catch {
+            guard !Task.isCancelled, accountGeneration == generation else { return }
             // 已有缓存卡片继续展示；错误由 Sheet 作为非阻断提示呈现。
             errorMessage = error.localizedDescription
         }
@@ -186,6 +215,7 @@ final class AwesomeStore {
     /// 选中态必须在 List binding 的 setter 中同步落地，否则 SwiftUI 下一次读取 binding 时
     /// 会看到旧 sourceID 并把高亮弹回旧行。数据读取独立异步执行，并取消上一轮选择任务。
     func selectSource(_ sourceID: String?) {
+        guard selectedSourceID != sourceID else { return }
         selectionLoadTask?.cancel()
         selectedSourceID = sourceID
         selectedRepositoryID = nil
@@ -210,19 +240,33 @@ final class AwesomeStore {
     }
 
     /// 搜索、非原始排序和需要全局事实的筛选必须在完整结果集上执行，不能把当前 40 条
-    /// 当成全部数据。该入口只在用户真的启用这些能力时补齐剩余本地页，不发远端请求。
+    /// 当成全部数据。完整读取只查一次本地库、只发布一次，不逐页重复 COUNT / 解码 / 刷新 UI。
     func loadAllRepositoryPages() async {
-        // 来源切换先完成新来源首屏，再取后续页；否则会拿旧来源行数作新来源 offset。
         await selectionLoadTask?.value
-        while hasMoreRepositories, !Task.isCancelled {
-            // 用户开始搜索时，列表末尾可能恰好正在预取。等待该页回写后再继续，
-            // 否则一次性的搜索 task 会提前返回，并把已加载前缀误当成完整结果。
-            if isLoadingMoreRepositories {
-                try? await Task.sleep(for: .milliseconds(20))
-                continue
-            }
-            await loadRepositoryPage(append: true)
+        guard !Task.isCancelled else { return }
+        if let completeLoadTask {
+            await completeLoadTask.value
+            return
         }
+        guard hasMoreRepositories else { return }
+        // 使正在等待数据库的预取页失效，避免完整集发布后又追加旧页。
+        repositoryLoadGeneration &+= 1
+        let generation = repositoryLoadGeneration
+        let sourceID = selectedSourceID
+        isLoadingMoreRepositories = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let items = await self.repository.repositories(sourceID: sourceID)
+            guard !Task.isCancelled, self.repositoryLoadGeneration == generation,
+                  self.selectedSourceID == sourceID else { return }
+            self.repositories = items
+            self.repositoryTotalCount = items.count
+            self.hasMoreRepositories = false
+            self.isLoadingMoreRepositories = false
+            self.completeLoadTask = nil
+        }
+        completeLoadTask = task
+        await task.value
     }
 
     func refresh() async {
@@ -240,23 +284,29 @@ final class AwesomeStore {
     /// 不连带刷新所有已订阅 README 条目。
     func refreshSourceCatalog() async {
         guard !isCatalogRefreshing else { return }
+        let generation = accountGeneration
         isCatalogRefreshing = true
-        defer { isCatalogRefreshing = false }
+        defer {
+            if accountGeneration == generation { isCatalogRefreshing = false }
+        }
 
+        let previousSources = sources
         let urlsBeforeRefresh = AwesomeSourceOpenGraph.imageURLs(for: sources)
         async let ogWarmup: Void = AwesomeSourceOpenGraph.prefetch(urls: urlsBeforeRefresh)
         do {
-            let selectionInvalidated = applySourceSnapshot(
-                try await repository.refreshCatalog(policy: .force)
-            )
-            if selectionInvalidated {
+            let snapshot = try await repository.refreshCatalog(policy: .force)
+            guard !Task.isCancelled, accountGeneration == generation else { return }
+            let selectionInvalidated = applySourceSnapshot(snapshot)
+            if selectionInvalidated || previousSources != sources {
                 await reloadRepositories()
             }
             errorMessage = nil
         } catch {
+            guard !Task.isCancelled, accountGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
         await ogWarmup
+        guard !Task.isCancelled, accountGeneration == generation else { return }
         await AwesomeSourceOpenGraph.prefetch(urls: AwesomeSourceOpenGraph.imageURLs(for: sources))
         ogPrefetchGeneration += 1
     }
@@ -264,10 +314,18 @@ final class AwesomeStore {
     /// 当前账户数据库是 Awesome 订阅和自定义来源的隔离边界。切库时必须先清掉旧快照，
     /// 不能等下一次进入页面再覆盖，否则新账户可能短暂看到上一账户的来源名称。
     func resetForAccountChange() {
+        accountGeneration &+= 1
         loadTask?.cancel()
         loadTask = nil
+        cachedLoadTask?.cancel()
+        cachedLoadTask = nil
+        hasLoadedCachedState = false
+        listModel.reset()
         selectionLoadTask?.cancel()
         selectionLoadTask = nil
+        completeLoadTask?.cancel()
+        completeLoadTask = nil
+        repositoryLoadGeneration &+= 1
         customSourceParseTasks.values.forEach { $0.cancel() }
         customSourceParseTasks = [:]
         sources = []
@@ -292,17 +350,37 @@ final class AwesomeStore {
     }
 
     private func loadCachedState() async {
-        async let cachedSources = repository.sources()
-        async let completed = repository.hasCompletedSourceSetup()
-        async let cachedParseStates = repository.customSourceParseStates()
-        applySourceSnapshot(await cachedSources)
-        hasCompletedSourceSetup = await completed
-        let parseStates = await cachedParseStates
-        customSourceParseStates = Dictionary(
-            uniqueKeysWithValues: parseStates.map { ($0.sourceID, $0) }
-        )
-        await reloadRepositories()
-        resumeActiveCustomSourceParses()
+        guard !hasLoadedCachedState else { return }
+        if let cachedLoadTask {
+            await cachedLoadTask.value
+            return
+        }
+        let generation = accountGeneration
+        // Sidebar 点击和 View.task 会同时进入；本地恢复只做一次，之后只响应真实数据失效。
+        let task = Task { [weak self] in
+            guard let self else { return }
+            async let cachedSources = self.repository.sources()
+            async let completed = self.repository.hasCompletedSourceSetup()
+            async let cachedParseStates = self.repository.customSourceParseStates()
+            let (snapshot, setupCompleted, parseStates) = await (cachedSources, completed, cachedParseStates)
+            guard !Task.isCancelled, self.accountGeneration == generation else { return }
+            self.applySourceSnapshot(snapshot)
+            self.hasCompletedSourceSetup = setupCompleted
+            self.customSourceParseStates = Dictionary(
+                uniqueKeysWithValues: parseStates.map { ($0.sourceID, $0) }
+            )
+            if let selectionTask = self.selectionLoadTask {
+                await selectionTask.value
+            } else {
+                await self.reloadRepositories()
+            }
+            guard !Task.isCancelled, self.accountGeneration == generation else { return }
+            self.hasLoadedCachedState = true
+            self.cachedLoadTask = nil
+            self.resumeActiveCustomSourceParses()
+        }
+        cachedLoadTask = task
+        await task.value
     }
 
     /// 来源快照更新时同步校正导航选择。下架、取消订阅或删除来源后，旧 sourceID
@@ -330,19 +408,32 @@ final class AwesomeStore {
     }
 
     private func refreshCatalogAndEntries(policy: AwesomeRefreshPolicy = .ifStale) async {
+        let generation = accountGeneration
+        let previousSources = sources
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer {
+            if accountGeneration == generation { isRefreshing = false }
+        }
         do {
-            applySourceSnapshot(try await repository.refreshCatalog(policy: policy))
+            let snapshot = try await repository.refreshCatalog(policy: policy)
+            guard !Task.isCancelled, accountGeneration == generation else { return }
+            applySourceSnapshot(snapshot)
             errorMessage = nil
         } catch {
+            guard !Task.isCancelled, accountGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
-        guard !Task.isCancelled else { return }
-        sourceRefreshErrors = await repository.refreshEnabledEntries(policy: policy)
-        guard !Task.isCancelled else { return }
-        applySourceSnapshot(await repository.sources())
-        await reloadRepositories()
+        guard !Task.isCancelled, accountGeneration == generation else { return }
+        let errors = await repository.refreshEnabledEntries(policy: policy)
+        let snapshot = await repository.sources()
+        guard !Task.isCancelled, accountGeneration == generation else { return }
+        sourceRefreshErrors = errors
+        let selectionInvalidated = applySourceSnapshot(snapshot)
+        // .ifStale 的 TTL / 304 由 Repository 判断；领域快照没变就保留完整集与展示分页。
+        // 用户强制刷新仍重读，以覆盖内容变化但目录计数相同的场景。
+        if policy == .force || selectionInvalidated || previousSources != sources {
+            await reloadRepositories()
+        }
     }
 
     private func reloadAfterSubscriptionChange() async {
@@ -353,17 +444,21 @@ final class AwesomeStore {
     }
 
     private func reloadRepositories() async {
+        completeLoadTask?.cancel()
+        completeLoadTask = nil
+        repositoryLoadGeneration &+= 1
         isLoadingMoreRepositories = false
         await loadRepositoryPage(append: false)
     }
 
     private func loadRepositoryPage(append: Bool) async {
-        if append, isLoadingMoreRepositories { return }
+        if append, isLoadingMoreRepositories || completeLoadTask != nil { return }
+        let generation = repositoryLoadGeneration
         let requestedSourceID = selectedSourceID
         let offset = append ? repositories.count : 0
         if append { isLoadingMoreRepositories = true }
         defer {
-            if append { isLoadingMoreRepositories = false }
+            if append, repositoryLoadGeneration == generation { isLoadingMoreRepositories = false }
         }
 
         let page: AwesomeRepositoryPage
@@ -388,7 +483,8 @@ final class AwesomeStore {
             (page, resourceItems, sections) = await (visiblePage, visibleResources, visibleSections)
         }
         // GRDB/测试替身不保证响应取消；旧选择即使晚返回，也不能覆盖当前来源。
-        guard !Task.isCancelled, selectedSourceID == requestedSourceID else { return }
+        guard !Task.isCancelled, repositoryLoadGeneration == generation,
+              selectedSourceID == requestedSourceID else { return }
         if append {
             let existingIDs = Set(repositories.map(\.id))
             repositories.append(contentsOf: page.repositories.filter { !existingIDs.contains($0.id) })

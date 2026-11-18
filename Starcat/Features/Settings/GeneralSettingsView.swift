@@ -172,28 +172,37 @@ struct GeneralSettingsView: View {
         @Bindable var settings = settings
 
         return Group {
+            // 详情行为的简短说明统一放在标题下方，完整操作细节仍通过 tooltip 提供。
             preferenceToggle(
                 "settings.general.openFirstDetailOnCategoryChange.title",
                 description: "settings.general.openFirstDetailOnCategoryChange.help",
-                showsDescription: false,
                 isOn: $settings.openFirstDetailOnCategoryChange
             )
             Divider()
 
-            preferenceToggle(
-                "settings.general.openRepositoryMarkdownInApp.title",
-                description: "settings.general.openRepositoryMarkdownInApp.help",
-                showsDescription: false,
-                isOn: $settings.openRepositoryMarkdownInApp
-            )
+            centeredPreferenceRow(
+                "settings.general.markdownLinks.title",
+                description: "settings.general.markdownLinks.description"
+            ) {
+                Picker(selection: $settings.repositoryMarkdownOpenMode) {
+                    ForEach(RepositoryMarkdownOpenMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                } label: {
+                    Text("settings.general.markdownLinks.title")
+                }
+                .pickerStyle(.menu)
+                // 可见说明只讲作用；⌘ 点击等操作细节仍留在 tooltip。
+                .help(Text("settings.general.markdownLinks.help"))
+            }
             Divider()
 
             preferenceToggle(
                 "settings.activity.issueEvents.title",
-                description: "settings.activity.issueEvents.help",
-                showsDescription: false,
+                description: "settings.activity.issueEvents.description",
                 isOn: $settings.githubIssueEventTimelineEnabled
             )
+            .help(Text("settings.activity.issueEvents.help"))
         }
     }
 
@@ -222,11 +231,79 @@ struct GeneralSettingsView: View {
         }
     }
 
+    /// 与主窗口等待相同的账号/数据库边界，避免切换账号时编辑到上一账号的偏好
+    private var dailyRecommendationAccountID: Int64? {
+        guard let id = dependencies.authSession.state.user?.id,
+              dependencies.database.currentUserId == id else { return nil }
+        return id
+    }
+
+    /// 设置与抽卡页观察同一个 Store，离线或未打开抽卡页时也能独立读取并保存偏好
+    private var dailyRecommendationRows: some View {
+        let store = dependencies.dailyRecommendationStore
+        let accountID = dailyRecommendationAccountID
+        let revision = dependencies.databaseScopeRevision
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Toggle("recommendations.daily.autoShow", isOn: Binding(
+                get: { store.state.showsOnLaunch },
+                set: { enabled in
+                    Task {
+                        guard accountID == dailyRecommendationAccountID,
+                              revision == dependencies.databaseScopeRevision,
+                              store.accountID == accountID else { return }
+                        await store.setShowsOnLaunch(enabled)
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+            .disabled(accountID == nil || store.accountID != accountID || !store.hasLoadedState)
+
+            if let error = store.errorKey,
+               !store.hasLoadedState || error == "recommendations.daily.saveFailed" {
+                HStack(spacing: 8) {
+                    Text(LocalizedStringKey(error))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("recommendations.daily.retry") {
+                        Task {
+                            guard let accountID, accountID == dailyRecommendationAccountID,
+                                  revision == dependencies.databaseScopeRevision else { return }
+                            // 保存失败保留当前选择；只有尚未成功读盘时才重新读取账号偏好。
+                            if store.hasLoadedState, store.accountID == accountID {
+                                await store.retrySaving()
+                            } else {
+                                await store.loadPreferences(accountID: accountID, scopeRevision: revision)
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(accountID == nil || store.isLoading)
+                }
+            }
+        }
+        .task(id: "\(accountID ?? 0)|\(revision)") {
+            guard let accountID, !TestEnvironment.isRunning else { return }
+            await store.loadPreferences(accountID: accountID, scopeRevision: revision)
+        }
+    }
+
     /// 低频偏好只折叠呈现，展开后仍是原生表单行，避免多层卡片与配置副本。
     private var advancedSection: some View {
         Section {
             DisclosureGroup(isExpanded: $isAdvancedExpanded) {
                 // 展开内容位于自定义折叠容器内，需显式补齐标题及设置项之间的分割线。
+                Divider()
+
+                // 仅迁移入口；与推荐窗口共用原 Store 的账号偏好和保存重试。
+                Text("recommendations.daily.navigationTitle.short")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                dailyRecommendationRows
+
                 Divider()
 
                 Text("settings.general.detailBehavior")
@@ -334,7 +411,10 @@ struct GeneralSettingsView: View {
                 Text(description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    // 各语言的简短说明保持单行，空间不足时通过 tooltip 查看全文。
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(Text(description))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -423,7 +503,10 @@ struct GeneralSettingsView: View {
     /// 左侧说明重置对象，右侧统一图标入口；这些动作仍由既有确认或引导流程完成。
     private var preferenceResetRows: some View {
         Group {
-            LabeledContent {
+            centeredPreferenceRow(
+                "settings.listPreferences.reset.title",
+                description: "settings.listPreferences.reset.description"
+            ) {
                 ResetIconButton(
                     help: Text("settings.listPreferences.reset.title"),
                     showsSuccessFeedback: false,
@@ -433,25 +516,20 @@ struct GeneralSettingsView: View {
                 .help(Text(LocalizedStringKey(dependencies.authSession.state.isAuthenticated
                                              ? "settings.listPreferences.reset.title"
                                              : "settings.listPreferences.reset.disabled")))
-            } label: {
-                Text("settings.listPreferences.reset.title")
-                    .lineLimit(1)
-                    .help(Text("settings.listPreferences.reset.title"))
             }
 
             Divider()
 
-            LabeledContent {
+            centeredPreferenceRow(
+                "settings.general.resetOnboarding.label",
+                description: "settings.general.resetOnboarding.description"
+            ) {
                 ResetIconButton(
                     help: Text("settings.general.resetOnboarding.label"),
                     showsSuccessFeedback: false,
                     action: replayOnboarding
                 )
                 .disabled(!FirstRunOnboardingPreferences.canReplayManually)
-            } label: {
-                Text("settings.general.resetOnboarding.label")
-                    .lineLimit(1)
-                    .help(Text("settings.general.resetOnboarding.label"))
             }
         }
     }

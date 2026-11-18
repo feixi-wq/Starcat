@@ -4,17 +4,25 @@
 //
 //  活动页「通知」中栏：Mail 密度时间线（HH:mm + 轴线 + 事件句 + 主体类型 chip）。
 //  「全部」把 GitHub 通知和当前用户 Star / Unstar / Fork 账本按时间混排，SQL UNION 游标翻页。
-//  类型筛选用下拉（默认 All），形态对齐 Manage 排序菜单；账本行点开走仓库详情，不是 Issue 会话。
+//  筛选复用全局浮层，以胶囊多选和紧凑单选组合查询；账本行点开走仓库详情。
 //
 
 import AppKit
 import SwiftUI
 
 struct GitHubNotificationInboxView: View {
+    private enum ContentPhase: Equatable {
+        case readingLocalPage
+        case skeleton
+        case ready
+    }
+
+    @Namespace private var selectionSpace
 
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AuthSession.self) private var authSession
     @Environment(\.locale) private var locale
+    @Environment(\.starcatReduceMotion) private var reduceMotion
 
     @Binding var selectedItem: ActivityItem?
 
@@ -22,8 +30,12 @@ struct GitHubNotificationInboxView: View {
     @State private var cursor: GitHubInboxTimelineCursor?
     @State private var hasMore = false
     @State private var isLoadingPage = false
+    /// 首次读取期间先保留中栏底色，等现有首页查询确认缓存是否可展示，避免命中时闪出骨架。
+    @State private var hasReadLocalFirstPage = false
+    /// 首轮同步后的首页读取完成前，空的本地首页不足以判定权限空态，组织 Issue 仍可能补入数据。
+    @State private var hasFinishedInitialLoad = false
     @State private var pagingGeneration = 0
-    @State private var segment: GitHubNotificationSegment = .all
+    @State private var filter: GitHubNotificationFilter = .all
     @State private var lastFetchedAt: Date?
     @State private var selectedThreadId: String?
     @State private var isShowingHistoryResyncConfirmation = false
@@ -35,19 +47,32 @@ struct GitHubNotificationInboxView: View {
         dependencies.githubNotificationInboxService
     }
 
+    private var contentPhase: ContentPhase {
+        guard hasReadLocalFirstPage else { return .readingLocalPage }
+        if rows.isEmpty && (!hasFinishedInitialLoad || isLoadingPage || inbox.isSyncing) {
+            return .skeleton
+        }
+        return .ready
+    }
+
     /// 首次页面仍在加载时提交搜索，待行数或游标状态变化后需要自动重试补页。
     private var quickSearchLoadIdentity: String {
         "\(quickSearchQuery)|\(rows.count)|\(hasMore)"
     }
 
     var body: some View {
+        let phase = contentPhase
         VStack(spacing: 0) {
             toolbar
             Divider()
-            content
+            content(for: phase)
+                .animation(
+                    phase == .ready ? .easeOut(duration: reduceMotion ? 0.12 : 0.18) : nil,
+                    value: phase
+                )
         }
         .task {
-            inbox.listSegment = segment
+            inbox.listFilter = filter
             await inbox.clearDemoThreads()
             if let user = authSession.state.user {
                 await inbox.backfillUserRepoActivity(userID: user.id, login: user.login)
@@ -56,6 +81,7 @@ struct GitHubNotificationInboxView: View {
             consumePendingOpenIfNeeded()
             await inbox.sync()
             await reloadFirstPage()
+            hasFinishedInitialLoad = true
             consumePendingOpenIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .githubNotificationInboxDidChange)) { _ in
@@ -72,6 +98,12 @@ struct GitHubNotificationInboxView: View {
             // 选中项不在前 40 条时 `reloadFirstPage` 会把 selectedItem 清成 nil，右栏变空白。
             guard let repoId = note.userInfo?["repoId"] as? Int64,
                   let raw = note.userInfo?["libraryState"] as? String else { return }
+            if filter.libraryState != .all {
+                // 入库条件激活后，变化会改变成员资格；保留已加载的页容量，避免选中项无故丢失。
+                let loadedLimit = max(rows.count, GitHubNotificationMapper.timelinePageSize)
+                Task { await reloadFirstPage(limit: loadedLimit) }
+                return
+            }
             rows = GitHubNotificationTimelineLibraryState.apply(
                 rows: rows,
                 repoId: repoId,
@@ -117,7 +149,7 @@ struct GitHubNotificationInboxView: View {
         }
     }
 
-    /// 只保留类型下拉 + 同步行，和星标中栏 `manageFilterBar` 同高。
+    /// 复用全局筛选入口 + 同步行，和星标中栏 `manageFilterBar` 同高。
     /// 总数 / 未读走系统 `navigationSubtitle`（面包屑下一行），不要再叠 `通知 42` 标题。
     @ViewBuilder
     private var toolbar: some View {
@@ -133,10 +165,16 @@ struct GitHubNotificationInboxView: View {
             },
             onClear: { quickSearchQuery = "" }
         ) {
-            GitHubNotificationSegmentMenu(selection: $segment, locale: locale)
-                .onChange(of: segment) { _, newValue in
+            GitHubNotificationFilterMenu(selection: $filter, locale: locale)
+                .onChange(of: filter) { _, newValue in
                     resetQuickSearch()
-                    inbox.listSegment = newValue
+                    inbox.listFilter = newValue
+                    // onChange 到 Task 开始之间也可能返回旧请求，立即使其过期。
+                    pagingGeneration += 1
+                    rows = []
+                    cursor = nil
+                    hasMore = false
+                    isLoadingPage = true
                     Task { await reloadFirstPage() }
                 }
 
@@ -214,20 +252,32 @@ struct GitHubNotificationInboxView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(for phase: ContentPhase) -> some View {
         // 同一次列表更新只计算一次搜索快照。懒加载行不能为分页数量再次扫描整张时间线。
         let visibleRows = visibleRows
-        if inbox.missingScope && rows.isEmpty {
-            missingScopeEmpty
-        } else if rows.isEmpty && inbox.isSyncing {
-            ProgressView()
+        if phase == .readingLocalPage {
+            Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        } else if phase == .skeleton {
+            ListLoadingSkeleton(rowHeight: 76)
+                .padding(12)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .transition(.opacity)
         } else if rows.isEmpty {
-            emptyState
+            if inbox.missingScope {
+                missingScopeEmpty
+            } else if filter.isActive {
+                filterEmptyState
+            } else {
+                emptyState
+            }
         } else if visibleRows.isEmpty {
             searchEmptyState
         } else {
             timeline(visibleRows)
+                .transition(.opacity)
         }
     }
 
@@ -279,6 +329,8 @@ struct GitHubNotificationInboxView: View {
                         GitHubNotificationTimelineRow(
                             display: timelineDisplay(for: row),
                             isSelected: selectedThreadId == row.id,
+                            rowIndex: rowIndex,
+                            selectionNamespace: selectionSpace,
                             isFirstInTimeline: isFirst,
                             isLastInTimeline: isLast,
                             onSelect: {
@@ -291,7 +343,7 @@ struct GitHubNotificationInboxView: View {
                             loadedItemCount: visibleRowCount,
                             hasMore: hasMore,
                             isLoading: isLoadingPage,
-                            identity: "notification-\(String(describing: segment))-\(pagingGeneration)"
+                            identity: "notification-\(filter.identity)-\(pagingGeneration)"
                         ) {
                             await loadNextPageIfNeeded()
                         }
@@ -347,6 +399,15 @@ struct GitHubNotificationInboxView: View {
         }
     }
 
+    private var filterEmptyState: some View {
+        ContentUnavailableView {
+            Label("activity.notification.filter.empty", systemImage: "line.3.horizontal.decrease.circle")
+        } actions: {
+            Button("list.filter.reset") { filter = .all }
+                .focusEffectDisabled()
+        }
+    }
+
     private var missingScopeEmpty: some View {
         VStack(spacing: 12) {
             Image(systemName: "lock.slash")
@@ -368,27 +429,29 @@ struct GitHubNotificationInboxView: View {
         .padding()
     }
 
-    private func reloadFirstPage() async {
+    private func reloadFirstPage(limit: Int = GitHubNotificationMapper.timelinePageSize) async {
         // 首页重载代表列表上下文已变化。递增 generation，让仍在等待的旧分页结果自动失效，
         // 避免切换筛选或同步刷新时把上一份列表的下一页追加到新列表。
         pagingGeneration += 1
         let requestedGeneration = pagingGeneration
+        let requestedFilter = filter
         isLoadingPage = true
         defer {
             if requestedGeneration == pagingGeneration {
                 isLoadingPage = false
             }
         }
-        let page = await inbox.fetchTimelinePage(cursor: nil)
+        let page = await inbox.fetchTimelinePage(cursor: nil, filter: requestedFilter, limit: limit)
         let fetchedAt = await inbox.lastFetchedAt()
-        guard requestedGeneration == pagingGeneration else { return }
+        guard requestedGeneration == pagingGeneration, requestedFilter == filter else { return }
         rows = page.rows
         hasMore = page.hasMore
         cursor = page.rows.last?.cursor
         lastFetchedAt = fetchedAt
+        hasReadLocalFirstPage = true
         Task { await inbox.prefetchMissingIssueStates(from: page.rows) }
         // 状态筛选必须先出本地结果。补缺放到后台，且同一会话只启动一轮。
-        if inbox.listSegment.issueStateFilter != nil {
+        if requestedFilter.issueState.issueStateFilter != nil {
             Task { await inbox.startMissingIssueStateBackfillIfNeeded() }
         }
         if inbox.pendingOpenThreadId != nil {
@@ -408,19 +471,19 @@ struct GitHubNotificationInboxView: View {
     private func loadNextPageIfNeeded() async {
         guard hasMore, !isLoadingPage, let cursor else { return }
         let requestedGeneration = pagingGeneration
-        let requestedSegment = segment
+        let requestedFilter = filter
         isLoadingPage = true
         defer {
             if requestedGeneration == pagingGeneration {
                 isLoadingPage = false
             }
         }
-        let page = await inbox.fetchTimelinePage(cursor: cursor)
+        let page = await inbox.fetchTimelinePage(cursor: cursor, filter: requestedFilter)
         guard GitHubNotificationTimelinePaging.isCurrentPageRequest(
             requestedGeneration: requestedGeneration,
             currentGeneration: pagingGeneration,
-            requestedSegment: requestedSegment,
-            currentSegment: segment,
+            requestedFilter: requestedFilter,
+            currentFilter: filter,
             requestedCursor: cursor,
             currentCursor: self.cursor
         ) else { return }
@@ -682,17 +745,17 @@ enum GitHubNotificationTimelinePaging {
     }
 
     /// `await` 返回时再次核对请求上下文。只靠 `isLoading` 不能阻止筛选切换或首页重载期间
-    /// 已经发出的旧请求回写，因此 generation、segment 与 cursor 必须同时保持一致。
+    /// 已经发出的旧请求回写，因此 generation、完整筛选与 cursor 必须同时保持一致。
     static func isCurrentPageRequest(
         requestedGeneration: Int,
         currentGeneration: Int,
-        requestedSegment: GitHubNotificationSegment,
-        currentSegment: GitHubNotificationSegment,
+        requestedFilter: GitHubNotificationFilter,
+        currentFilter: GitHubNotificationFilter,
         requestedCursor: GitHubInboxTimelineCursor,
         currentCursor: GitHubInboxTimelineCursor?
     ) -> Bool {
         requestedGeneration == currentGeneration
-            && requestedSegment == currentSegment
+            && requestedFilter == currentFilter
             && requestedCursor == currentCursor
     }
 }
@@ -740,46 +803,156 @@ private enum GitHubNotificationTimelineMetrics {
     }
 }
 
-/// 通知类型下拉。视觉对齐 `UnifiedSortMenu`，图标用筛选而不是排序箭头。
-///
-/// 不用分段控件：状态 / 主体类型 / Mention·Review / 账本会把同步行挤掉。
-/// `Picker` + `.inline` 让当前项带勾。
-private struct GitHubNotificationSegmentMenu: View {
-    @Binding var selection: GitHubNotificationSegment
+/// 与全局筛选共享浮层：事件和原因使用胶囊多选，互斥状态使用单选分段。
+private struct GitHubNotificationFilterMenu: View {
+    @Binding var selection: GitHubNotificationFilter
     let locale: Locale
 
     var body: some View {
-        Menu {
-            Picker(
-                GitHubNotificationMapper.copy(locale, zh: "筛选", en: "Filter"),
-                selection: $selection
-            ) {
-                ForEach(GitHubNotificationSegment.allCases) { item in
-                    if item.showsDividerBefore {
-                        Divider()
-                    }
-                    Label {
-                        Text(verbatim: item.displayTitle(locale: locale))
-                    } icon: {
-                        BusinessIcon(source: item.iconSource, pointSize: 15, weight: .medium)
-                    }
-                    .tag(item)
+        UnifiedFilterMenu(
+            isAnyFilterActive: selection.isActive,
+            // 默认筛选没有重置操作，不为隐藏的重置按钮预留底部空白。
+            onReset: selection.isActive ? { selection = .all } : nil
+        ) {
+            chipSection(
+                "activity.notification.filter.events",
+                icon: "tray",
+                options: GitHubNotificationFilter.eventOptions,
+                selected: $selection.eventTypes
+            )
+
+            Divider()
+
+            tabSection(
+                "activity.notification.filter.read",
+                icon: "envelope",
+                options: GitHubNotificationFilter.readOptions,
+                binding: $selection.readState
+            )
+
+            Divider()
+
+            tabSection(
+                "activity.notification.filter.state",
+                icon: "checkmark.circle",
+                options: GitHubNotificationFilter.stateOptions,
+                binding: $selection.issueState
+            )
+
+            Divider()
+
+            chipSection(
+                "activity.notification.filter.reason",
+                icon: "at",
+                options: GitHubNotificationFilter.reasonOptions,
+                selected: $selection.reasons
+            )
+
+            Divider()
+
+            tabSection(
+                "list.filter.library",
+                icon: "heart.text.square",
+                options: GitHubNotificationFilter.libraryOptions,
+                binding: $selection.libraryState
+            )
+        }
+    }
+
+    private func sectionTitle(_ key: LocalizedStringKey, icon: String) -> some View {
+        Label(key, systemImage: icon)
+            .foregroundStyle(.secondary)
+    }
+
+    /// 与全局语言筛选复用同一胶囊；空集合由“全部”的实色选中态明确表达。
+    private func chipSection(
+        _ title: LocalizedStringKey,
+        icon: String,
+        options: [GitHubNotificationSegment],
+        selected: Binding<Set<GitHubNotificationSegment>>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionTitle(title, icon: icon)
+                .help(Text("activity.notification.filter.scope"))
+            TagChipFlowLayout(spacing: 6, constrainsItemWidth: true) {
+                RepoLanguageFilterChip(
+                    title: String.l10n("general.all"),
+                    isSelected: selected.wrappedValue.isEmpty,
+                    action: { selected.wrappedValue = [] }
+                ) {
+                    Image(systemName: "tray")
+                }
+                ForEach(options) { option in
+                    chip(option, selected: selected)
                 }
             }
-            .pickerStyle(.inline)
-        } label: {
-            // 与共享排序菜单一致，只保留 Menu 自带的系统下拉指示器。
-            HStack(spacing: 8) {
-                Image(systemName: "line.3.horizontal.decrease.circle")
-                    .foregroundStyle(.secondary)
-                Text(verbatim: selection.displayTitle(locale: locale))
-                    .lineLimit(1)
-            }
-            .accessibilityLabel(GitHubNotificationMapper.copy(locale, zh: "筛选", en: "Filter"))
-            .accessibilityValue(selection.displayTitle(locale: locale))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(3)
         }
-        .fixedSize()
-        .help(GitHubNotificationMapper.copy(locale, zh: "按类型或状态筛选", en: "Filter by type or status"))
+    }
+
+    /// 标题独立成行、分段占满下一行，与全局筛选保持相同密度和长译文回退。
+    private func tabSection(
+        _ title: LocalizedStringKey,
+        icon: String,
+        options: [GitHubNotificationSegment],
+        binding: Binding<GitHubNotificationSegment>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionTitle(title, icon: icon)
+                .help(Text("activity.notification.filter.scope"))
+            RepoFilterTabs(
+                label: title,
+                options: options,
+                selection: binding,
+                title: { LocalizedStringKey($0.displayTitle(locale: locale)) },
+                symbol: { $0.systemSymbol }
+            )
+        }
+    }
+
+    private func chip(_ option: GitHubNotificationSegment, selected: Binding<Set<GitHubNotificationSegment>>) -> some View {
+        let color = chipColor(for: option)
+        let isSelected = selected.wrappedValue.contains(option)
+        return RepoLanguageFilterChip(
+            title: option.displayTitle(locale: locale),
+            isSelected: isSelected,
+            action: {
+                if selected.wrappedValue.contains(option) {
+                    selected.wrappedValue.remove(option)
+                } else {
+                    selected.wrappedValue.insert(option)
+                }
+            },
+            color: color
+        ) {
+            BusinessIcon(source: option.iconSource, pointSize: 14, weight: .medium)
+                .foregroundStyle(isSelected ? TagChipSurface.selectedForeground(for: color) : color)
+        }
+    }
+
+    /// 事件沿用时间线徽章的语义色；讨论、发行与原因补充独立颜色，“全部”仍用强调色。
+    private func chipColor(for option: GitHubNotificationSegment) -> Color {
+        switch option {
+        case .issue:
+            return Color(hex: "#bc4c00") ?? .orange
+        case .pullRequest, .review:
+            return Color(hex: "#8250df") ?? .purple
+        case .discussion:
+            return .blue
+        case .release:
+            return .green
+        case .mention:
+            return .orange
+        case .star:
+            return Color(hex: "#9a6700") ?? .yellow
+        case .unstar:
+            return Color(hex: "#cf222e") ?? .red
+        case .fork:
+            return Color(hex: "#1b7c83") ?? .teal
+        default:
+            return .accentColor
+        }
     }
 }
 
@@ -827,12 +1000,12 @@ private struct GitHubNotificationTimelineHeader: View {
 private struct GitHubNotificationTimelineRow: View {
     let display: GitHubNotificationTimelineDisplay
     let isSelected: Bool
+    let rowIndex: Int
+    let selectionNamespace: Namespace.ID
     let isFirstInTimeline: Bool
     let isLastInTimeline: Bool
     let onSelect: () -> Void
     @Environment(\.locale) private var locale
-    @Environment(\.starcatReduceMotion) private var reduceMotion
-    @State private var isHovered = false
 
     var body: some View {
         Button(action: onSelect) {
@@ -857,10 +1030,23 @@ private struct GitHubNotificationTimelineRow: View {
                 Color.clear
                     .frame(width: GitHubNotificationTimelineMetrics.railWidth)
 
-                GitHubNotificationActorAvatar(
-                    login: display.actorLogin,
-                    size: 24
-                )
+                Group {
+                    if usesRepositoryAvatar {
+                        RemoteAvatar(
+                            urlString: GitHubNotificationMapper.repositoryAvatarURL(
+                                fromFullName: display.fullName
+                            ),
+                            size: 24,
+                            fallbackSymbol: "shippingbox.fill",
+                            showBorder: false
+                        )
+                    } else {
+                        GitHubNotificationActorAvatar(
+                            login: display.actorLogin,
+                            size: 24
+                        )
+                    }
+                }
                 .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -875,14 +1061,16 @@ private struct GitHubNotificationTimelineRow: View {
                     }
 
                     HStack(spacing: 6) {
-                        RemoteAvatar(
-                            urlString: GitHubNotificationMapper.repositoryAvatarURL(
-                                fromFullName: display.fullName
-                            ),
-                            size: 14,
-                            fallbackSymbol: "shippingbox.fill",
-                            showBorder: false
-                        )
+                        if !usesRepositoryAvatar {
+                            RemoteAvatar(
+                                urlString: GitHubNotificationMapper.repositoryAvatarURL(
+                                    fromFullName: display.fullName
+                                ),
+                                size: 14,
+                                fallbackSymbol: "shippingbox.fill",
+                                showBorder: false
+                            )
+                        }
                         Text(verbatim: caption)
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -924,58 +1112,34 @@ private struct GitHubNotificationTimelineRow: View {
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .background {
-            RoundedRectangle(
-                cornerRadius: GitHubNotificationTimelineMetrics.rowCornerRadius,
-                style: .continuous
-            )
-            .fill(rowFill)
-            .background {
-                // 与 `RepoRowSurface` 同款：半透明 controlBackground 让浅/深色下选中都够跳。
-                RoundedRectangle(
-                    cornerRadius: GitHubNotificationTimelineMetrics.rowCornerRadius,
-                    style: .continuous
+            Color.clear
+                .listRowSurface(
+                    index: rowIndex, isSelected: isSelected,
+                    selectionNamespace: selectionNamespace,
+                    accentColor: display.accentColor,
+                    cornerRadius: GitHubNotificationTimelineMetrics.rowCornerRadius
                 )
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(isSelected || isHovered ? 0.40 : 0))
-            }
-            .overlay(alignment: .leading) {
-                // 选中左侧 3pt 语言色条。贴在圆角底上，不改 `HH:mm` / 轴线布局。
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(display.accentColor)
-                    .frame(width: isSelected ? 3 : 0)
-                    .padding(.vertical, 8)
-                    .opacity(isSelected ? 1 : 0)
-            }
-            .padding(.horizontal, GitHubNotificationTimelineMetrics.selectedInset)
-            .padding(.vertical, 1)
+                .padding(.horizontal, GitHubNotificationTimelineMetrics.selectedInset)
+                .padding(.vertical, 1)
         }
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: GitHubNotificationTimelineMetrics.rowCornerRadius,
-                style: .continuous
-            )
-            .stroke(
-                isSelected ? display.accentColor.opacity(0.42) : Color.clear,
-                lineWidth: 1
-            )
-            .padding(.horizontal, GitHubNotificationTimelineMetrics.selectedInset)
-            .padding(.vertical, 1)
+        .overlay(alignment: .leading) {
+            // 颜色仍来自通知仓库；只绘制选中竖条，不挪动时间轴和头像。
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(display.accentColor)
+                .frame(width: isSelected ? 3 : 0)
+                .padding(.vertical, 8)
+                .padding(.leading, GitHubNotificationTimelineMetrics.selectedInset)
         }
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: reduceMotion ? 0 : 0.14)) {
-                isHovered = hovering
-            }
-        }
-        .animation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.82), value: isSelected)
     }
 
-    private var rowFill: Color {
-        if isSelected {
-            return display.accentColor.opacity(0.18)
+    /// 自己的仓库操作以目标项目为视觉主体；同一条件也用于隐藏次行头像，避免重复。
+    private var usesRepositoryAvatar: Bool {
+        switch display.chip {
+        case .star, .unstar, .fork:
+            return true
+        default:
+            return false
         }
-        if isHovered {
-            return display.accentColor.opacity(0.08)
-        }
-        return .clear
     }
 
     private var updatedAt: Date? {

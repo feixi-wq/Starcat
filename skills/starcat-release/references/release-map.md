@@ -14,6 +14,9 @@
 | `scripts/build-dmg.sh` | legacy 内测 DMG 构建入口 | 仅供 `release-store.sh` 历史流程使用，输出到 `build/dmg/` |
 | `scripts/publish-direct-github-release.py` | GitHub 草稿上传、回读 SHA256 校验、公开及安全续跑 | 只上传 DMG/SHA256，不操作官网 appcast |
 | `scripts/verify-direct-release-artifacts.py` | 两种 Direct 恢复入口共用的只读校验 | 检查原 tag、最终 DMG/SHA256、公证票据和当前 appcast；不依赖当前 HEAD |
+| `scripts/verify-direct-downloads.py` | 正式/Beta 与恢复入口共用的官网双语下载门禁 | 回读首页挂载点、共享脚本、双 feed，对齐 GitHub 最新完整 tag 与 DMG URL/大小 |
+| `supports/starcat-site/direct/downloads.js` | 双语首页共用下载逻辑 | 同时读取正式与开发 feed，按完整 tag 合并，默认稳定版并保留历史 Beta/Dev |
+| `scripts/inject-appcast-release-notes.py` | 从同次中英文快照注入标准双语说明与应用语言扩展字段 | 缺少任一种目标正文阻止生成；Beta 的 `--version` 使用营销版本 `X.Y.Z` |
 | `scripts/merge-appcast.py` | appcast 合并工具 | 把当前版本 appcast item 合并进 `supports/starcat-site/direct/appcast.xml` |
 | `supports/starcat-site/direct/deploy.sh` | 官网/nginx 部署脚本 | 一次完成 nginx 校验/reload 与静态官网同步 |
 | `supports/starcat-site/direct/generate-changelog.py` | 官网 changelog 生成脚本 | 官网部署前生成 `supports/starcat-site/direct/changelog.html` |
@@ -142,6 +145,8 @@ Direct 正式发布，也不要用它绕过双渠道签名、公证、上传和�
 
 - `xcodegen`、`xcodebuild` 和所选 DMG 工具存在；
 - App bundle 内包含 `Sparkle.framework`；
+- 保留 Sparkle 原生语言资源；新 appcast 从同次双语快照生成两种 `xml:lang` description
+  与 `starcat:releaseNotes-*` 正文，客户端按应用语言选择，缺少目标译文阻止生成；
 - Info.plist 里的 `STARCAT_DISTRIBUTION` 为 `direct`；
 - `CFBundleShortVersionString` 等于请求版本；
 - `CFBundleVersion` 等于 `STARCAT_DIRECT_BUILD_NUMBER`，未设置时使用时间戳默认值；
@@ -152,6 +157,58 @@ Direct 正式发布，也不要用它绕过双渠道签名、公证、上传和�
 - `dist/direct/downloads/Starcat-<version>-arm64.dmg`；
 - `dist/direct/downloads/Starcat-<version>-arm64.dmg.sha256`；
 - 设置 `STARCAT_GENERATE_APPCAST=1` 时额外输出 `dist/direct/downloads/appcast-current.xml`。
+
+## 双语发布与更新说明修复
+
+### 生成与发布验收
+
+英文与中文必须使用同次发布快照，不能在续跑时读取当前待发布工作稿：
+
+| 渠道 | 双语快照目录 | 当次清单 |
+|---|---|---|
+| Direct 正式版 | `dist/direct/downloads/release-notes-X.Y.Z/` | `dist/direct/downloads/appcast-current.xml` |
+| Direct Beta | `dist/direct-development/downloads/release-notes-X.Y.Z-beta.N/` | `dist/direct-development/downloads/appcast-current.xml` |
+
+每个目录均须包含非空的 `CHANGELOG.md` 与 `CHANGELOG-ZH.md`，目标节对应同一次发布。
+按 `SKILL.md` 的语言门禁核对当次清单、官网仓库目标 feed 和线上回读结果；检查本次
+条目的双语正文及扩展字段，而不是只检查版本号、签名存在或 HTTP 状态。官网中英文
+日志页另行生成和回读，网页已中文不能证明应用读取的 appcast 也有中文正文。
+
+需要人工验收窗口时，现有启动入口已支持固定较小构建号：
+
+```bash
+STARCAT_DIRECT_BUILD_NUMBER=1 make run-direct
+```
+
+在包含语言桥接的调试版中选择对应更新通道并检查更新，分别用简体中文、繁体中文和
+非中文语言核对正文；每次切换语言后关闭旧更新窗口再重新检查。只查看并关闭弹窗，
+不安装线上包覆盖当前调试版。记录实际使用的构建；本地调试版通过不代表已公开安装包
+已经包含客户端修复，旧客户端仍按其已有语言逻辑展示。
+
+### 仅修复已发布版本的说明
+
+普通 `--resume` 保留既有说明，不自动改写历史。用户明确要求补齐已发布版本的双语说明时，
+按元数据修复处理，不重跑完整发布或官网部署：
+
+1. 保存线上目标 feed，核对原 tag、构建号、下载地址与当次快照。用构建号和附件 URL
+   确认具体发布，不能仅凭多个 Beta 可能共用的营销版本判断目标。
+2. 复制仅含当次条目的 `appcast-current.xml` 作为候选，再从原快照注入双语说明：
+
+   ```bash
+   python3 scripts/inject-appcast-release-notes.py \
+     --appcast "<当次清单候选路径>" \
+     --changelog-en "<当次快照目录>/CHANGELOG.md" \
+     --changelog-zh "<当次快照目录>/CHANGELOG-ZH.md" \
+     --version X.Y.Z
+   ```
+
+3. 用现有合并工具生成目标 feed 候选，核对只改本次条目的说明；版本号、构建号、
+   enclosure URL、大小、签名及其余历史条目均保持原值，双语标准说明与扩展字段一致。
+4. 在已授权范围内仅上传目标 feed。Beta 只更新 `appcast-development.xml`，核对正式
+   `appcast.xml` 摘要保持原值；不执行会同步全站或重载 nginx 的 `deploy.sh`。
+5. 公网回读与候选逐字节比较，再解析确认中英文正文完整。同步官网仓库目标 feed 和
+   本地当次 `appcast-current.xml`，避免下一次部署或恢复发布重新覆盖为旧正文。
+6. 提示 dong4j 在包含语言桥接的当前构建中关闭旧窗口、重新检查更新，并按上述语言组合验收。
 
 ## 失败恢复
 
@@ -170,7 +227,7 @@ Direct 正式发布，也不要用它绕过双渠道签名、公证、上传和�
 - 已有公证票据和 Gatekeeper 接受状态；只 validate/assess，不重新公证、签名或 staple。
 
 恢复不会触碰源码脏状态，也不会创建或推送 tag。Beta 恢复额外从同次快照补发并核验官网双语日志，正式恢复只处理 GitHub 及正式/Beta feed；
-官网静态页和 Homebrew 若尚未发布，作为原发布范围内的剩余阶段单独处理，不能报告整版完成。
+两种恢复均回读核验双语下载入口。官网静态页和 Homebrew 若尚未发布，作为原发布范围内的剩余阶段单独处理，不能报告整版完成。
 
 ### Beta 契约与验收
 
@@ -184,6 +241,11 @@ Beta 允许使用 Direct 对应版本的待发布 Changelog。
 公开下载地址可用，线上 `appcast-development.xml` 与本地发布内容相同；
 `changelog.html` 与 `changelog-zh.html` 从同次说明快照生成，显示本次 `X.Y.Z Beta N`，
 不含未来版本或待发布内容，逐页回读正文与本地逐字节一致。
+中英文下载弹窗的开发入口须对齐最新公开 prerelease 的完整 `X.Y.Z-beta.N` tag
+及其 DMG URL/大小；历史保留 Beta/Dev 序号，不能因营销版本相同丢失条目。
+默认稳定下载不变，开发可选入口随 feed 更新，不能把“稳定默认不变”误解为不展示 Beta。
+运行 `python3 scripts/verify-direct-downloads.py --version X.Y.Z-beta.N`；
+任一语言缺入口、共享脚本仍旧或 feed/GitHub 版本不匹配均阻止完成。
 正式 `appcast.xml`、正式 latest、Homebrew 和 App Store 保持原状。官网仓库的 feed、
 日志 HTML 与源目标节改动按当前任务授权单独提交/推送，并完成所有项目 `dev/main` 同步。
 

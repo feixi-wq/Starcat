@@ -18,8 +18,8 @@ import AppKit
 /// 贡献草坪 + 贪吃蛇一帧的 CGContext 渲染器。
 enum SnakeFrameRenderer {
 
-    /// 草坪布局常量。与 `ContributionGraphView` 的 cell 常量保持一致。
-    struct Layout {
+    /// 草坪布局常量；绘制与鼠标命中共用，避免缩放后指向相邻日期。
+    struct Layout: Sendable {
         let cols: Int
         let rows: Int
         let cellWidth: CGFloat
@@ -47,10 +47,11 @@ enum SnakeFrameRenderer {
         frame: AnimationFrame,
         colorScheme: ColorScheme,
         style: ContributionGraphStyle = .standard,
-        layout: Layout = .standard,
+        range: ContributionGraphRange = .year,
         baseGrid: CGImage? = nil,
         time: Date = Date()
     ) -> CGImage? {
+        let layout = range.layout
         guard let ctx = makeBitmapContext(layout: layout) else { return nil }
         let size = layout.size
 
@@ -69,9 +70,12 @@ enum SnakeFrameRenderer {
         let palette = ContributionPalette.palette(for: colorScheme, style: style)
 
         if baseGrid == nil {
-            drawGrid(ctx: ctx, payload: payload, frame: frame, palette: palette, layout: layout)
+            drawGrid(
+                ctx: ctx, grid: ContributionGrid(weeks: payload?.weeks, range: range),
+                frame: frame, palette: palette, layout: layout
+            )
         } else {
-            drawEatenCells(ctx: ctx, frame: frame, palette: palette, layout: layout)
+            drawEatenCells(ctx: ctx, frame: frame, palette: palette, layout: layout, range: range)
         }
         drawSnakes(ctx: ctx, frame: frame, palette: palette, layout: layout)
         drawFood(ctx: ctx, frame: frame, time: time, layout: layout)
@@ -84,15 +88,19 @@ enum SnakeFrameRenderer {
         payload: ContributionCalendarPayload?,
         colorScheme: ColorScheme,
         style: ContributionGraphStyle = .standard,
-        layout: Layout = .standard
+        range: ContributionGraphRange = .year
     ) -> CGImage? {
+        let layout = range.layout
         guard let ctx = makeBitmapContext(layout: layout) else { return nil }
         let size = layout.size
         ctx.translateBy(x: 0, y: size.height)
         ctx.scaleBy(x: 1, y: -1)
 
         let palette = ContributionPalette.palette(for: colorScheme, style: style)
-        drawGrid(ctx: ctx, payload: payload, frame: .empty, palette: palette, layout: layout)
+        drawGrid(
+            ctx: ctx, grid: ContributionGrid(weeks: payload?.weeks, range: range),
+            frame: .empty, palette: palette, layout: layout
+        )
         return ctx.makeImage()
     }
 
@@ -116,33 +124,28 @@ enum SnakeFrameRenderer {
 
     private static func drawGrid(
         ctx: CGContext,
-        payload: ContributionCalendarPayload?,
+        grid: ContributionGrid,
         frame: AnimationFrame,
         palette: ContributionPalette,
         layout: Layout
     ) {
-        guard let weeks = payload?.weeks else {
+        guard !grid.isPlaceholder else {
             drawPlaceholderGrid(ctx: ctx, palette: palette, layout: layout)
             return
         }
-        let startColumn = max(0, layout.cols - weeks.count)
-        for (weekIdx, week) in weeks.enumerated() {
-            let col = startColumn + weekIdx
-            let x = CGFloat(col) * (layout.cellWidth + layout.cellSpacing)
-            for day in week.contributionDays {
-                let row = day.weekday
-                let y = CGFloat(row) * (layout.cellHeight + layout.cellSpacing)
-                let rect = CGRect(x: x, y: y, width: layout.cellWidth, height: layout.cellHeight)
-                let pos = GridPosition(col: col, row: row)
-                let level = frame.eatenCells.contains(pos) ? ContributionLevel.none : day.contributionLevel
-                fillRoundedRect(
-                    ctx,
-                    rect,
-                    corner: layout.cellCornerRadius,
-                    color: palette.color(for: level).cg,
-                    strokeColor: level == .none ? palette.noneBorder?.cg : nil
-                )
-            }
+        for position in grid.allPositions {
+            guard let day = grid.day(at: position) else { continue }
+            let rect = CGRect(
+                x: CGFloat(position.col) * (layout.cellWidth + layout.cellSpacing),
+                y: CGFloat(position.row) * (layout.cellHeight + layout.cellSpacing),
+                width: layout.cellWidth, height: layout.cellHeight
+            )
+            let level = frame.eatenCells.contains(position) ? ContributionLevel.none : day.contributionLevel
+            fillRoundedRect(
+                ctx, rect, corner: layout.cellCornerRadius,
+                color: palette.color(for: level).cg,
+                strokeColor: level == .none ? palette.noneBorder?.cg : nil
+            )
         }
     }
 
@@ -174,12 +177,17 @@ enum SnakeFrameRenderer {
         ctx: CGContext,
         frame: AnimationFrame,
         palette: ContributionPalette,
-        layout: Layout
+        layout: Layout,
+        range: ContributionGraphRange
     ) {
         guard !frame.eatenCells.isEmpty else { return }
         let color = palette.color(for: .none).cg
         let strokeColor = palette.noneBorder?.cg
         for pos in frame.eatenCells {
+            // 90 天的矩形路径会经过末尾两个空位，不能把它们补画成零贡献日。
+            if let dayCount = range.dayCount, pos.row * layout.cols + pos.col >= dayCount {
+                continue
+            }
             let x = CGFloat(pos.col) * (layout.cellWidth + layout.cellSpacing)
             let y = CGFloat(pos.row) * (layout.cellHeight + layout.cellSpacing)
             let rect = CGRect(x: x, y: y, width: layout.cellWidth, height: layout.cellHeight)

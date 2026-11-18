@@ -12,14 +12,32 @@ import Testing
 @Suite("Awesome Store")
 struct AwesomeStoreTests {
 
-    @Test("Awesome 来源管理与 AI 整理共用 840 × 560 固定画布")
+    @Test("批量 Skills 候选映射保留分支和三种日期")
+    func batchDiscoveryMappingPreservesMetadata() {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let item = AwesomeRepositoryItem(
+            id: 42, owner: "example", name: "skills", fullName: "example/skills",
+            description: nil, ownerAvatarURL: nil, language: "Swift", stars: 1,
+            defaultBranch: "develop", isArchived: false,
+            pushedAt: date, updatedAt: date, createdAt: date, evidence: []
+        )
+        let formatter = ISO8601DateFormatter.shared
+        let repo = item.discoveryDTO(dateFormatter: formatter).toEphemeralRepo(isStarred: true)
+        #expect(repo.pushedAt == "2023-11-14T22:13:20.000Z")
+        #expect(repo.updatedAt == repo.pushedAt)
+        #expect(repo.createdAt == repo.pushedAt)
+        #expect(repo.defaultBranch == "develop")
+        #expect(repo.isStarred)
+        #expect(item.discoveryDTO.pushedAt == repo.pushedAt)
+    }
+
+    @Test("Awesome 来源管理使用 1180 × 720 三列卡片画布")
     @MainActor
-    func sourceManagerUsesCompactOrganizationCanvas() {
+    func sourceManagerUsesThreeColumnCanvas() {
         // 只校验几何契约，不创建窗口或依赖桌面状态。
         let size = AwesomeSourceManagerWindowController.contentSize
-        #expect(size == AIOrganizationLayout.windowSize)
-        #expect(size.width == 840)
-        #expect(size.height == 560)
+        #expect(size.width == 1180)
+        #expect(size.height == 720)
     }
 
     @Test("后台加载不弹来源选择，用户点击才弹出且完成后停止弹出")
@@ -213,6 +231,243 @@ struct AwesomeStoreTests {
         #expect(!store.hasMoreRepositories)
         #expect(await repository.catalogRefreshPolicies().isEmpty)
         #expect(await repository.entryRefreshPolicies().isEmpty)
+    }
+
+    @Test("搜索合并为一次完整本地读取且命中末页，不触发目录刷新")
+    @MainActor
+    func searchUsesOneCompleteRead() async {
+        let source = Self.source(id: "large", isEnabled: true, githubRepoCount: 95)
+        let items = (1...95).map { Self.repositoryItem(id: Int64($0), source: source) }
+        let repository = AwesomeStoreRepositoryFake(
+            sources: [source], repositoriesBySource: [source.id: items],
+            delaysBySource: [source.id: 10_000_000]
+        )
+        let store = AwesomeStore(
+            repository: repository,
+            customSourceService: AwesomeCustomSourceService(github: AwesomeStoreGitHubFake(), repository: repository)
+        )
+        store.selectSource(source.id)
+        async let first: Void = store.loadAllRepositoryPages()
+        async let second: Void = store.loadAllRepositoryPages()
+        _ = await (first, second)
+        let model = AwesomeListModel()
+        await model.update(
+            identity: AwesomeListIdentity(revision: store.repositoryRevision, sourceID: source.id,
+                                          query: AwesomeListQuery(search: "REPO-95")),
+            repositories: store.repositories, resources: []
+        )
+        #expect(model.repositoryIDs == [95])
+        #expect(await repository.fullReadCount() == 1)
+        #expect(await repository.pageReadCount() == 1)
+        #expect(await repository.catalogRefreshPolicies().isEmpty)
+        #expect(await repository.entryRefreshPolicies().isEmpty)
+    }
+
+    @Test("分类重入复用完整数据与派生分页，搜索清空仅重建四十项窗口")
+    @MainActor
+    func categoryReentryReusesSessionSnapshot() async {
+        let source = Self.source(id: "large", isEnabled: true, githubRepoCount: 95)
+        let items = (1...95).map { Self.repositoryItem(id: Int64($0), source: source) }
+        let repository = AwesomeStoreRepositoryFake(
+            sources: [source], repositoriesBySource: [source.id: items]
+        )
+        let store = AwesomeStore(
+            repository: repository,
+            customSourceService: AwesomeCustomSourceService(github: AwesomeStoreGitHubFake(), repository: repository)
+        )
+        await store.loadAwesome()
+        await store.loadAllRepositoryPages()
+        let model = store.listModel
+        var identity = AwesomeListIdentity(revision: store.repositoryRevision, sourceID: nil,
+                                          query: AwesomeListQuery())
+        await model.update(identity: identity, repositories: store.repositories, resources: [])
+        model.loadMore()
+        let revision = model.projectionRevision
+        await store.enterAwesomeFromUserSelection()
+        await model.update(identity: identity, repositories: store.repositories, resources: [])
+        #expect(store.listModel === model)
+        #expect(model.rows.count == 80)
+        #expect(model.projectionRevision == revision)
+        #expect(store.repositories.count == 95)
+        #expect(!store.hasMoreRepositories)
+
+        identity.query.search = "repo-95"
+        await model.update(identity: identity, repositories: store.repositories, resources: [])
+        #expect(model.repositoryIDs == [95])
+        await store.loadAwesome()
+        identity.query.search = ""
+        await model.update(identity: identity, repositories: store.repositories, resources: [])
+        #expect(model.total == 95)
+        #expect(model.rows.count == 40)
+        #expect(await repository.fullReadCount() == 1)
+        #expect(await repository.pageReadCount() == 1)
+        #expect(await repository.setupReadCount() == 1)
+    }
+
+    @Test("分类点击和页面加载并发时合并本地恢复与自动刷新")
+    @MainActor
+    func concurrentEntrySharesSessionLoad() async {
+        let source = Self.source(isEnabled: true)
+        let repository = AwesomeStoreRepositoryFake(
+            sources: [source], setupDelayNanoseconds: 30_000_000
+        )
+        let store = AwesomeStore(
+            repository: repository,
+            customSourceService: AwesomeCustomSourceService(github: AwesomeStoreGitHubFake(), repository: repository)
+        )
+        async let userEntry: Void = store.enterAwesomeFromUserSelection()
+        async let lifecycleEntry: Void = store.loadAwesome()
+        _ = await (userEntry, lifecycleEntry)
+        #expect(await repository.pageReadCount() == 1)
+        #expect(await repository.setupReadCount() == 1)
+        #expect(await repository.catalogRefreshPolicies() == [.ifStale])
+        #expect(await repository.entryRefreshPolicies() == [.ifStale])
+        #expect(store.isSourceManagerPresented)
+        #expect(!store.isLoading)
+    }
+
+    @Test("同来源重选不重读，强制刷新和订阅变更仍重置本地分页")
+    @MainActor
+    func explicitInvalidationReloadsSessionData() async throws {
+        let source = Self.source(isEnabled: true, githubRepoCount: 95)
+        let items = (1...95).map { Self.repositoryItem(id: Int64($0), source: source) }
+        let repository = AwesomeStoreRepositoryFake(
+            sources: [source], repositoriesBySource: [source.id: items]
+        )
+        let store = AwesomeStore(
+            repository: repository,
+            customSourceService: AwesomeCustomSourceService(github: AwesomeStoreGitHubFake(), repository: repository)
+        )
+        await store.loadAwesome()
+        store.selectSource(source.id)
+        await store.loadAllRepositoryPages()
+        let reads = await repository.pageReadCount()
+        store.selectedRepositoryID = 95
+        store.selectSource(source.id)
+        await store.loadAllRepositoryPages()
+        #expect(await repository.pageReadCount() == reads)
+        #expect(store.selectedRepositoryID == 95)
+        #expect(store.repositories.count == 95)
+
+        await store.refresh()
+        #expect(await repository.pageReadCount() == reads + 1)
+        #expect(store.repositories.count == 40)
+        #expect(store.hasMoreRepositories)
+        try await store.updateSourceSelection([])
+        #expect(store.selectedSourceID == nil)
+        #expect(store.enabledSources.isEmpty)
+        #expect(await repository.pageReadCount() == reads + 2)
+    }
+
+    @Test("自动刷新发现来源快照变化时使列表失效并校正来源选择")
+    @MainActor
+    func changedSourceSnapshotInvalidatesSessionData() async {
+        let source = Self.source(isEnabled: true)
+        let repository = AwesomeStoreRepositoryFake(sources: [source])
+        let store = AwesomeStore(
+            repository: repository,
+            customSourceService: AwesomeCustomSourceService(github: AwesomeStoreGitHubFake(), repository: repository)
+        )
+        await store.loadAwesome()
+        store.selectSource(source.id)
+        await store.loadAllRepositoryPages()
+        let reads = await repository.pageReadCount()
+        await repository.setNextCatalogSnapshot([Self.source(isEnabled: true, isAvailable: false)])
+        await store.loadAwesome()
+        #expect(store.selectedSourceID == nil)
+        #expect(store.enabledSources.isEmpty)
+        #expect(await repository.pageReadCount() == reads + 1)
+    }
+
+    @Test("切换账户使未完成的会话恢复和派生结果失效")
+    @MainActor
+    func accountResetRejectsLateSessionRestore() async throws {
+        let source = Self.source(isEnabled: true)
+        let repository = AwesomeStoreRepositoryFake(
+            sources: [source], setupDelayNanoseconds: 50_000_000
+        )
+        let store = AwesomeStore(
+            repository: repository,
+            customSourceService: AwesomeCustomSourceService(github: AwesomeStoreGitHubFake(), repository: repository)
+        )
+        await store.listModel.update(
+            identity: AwesomeListIdentity(revision: 1, sourceID: nil, query: AwesomeListQuery()),
+            repositories: [Self.repositoryItem(id: 42, source: source)], resources: []
+        )
+        let loading = Task { await store.enterAwesomeFromUserSelection() }
+        while await repository.setupReadCount() == 0 { await Task.yield() }
+        store.resetForAccountChange()
+        await loading.value
+        #expect(store.sources.isEmpty)
+        #expect(store.repositories.isEmpty)
+        #expect(store.listModel.identity == nil)
+        #expect(store.listModel.rows.isEmpty)
+        #expect(!store.isSourceManagerPresented)
+        #expect(!store.isLoading)
+        #expect(await repository.catalogRefreshPolicies().isEmpty)
+        #expect(await repository.pageReadCount() == 0)
+        await store.loadAwesome()
+        #expect(store.sources.map(\.id) == [source.id])
+        #expect(await repository.setupReadCount() == 2)
+    }
+
+    @Test("派生结果只展示四十项，分页不重新筛选，查询清空与排序正确")
+    @MainActor
+    func projectionPaginatesAndResetsSearch() async {
+        let source = Self.source()
+        let items = (1...95).map { Self.repositoryItem(id: Int64($0), source: source) }
+        let model = AwesomeListModel()
+        var identity = AwesomeListIdentity(revision: 1, sourceID: nil, query: AwesomeListQuery(sort: .stars))
+        await model.update(identity: identity, repositories: items, resources: [Self.resourceItem(source: source)])
+        #expect(model.total == 96)
+        #expect(model.rows.count == 40)
+        #expect(model.repositoryIDs.first == 95)
+        model.loadMore()
+        #expect(model.rows.count == 80)
+        let revision = model.projectionRevision
+        await model.update(identity: identity, repositories: items, resources: [])
+        #expect(model.projectionRevision == revision)
+        #expect(model.rows.count == 80)
+        identity.query.search = "no matching project"
+        await model.update(identity: identity, repositories: items, resources: [])
+        #expect(model.total == 0)
+        identity.query.search = ""
+        identity.query.sort = .original
+        await model.update(identity: identity, repositories: items, resources: [])
+        #expect(model.total == 95)
+        #expect(model.rows.count == 40)
+        #expect(Set(model.rowIndices.values) == Set(0..<40))
+    }
+
+    @Test("后台投影保留章节、资源和仓库事实筛选语义，取消不回填")
+    @MainActor
+    func projectionRespectsFiltersAndCancellation() async {
+        let source = Self.source()
+        let items = [Self.repositoryItem(id: 1, source: source),
+                     Self.repositoryItem(id: 2, source: source, language: "Rust")]
+        let model = AwesomeListModel()
+        var identity = AwesomeListIdentity(revision: 1, sourceID: source.id,
+                                          query: AwesomeListQuery(section: "Resources"))
+        await model.update(identity: identity, repositories: items, resources: [Self.resourceItem(source: source)])
+        #expect(model.total == 1)
+        #expect(model.repositoryIDs.isEmpty)
+        identity.query.section = nil
+        identity.query.options = AwesomeGlobalFilterOptions(
+            hideArchived: false, hideForks: false, starFilter: .all, libraryFilter: .all,
+            languages: ["swift"], wikiFilter: .unknown, healthFilter: .unknown, openSSFFilter: .unknown
+        )
+        identity.query.skillFilter = .contains
+        await model.update(identity: identity, repositories: items, resources: [Self.resourceItem(source: source)],
+                           skillPresence: [1: .contains])
+        #expect(model.repositoryIDs == [1])
+        #expect(model.total == 1)
+        model.reset()
+        let cancelled = Task {
+            await model.update(identity: identity, repositories: items, resources: [])
+        }
+        cancelled.cancel()
+        await cancelled.value
+        #expect(model.identity == nil)
     }
 
     @Test("选中来源只改变中栏计数而侧栏全量计数保持稳定")
@@ -435,9 +690,30 @@ struct AwesomeStoreTests {
         #expect(searchResults.map(\.id) == ["unavailable-enabled", "empty-custom", "available"])
     }
 
+    @Test("来源选择与搜索都将推荐置顶，同组保留目录顺序", arguments: ["", " AWESOME-ONE "])
+    @MainActor
+    func sourcePickerPrioritizesFeaturedSources(query: String) {
+        let sources = [
+            Self.source(id: "regular-first", featured: false),
+            Self.source(id: "featured-first"),
+            Self.source(id: "empty-featured", githubRepoCount: 0),
+            Self.source(id: "regular-second", featured: false),
+            Self.source(id: "featured-second")
+        ]
+
+        let results = AwesomeSourceManagerSheet.filterSources(
+            sources,
+            query: query,
+            languageCode: "zh"
+        )
+
+        #expect(results.map(\.id) == ["featured-first", "featured-second", "regular-first", "regular-second"])
+    }
+
     private static func source(
         id: String = "one",
         kind: AwesomeSourceKind = .managed,
+        featured: Bool = true,
         isEnabled: Bool = false,
         isAvailable: Bool = true,
         githubRepoCount: Int = 1,
@@ -454,7 +730,7 @@ struct AwesomeStoreTests {
             imageURL: nil,
             summaryZH: "测试来源",
             summaryEN: "Test source",
-            featured: true,
+            featured: featured,
             sortOrder: 1,
             sourceStars: 9_012,
             sourceForks: 812,
@@ -529,6 +805,10 @@ private actor AwesomeStoreRepositoryFake: AwesomeRepositoryProtocol {
     private var setupCompleted = false
     private var catalogPolicies: [AwesomeRefreshPolicy] = []
     private var entryPolicies: [AwesomeRefreshPolicy] = []
+    private var fullReads = 0
+    private var pageReads = 0
+    private var setupReads = 0
+    private var nextCatalogSnapshot: [AwesomeSource]?
 
     init(
         sources: [AwesomeSource],
@@ -547,6 +827,10 @@ private actor AwesomeStoreRepositoryFake: AwesomeRepositoryProtocol {
     func sources() async -> [AwesomeSource] { sourceValues }
     func enabledSources() async -> [AwesomeSource] { sourceValues.filter(\.isEnabled) }
     func repositories(sourceID: String?) async -> [AwesomeRepositoryItem] {
+        fullReads += 1
+        return await items(sourceID: sourceID)
+    }
+    private func items(sourceID: String?) async -> [AwesomeRepositoryItem] {
         if let sourceID, let nanoseconds = delaysBySource[sourceID] {
             // 模拟不响应父任务取消的底层读取，验证 Store 自己的代际检查。
             await Task.detached {
@@ -557,7 +841,8 @@ private actor AwesomeStoreRepositoryFake: AwesomeRepositoryProtocol {
         return repositoriesBySource[sourceID] ?? []
     }
     func repositoryPage(sourceID: String?, limit: Int, offset: Int) async -> AwesomeRepositoryPage {
-        let all = await repositories(sourceID: sourceID)
+        pageReads += 1
+        let all = await items(sourceID: sourceID)
         let page = Array(all.dropFirst(offset).prefix(limit))
         return AwesomeRepositoryPage(
             repositories: page,
@@ -565,11 +850,17 @@ private actor AwesomeStoreRepositoryFake: AwesomeRepositoryProtocol {
             hasMore: offset + page.count < all.count
         )
     }
+    func repositorySections(sourceID: String?) async -> [String] { [] }
+    func fullReadCount() -> Int { fullReads }
+    func pageReadCount() -> Int { pageReads }
+    func setupReadCount() -> Int { setupReads }
+    func setNextCatalogSnapshot(_ snapshot: [AwesomeSource]) { nextCatalogSnapshot = snapshot }
     func resources(sourceID: String?) async -> [AwesomeResourceItem] {
         guard let sourceID else { return resourcesBySource.values.flatMap { $0 } }
         return resourcesBySource[sourceID] ?? []
     }
     func hasCompletedSourceSetup() async -> Bool {
+        setupReads += 1
         if setupDelayNanoseconds > 0 {
             // 模拟不响应父任务取消的数据库读取，稳定覆盖并发加载时序。
             await Task.detached {
@@ -580,6 +871,10 @@ private actor AwesomeStoreRepositoryFake: AwesomeRepositoryProtocol {
     }
     func refreshCatalog(policy: AwesomeRefreshPolicy) async throws -> [AwesomeSource] {
         catalogPolicies.append(policy)
+        if let snapshot = nextCatalogSnapshot {
+            sourceValues = snapshot
+            nextCatalogSnapshot = nil
+        }
         return sourceValues
     }
     func refreshEnabledEntries(policy: AwesomeRefreshPolicy) async -> [String: String] {

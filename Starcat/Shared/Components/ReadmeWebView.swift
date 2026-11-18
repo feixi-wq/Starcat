@@ -115,12 +115,21 @@ struct ReadmeWebView: View {
     /// nil 时浮动工具栏不显示该按钮。
     var onExportMarkdown: (() -> Void)? = nil
 
-    /// 当前 README 所属仓库。有值且设置打开「应用内打开仓库文档」时，
+    /// 为调用方附加的底部操作预留空间；只移动浮动工具条，不改变 WebView 的尺寸与身份。
+    var floatingToolbarBottomInset: CGFloat = 0
+
+    /// 所有 README 与 Skill 操作浮在滚动条左侧；只内收按钮，WebView 和正文始终占满阅读区。
+    static let floatingToolbarTrailingInset: CGFloat = 20
+
+    /// 调用方可按阅读区右侧留白调整两个浮动按钮的位置，正文布局不受影响。
+    var floatingToolbarTrailingPadding: CGFloat = ReadmeWebView.floatingToolbarTrailingInset
+
+    /// 当前 README 所属仓库。有值且设置选择应用内打开时，
     /// 同仓 Markdown 点击走 `onOpenRepositoryMarkdown`，不再进浏览器。
     var markdownLinkRepositoryOwner: String? = nil
     var markdownLinkRepositoryName: String? = nil
 
-    /// 打开同仓 Markdown 独立窗。nil 时即使开关打开也回退浏览器。
+    /// 调用方按设置在当前详情页或独立窗口打开；nil 时回退浏览器。
     var onOpenRepositoryMarkdown: ((RepositoryMarkdownLinkTarget) -> Void)? = nil
 
     /// 当前翻译渲染状态。默认隐藏，普通 README 调用方无需感知翻译能力。
@@ -136,6 +145,13 @@ struct ReadmeWebView: View {
     /// 文档距离底部不超过两个 viewport 时触发。Coordinator 对每份文档只回调一次。
     var onApproachingBottom: () -> Void = {}
 
+    /// 当前正文 DOM 与布局就绪后回传文档身份，供阅读区淡入；不等待图片、视频等外部资源。
+    var onDocumentReady: (String) -> Void = { _ in }
+    /// 独立文件阅读器可接管错误并切回源码；默认不改变 README 和 Skills 的行为。
+    var onDocumentFailed: (String) -> Void = { _ in }
+    var registersFindShortcut: Bool = true
+    var allowsSameDocumentAnchors: Bool = false
+
     @Environment(AppSettings.self) private var settings
     @Environment(AuthSession.self) private var authSession
     @State private var scrollToTopRequestID = 0
@@ -145,6 +161,7 @@ struct ReadmeWebView: View {
     @State private var findHasMatch: Bool?
     @FocusState private var isFindFieldFocused: Bool
     @State private var isFontToolbarExpanded = false
+    @State private var isImagePreviewVisible = false
 
     var body: some View {
         ReadmeWebContentView(
@@ -161,7 +178,11 @@ struct ReadmeWebView: View {
             onTranslationSourceChange: onTranslationSourceChange,
             starHistoryRenderState: starHistoryRenderState,
             onApproachingBottom: onApproachingBottom,
-            openRepositoryMarkdownInApp: settings.openRepositoryMarkdownInApp,
+            onDocumentReady: onDocumentReady,
+            onDocumentFailed: onDocumentFailed,
+            onImagePreviewVisibilityChange: { isImagePreviewVisible = $0 },
+            allowsSameDocumentAnchors: allowsSameDocumentAnchors,
+            openRepositoryMarkdownInApp: settings.repositoryMarkdownOpenMode != .browser,
             markdownLinkRepositoryOwner: markdownLinkRepositoryOwner,
             markdownLinkRepositoryName: markdownLinkRepositoryName,
             onOpenRepositoryMarkdown: onOpenRepositoryMarkdown
@@ -169,7 +190,7 @@ struct ReadmeWebView: View {
         .id(authSession.state.user?.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .top) {
-            if isFindBarVisible {
+            if isFindBarVisible && !isImagePreviewVisible {
                 ReadmeFindBar(
                     query: $findQuery,
                     hasMatch: findHasMatch,
@@ -192,14 +213,20 @@ struct ReadmeWebView: View {
                 openInNewWindow: onOpenInNewWindow,
                 onExportMarkdown: onExportMarkdown
             )
-            .padding(.trailing, 10)
-            .padding(.bottom, 54)
+            .padding(.trailing, floatingToolbarTrailingPadding)
+            .padding(.bottom, 54 + floatingToolbarBottomInset)
+            .opacity(isImagePreviewVisible ? 0 : 1)
+            .allowsHitTesting(!isImagePreviewVisible)
+            .accessibilityHidden(isImagePreviewVisible)
         }
         // 回到顶部是独立常驻操作，固定贴在 README 渲染区右下角。
         .overlay(alignment: .bottomTrailing) {
             ReadmeBackToTopButton(action: scrollToTop)
-                .padding(.trailing, 10)
-                .padding(.bottom, 14)
+                .padding(.trailing, floatingToolbarTrailingPadding)
+                .padding(.bottom, 14 + floatingToolbarBottomInset)
+                .opacity(isImagePreviewVisible ? 0 : 1)
+                .allowsHitTesting(!isImagePreviewVisible)
+                .accessibilityHidden(isImagePreviewVisible)
         }
         .onReceive(NotificationCenter.default.publisher(for: .repoDetailScrollToTopRequested)) { _ in
             scrollToTop()
@@ -211,9 +238,19 @@ struct ReadmeWebView: View {
         .onChange(of: readmeFindCommandIdentity) { _, _ in
             hideFindBar()
         }
-        .starcatReadmeFindCommand(identity: readmeFindCommandIdentity) {
+        .starcatReadmeFindCommand(identity: readmeFindCommandIdentity, isEnabled: registersFindShortcut && !isImagePreviewVisible) {
             showFindBar()
         }
+    }
+
+    /// 只允许当前页内部锚点留在阅读器，其他仓库文件和外链继续交给浏览器。
+    static func isSameDocumentAnchor(_ url: URL, currentURL: URL?) -> Bool {
+        guard url.fragment != nil, let currentURL,
+              var requested = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              var current = URLComponents(url: currentURL, resolvingAgainstBaseURL: true) else { return false }
+        requested.fragment = nil
+        current.fragment = nil
+        return requested == current
     }
 
     private func decreaseFontSize() {
@@ -315,7 +352,8 @@ struct ReadmeWebView: View {
     }
 }
 
-private struct ReadmeWebContentView: NSViewRepresentable {
+/// 保持 internal，使无窗口回归测试能覆盖生产 Coordinator 的导航与就绪桥接。
+struct ReadmeWebContentView: NSViewRepresentable {
     let htmlFragment: String
     let accountID: Int64?
     let documentID: String?
@@ -329,6 +367,10 @@ private struct ReadmeWebContentView: NSViewRepresentable {
     var onTranslationSourceChange: (ReadmeTranslationSourceSnapshot) -> Void
     let starHistoryRenderState: ReadmeStarHistoryRenderState
     var onApproachingBottom: () -> Void
+    var onDocumentReady: (String) -> Void
+    var onDocumentFailed: (String) -> Void
+    var onImagePreviewVisibilityChange: (Bool) -> Void = { _ in }
+    var allowsSameDocumentAnchors: Bool
     var openRepositoryMarkdownInApp: Bool
     var markdownLinkRepositoryOwner: String?
     var markdownLinkRepositoryName: String?
@@ -367,9 +409,14 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         configureScrollbar(for: webView)
 
         context.coordinator.webView = webView
+        context.coordinator.accountID = accountID
         context.coordinator.onScrollReportChange = onScrollReportChange
         context.coordinator.onTranslationSourceChange = onTranslationSourceChange
         context.coordinator.onApproachingBottom = onApproachingBottom
+        context.coordinator.onDocumentReady = onDocumentReady
+        context.coordinator.onDocumentFailed = onDocumentFailed
+        context.coordinator.onImagePreviewVisibilityChange = onImagePreviewVisibilityChange
+        context.coordinator.allowsSameDocumentAnchors = allowsSameDocumentAnchors
         context.coordinator.openRepositoryMarkdownInApp = openRepositoryMarkdownInApp
         context.coordinator.markdownLinkRepositoryOwner = markdownLinkRepositoryOwner
         context.coordinator.markdownLinkRepositoryName = markdownLinkRepositoryName
@@ -387,9 +434,14 @@ private struct ReadmeWebContentView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.accountID = accountID
         context.coordinator.onScrollReportChange = onScrollReportChange
         context.coordinator.onTranslationSourceChange = onTranslationSourceChange
         context.coordinator.onApproachingBottom = onApproachingBottom
+        context.coordinator.onDocumentReady = onDocumentReady
+        context.coordinator.onDocumentFailed = onDocumentFailed
+        context.coordinator.onImagePreviewVisibilityChange = onImagePreviewVisibilityChange
+        context.coordinator.allowsSameDocumentAnchors = allowsSameDocumentAnchors
         context.coordinator.openRepositoryMarkdownInApp = openRepositoryMarkdownInApp
         context.coordinator.markdownLinkRepositoryOwner = markdownLinkRepositoryOwner
         context.coordinator.markdownLinkRepositoryName = markdownLinkRepositoryName
@@ -467,7 +519,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 readmeFontSizeAdjustment: readmeFontSizeAdjustment
             )
             context.coordinator.expectsInitialLoad = true
-            webView.loadHTMLString(fullHTML, baseURL: baseURL)
+            context.coordinator.documentNavigation = webView.loadHTMLString(fullHTML, baseURL: baseURL)
             return
         }
 
@@ -546,11 +598,23 @@ private struct ReadmeWebContentView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
         weak var webView: WKWebView?
+        var accountID: Int64?
+        private var imagePreviewController: ReadmeImagePreviewController?
         var lastLoadedKey: ReadmeKey?
+        /// 用导航对象识别当前加载失败；正文就绪另由逐导航的 JS 令牌校验。
+        var documentNavigation: WKNavigation?
+        /// 每次导航独立令牌：主题重载也可能沿用 documentID，不能只按业务文档身份验收 JS 消息。
+        private var documentReadyToken: String?
+        /// ready 令牌在首次交接后会清空；图片浮层需在整份文档存活期间识别消息来源。
+        private var imagePreviewDocumentToken: String?
         var lastScrollToTopRequestID = 0
         var onScrollReportChange: (RepoDetailScrollReport) -> Void = { _ in }
         var onTranslationSourceChange: (ReadmeTranslationSourceSnapshot) -> Void = { _ in }
         var onApproachingBottom: () -> Void = {}
+        var onDocumentReady: (String) -> Void = { _ in }
+        var onDocumentFailed: (String) -> Void = { _ in }
+        var onImagePreviewVisibilityChange: (Bool) -> Void = { _ in }
+        var allowsSameDocumentAnchors = false
         var onFindResult: (Bool?) -> Void = { _ in }
         var openRepositoryMarkdownInApp = false
         var markdownLinkRepositoryOwner: String?
@@ -615,7 +679,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         var expectsInitialLoad: Bool = false
         var diagnosticOperation: DiagnosticOperation?
 
-        /// 构造带 README 阅读增强脚本的 content controller。
+        /// 构造 README 阅读增强桥接；脚本在每次导航准备时携带独立令牌安装。
         ///
         /// 为什么不用 NSScrollView 观察：macOS `WKWebView` 没有公开 `scrollView` 属性，
         /// 并且不同 WebKit 版本的内部 NSView 子树并不稳定。直接从文档里监听 `scroll`
@@ -630,15 +694,11 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         /// - message handler 对滚动 payload 和段落数组分别做类型、长度校验。
         func makeUserContentController() -> WKUserContentController {
             let controller = WKUserContentController()
-            let script = WKUserScript(
-                source: ReadmeWebView.readmeEnhancementScript,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
-            )
-            controller.addUserScript(script)
             controller.add(self, name: ReadmeWebViewConstants.scrollMessageName)
             controller.add(self, name: ReadmeWebViewConstants.translationSourceMessageName)
             controller.add(self, name: ReadmeWebViewConstants.mermaidRequestMessageName)
+            controller.add(self, name: ReadmeWebViewConstants.documentReadyMessageName)
+            controller.add(self, name: ReadmeWebViewConstants.imagePreviewMessageName)
             userContentController = controller
             return controller
         }
@@ -647,6 +707,8 @@ private struct ReadmeWebContentView: NSViewRepresentable {
         /// `WKUserContentController.removeScriptMessageHandler`。SwiftUI 拆除 NSView 时会在
         /// 主线程调用 `dismantleNSView`，这里集中做 WebKit handler 清理，避免循环持有。
         func removeScriptMessageHandler() {
+            imagePreviewController?.dismiss(animated: false)
+            imagePreviewController = nil
             userContentController?.removeScriptMessageHandler(forName: ReadmeWebViewConstants.scrollMessageName)
             userContentController?.removeScriptMessageHandler(
                 forName: ReadmeWebViewConstants.translationSourceMessageName
@@ -654,6 +716,14 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             userContentController?.removeScriptMessageHandler(
                 forName: ReadmeWebViewConstants.mermaidRequestMessageName
             )
+            userContentController?.removeScriptMessageHandler(
+                forName: ReadmeWebViewConstants.documentReadyMessageName
+            )
+            userContentController?.removeScriptMessageHandler(
+                forName: ReadmeWebViewConstants.imagePreviewMessageName
+            )
+            documentReadyToken = nil
+            imagePreviewDocumentToken = nil
             starHistoryDOMTask?.cancel()
             starHistoryDOMTask = nil
             mermaidRuntimeTask?.cancel()
@@ -673,9 +743,11 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             }
         }
 
-        /// 内容或主题重载后，旧 DOM 已消失；导航完成时必须把当前翻译状态重新注入。
+        /// 内容或主题重载后，旧 DOM 已消失；正文就绪时必须把当前翻译状态重新注入。
         /// 同时取消旧文档尚未完成的 Mermaid 任务，避免切换仓库后把图表写进新 DOM。
         func prepareForDocumentReload() {
+            imagePreviewController?.dismiss(animated: false)
+            imagePreviewController = nil
             diagnosticOperation?.finish(.cancelled)
             diagnosticOperation = DiagnosticOperation(category: "readme", name: "webDocument")
             lastAppliedTranslationRevision = nil
@@ -686,6 +758,33 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             mermaidDocumentRevision &+= 1
             mermaidRuntimeTask?.cancel()
             mermaidRuntimeTask = nil
+
+            let readyToken = UUID().uuidString
+            documentReadyToken = readyToken
+            imagePreviewDocumentToken = readyToken
+            // controller 仅承载本阅读器的脚本；逐导航替换，旧 DOM 排队中的消息仍携带旧令牌。
+            userContentController?.removeAllUserScripts()
+            userContentController?.addUserScript(WKUserScript(
+                source: ReadmeWebView.readmeEnhancementScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            ))
+            userContentController?.addUserScript(WKUserScript(
+                source: """
+                (() => {
+                    const article = document.querySelector('body > article');
+                    if (!article) return;
+                    document.body.dataset.readmeDocumentToken = '\(readyToken)';
+                    document.body.classList.toggle('readme-reduce-motion', \(translationReduceMotion));
+                    // document-end 已解析正文与本地 CSS；读取布局后即可交接，不等整页 load。
+                    article.getBoundingClientRect();
+                    window.webkit.messageHandlers.\(ReadmeWebViewConstants.documentReadyMessageName)
+                        .postMessage('\(readyToken)');
+                })();
+                """,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            ))
         }
 
         /// 保存最新 SwiftUI 状态，并在当前文档已可用时做无重载 DOM 更新。
@@ -694,6 +793,13 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             reduceMotion: Bool
         ) {
             pendingTranslationRenderState = state
+            if translationReduceMotion != reduceMotion {
+                // CSS 媒体查询只感知系统偏好；App 开关也应即时作用于当前图片浮层。
+                webView?.evaluateJavaScript(
+                    "document.body.classList.toggle('readme-reduce-motion', \(reduceMotion));"
+                )
+                imagePreviewController?.updateReduceMotion(reduceMotion)
+            }
             translationReduceMotion = reduceMotion
             applyTranslationRenderStateIfNeeded()
         }
@@ -777,7 +883,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                     else { return }
                     self.lastAppliedStarHistoryRevision = revision
                 } catch {
-                    // updateNSView 可能早于 document-end script；didFinish 会再次应用。
+                    // updateNSView 可能早于 document-end script；正文就绪后会再次应用。
                     AppLog.ui.debug("README Star History DOM update deferred: \(error.localizedDescription, privacy: .public)")
                 }
             }
@@ -887,13 +993,27 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             }
         }
 
-        fileprivate static let readmeEnhancementScript = """
+        /// 文案在获取脚本时按当前 App 语言生成，避免首次访问静态脚本后锁死语言。
+        private static var imagePreviewLabelsJSON: String {
+            let keys = ["title", "previous", "next", "zoomIn", "zoomOut", "fit", "actualSize", "loading", "failed"]
+            var labels = Dictionary(uniqueKeysWithValues: keys.map {
+                ($0, String.l10n("readme.imagePreview.\($0)"))
+            })
+            labels["close"] = String.l10n("common.close")
+            let data = try? JSONEncoder().encode(labels)
+            return data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+
+        fileprivate static var readmeEnhancementScript: String {
+        """
         (function() {
             var lastY = -1;
             var lastOverflow = -1;
             var ticking = false;
             var previewOverlay = null;
-            var previewRemoveTimer = null;
+            var previewState = null;
+            var previewLabels = \(imagePreviewLabelsJSON);
+            var badgeRules = \(ReadmeImageBadgeRules.json);
 
             \(ReadmeStarHistoryDOM.script)
 
@@ -1033,40 +1153,355 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 });
             }
 
-            function closeImagePreview() {
-                if (!previewOverlay) { return; }
-                var overlay = previewOverlay;
-                previewOverlay = null;
-                overlay.classList.remove('readme-image-preview-open');
-                window.clearTimeout(previewRemoveTimer);
-                previewRemoveTimer = window.setTimeout(function() {
-                    if (overlay.parentNode) {
-                        overlay.parentNode.removeChild(overlay);
-                    }
-                }, 180);
+            // 独立浏览文档只上报开关；原 README 通过 requestImagePreview 传资源列表。
+            function reportImagePreview(visible) {
+                var handler = window.webkit.messageHandlers.\(ReadmeWebViewConstants.imagePreviewMessageName);
+                if (handler) {
+                    handler.postMessage({ visible: visible, token: document.body.dataset.readmeDocumentToken });
+                }
             }
 
-            function openImagePreview(image) {
-                var src = image.currentSrc || image.src;
-                if (!src) { return; }
-                closeImagePreview();
+            function closeImagePreview() {
+                if (!previewState) { return; }
+                var state = previewState;
+                cancelPreviewImageChange(state);
+                previewState = null;
+                previewOverlay = null;
+                document.documentElement.style.overflow = state.htmlOverflow;
+                document.body.style.overflow = state.bodyOverflow;
+                state.article.inert = state.articleInert;
+                if (state.focus && state.focus.isConnected) { state.focus.focus({ preventScroll: true }); }
+                window.scrollTo(state.scrollX, state.scrollY);
+                state.overlay.classList.remove('readme-image-preview-open');
+                state.overlay.style.pointerEvents = 'none';
+                // 整窗淡出由原生宿主负责，DOM 保留最后一帧，避免先清空图片再淡出背景。
+                reportImagePreview(false);
+            }
 
+            function fitPreviewScale(state) {
+                return Math.min(1, Math.max(1, state.stage.clientWidth - 32) / state.width,
+                    Math.max(1, state.stage.clientHeight - 32) / state.height);
+            }
+
+            function renderPreviewTransform(state) {
+                var maxX = Math.max(0, (state.width * state.scale - state.stage.clientWidth) / 2);
+                var maxY = Math.max(0, (state.height * state.scale - state.stage.clientHeight) / 2);
+                state.offsetX = Math.max(-maxX, Math.min(maxX, state.offsetX));
+                state.offsetY = Math.max(-maxY, Math.min(maxY, state.offsetY));
+                state.image.style.width = (state.width * state.scale) + 'px';
+                state.image.style.height = (state.height * state.scale) + 'px';
+                state.image.style.transform = 'translate(-50%, -50%) translate('
+                    + state.offsetX + 'px, ' + state.offsetY + 'px)';
+                state.stage.classList.toggle('readme-image-preview-pannable', maxX > 0 || maxY > 0);
+                state.zoom.textContent = Math.round(state.scale * 100) + '%';
+                state.zoomOut.disabled = state.scale <= Math.min(0.1, fitPreviewScale(state)) + 0.0001;
+                state.zoomIn.disabled = state.scale >= 8;
+            }
+
+            function zoomPreview(scale, clientX, clientY) {
+                var state = previewState;
+                if (!state || !state.ready) { return; }
+                var bounds = state.stage.getBoundingClientRect();
+                var anchorX = typeof clientX === 'number' ? clientX - bounds.left - bounds.width / 2 : 0;
+                var anchorY = typeof clientY === 'number' ? clientY - bounds.top - bounds.height / 2 : 0;
+                var nextScale = Math.max(Math.min(0.1, fitPreviewScale(state)), Math.min(8, scale));
+                var ratio = nextScale / state.scale;
+                state.offsetX = anchorX - (anchorX - state.offsetX) * ratio;
+                state.offsetY = anchorY - (anchorY - state.offsetY) * ratio;
+                state.scale = nextScale;
+                state.fitted = false;
+                renderPreviewTransform(state);
+            }
+
+            function fitPreview() {
+                var state = previewState;
+                if (!state || !state.ready) { return; }
+                state.scale = fitPreviewScale(state);
+                state.offsetX = 0;
+                state.offsetY = 0;
+                state.fitted = true;
+                renderPreviewTransform(state);
+            }
+
+            // 切图只保留当前展示和最新候选；取消旧候选，迟到回调不能覆盖最后一次选择。
+            function cancelPreviewImageChange(state) {
+                window.clearTimeout(state.loadingTimer);
+                if (state.pendingImage) {
+                    state.pendingImage.remove();
+                    state.pendingImage.removeAttribute('src');
+                    state.pendingImage = null;
+                }
+                if (state.image) {
+                    state.image.getAnimations().forEach(function(animation) { animation.cancel(); });
+                }
+                if (state.fadingImage) {
+                    state.fadingImage.getAnimations().forEach(function(animation) { animation.cancel(); });
+                    state.fadingImage.remove();
+                    state.fadingImage = null;
+                }
+            }
+
+            function showPreviewImage(index) {
+                var state = previewState;
+                if (!state || index < 0 || index >= state.images.length) { return; }
+                if (state.index === index && (state.ready || state.pendingImage)) { return; }
+                cancelPreviewImageChange(state);
+                state.index = index;
+                state.ready = false;
+                state.drag = null;
+                state.stage.classList.remove('readme-image-preview-pannable', 'readme-image-preview-dragging');
+                state.previous.disabled = index === 0;
+                state.next.disabled = index === state.images.length - 1;
+                state.counter.textContent = (index + 1) + ' / ' + state.images.length;
+                state.zoom.textContent = '—';
+                state.zoomButtons.forEach(function(button) { button.disabled = true; });
+                state.status.hidden = true;
+                state.status.classList.remove('readme-image-preview-loading');
+                var source = state.images[index];
+                var image = document.createElement('img');
+                image.className = 'readme-image-preview-image';
+                image.alt = source.alt || '';
+                image.draggable = false;
+                image.decoding = 'async';
+                image.hidden = true;
+                state.pendingImage = image;
+                // 缓存命中也需在独立文档解码；仅真正等待时显示提示，不人为延迟图片就绪。
+                state.loadingTimer = window.setTimeout(function() {
+                    if (previewState !== state || state.pendingImage !== image) { return; }
+                    state.status.hidden = false;
+                    state.status.textContent = previewLabels.loading;
+                    state.status.classList.add('readme-image-preview-loading');
+                }, 180);
+                function loaded() {
+                    if (previewState !== state || state.pendingImage !== image) { return; }
+                    if (!image.naturalWidth || !image.naturalHeight) { failed(); return; }
+                    window.clearTimeout(state.loadingTimer);
+                    var previous = state.image;
+                    state.pendingImage = null;
+                    state.image = image;
+                    state.width = image.naturalWidth;
+                    state.height = image.naturalHeight;
+                    state.ready = true;
+                    state.status.hidden = true;
+                    state.status.classList.remove('readme-image-preview-loading');
+                    image.hidden = false;
+                    state.zoomButtons.forEach(function(button) { button.disabled = false; });
+                    fitPreview();
+                    // 只过渡透明度，缩放与拖动持续跟手；减少动态效果时直接交接。
+                    var reduced = document.body.classList.contains('readme-reduce-motion')
+                        || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                    if (!previous || reduced) {
+                        if (previous) { previous.remove(); }
+                        return;
+                    }
+                    state.fadingImage = previous;
+                    previous.setAttribute('aria-hidden', 'true');
+                    previous.style.pointerEvents = 'none';
+                    previous.classList.remove('readme-image-preview-image');
+                    previous.classList.add('readme-image-preview-outgoing');
+                    image.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, easing: 'ease-out' });
+                    var exit = previous.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 180, easing: 'ease-out' });
+                    // finished Promise 不依赖下一次绘制派发事件，窗口隐藏后也能完成旧图清理。
+                    // 快速切图的 cancel 会拒绝 Promise；旧图已由 cancelPreviewImageChange 同步移除。
+                    exit.finished.then(function() {
+                        previous.remove();
+                        if (state.fadingImage === previous) { state.fadingImage = null; }
+                    }, function() {});
+                }
+                function failed() {
+                    if (previewState !== state || state.pendingImage !== image) { return; }
+                    window.clearTimeout(state.loadingTimer);
+                    state.pendingImage = null;
+                    image.remove();
+                    if (state.image) { state.image.remove(); state.image = null; }
+                    state.status.hidden = false;
+                    state.status.classList.remove('readme-image-preview-loading');
+                    state.status.textContent = previewLabels.failed;
+                }
+                image.addEventListener('load', loaded);
+                image.addEventListener('error', failed);
+                state.stage.appendChild(image);
+                image.src = source.currentSrc || source.src;
+                if (image.complete) {
+                    if (image.naturalWidth > 0) { loaded(); } else { failed(); }
+                }
+            }
+
+            function matchesBadgeRules(source, rules) {
+                if (!source) { return false; }
+                var url;
+                try {
+                    url = new URL(source, document.baseURI);
+                    if (url.protocol === 'starcat-readme-image:' && url.hostname === 'remote') {
+                        url = new URL(url.searchParams.get('url'));
+                    }
+                } catch (_) { return false; }
+                var host = url.hostname.toLowerCase();
+                return rules.some(function(rule) {
+                    return (!rule.hosts.length || rule.hosts.some(function(domain) {
+                        return host === domain || host.endsWith('.' + domain);
+                    })) && new RegExp(rule.path, 'i').test(url.pathname)
+                        && new RegExp(rule.query, 'i').test(url.search.slice(1));
+                });
+            }
+
+            // 来源 / canonical / 明确推广外链共用 Swift 规则，不按尺寸或 alt 猜测普通小图。
+            function isBadgeImage(image) {
+                var linked = image.closest('a[href]');
+                return [image.currentSrc, image.src, image.getAttribute('data-canonical-src')].some(function(source) {
+                    return matchesBadgeRules(source, badgeRules.sources);
+                }) || (linked && matchesBadgeRules(linked.href, badgeRules.links));
+            }
+
+            function requestImagePreview(image) {
+                var article = document.querySelector('body > article');
+                // 徽章只留在正文；尚未加载的内容图仍可切换，顺序与当前可见主题分支一致。
+                var images = Array.from(article.querySelectorAll('img')).filter(function(candidate) {
+                    return !isBadgeImage(candidate) && (candidate.currentSrc || candidate.src) && candidate.getClientRects().length
+                        && getComputedStyle(candidate).visibility !== 'hidden';
+                });
+                var index = images.indexOf(image);
+                if (index < 0) { return; }
+                // currentSrc 已解析 picture 与相对地址。只传元数据，图片字节仍走原缓存。
+                window.webkit.messageHandlers.\(ReadmeWebViewConstants.imagePreviewMessageName).postMessage({
+                    token: document.body.dataset.readmeDocumentToken,
+                    index: index,
+                    images: images.map(function(candidate) {
+                        return { src: candidate.currentSrc || candidate.src, alt: candidate.alt || '' };
+                    })
+                });
+            }
+
+            function openImagePreview(request) {
+                var article = document.querySelector('body > article');
+                var images = request.images;
+                var index = request.index;
+                closeImagePreview();
+                document.querySelectorAll('.readme-image-preview').forEach(function(old) { old.remove(); });
                 var overlay = document.createElement('div');
                 overlay.className = 'readme-image-preview';
-                overlay.setAttribute('role', 'button');
-                overlay.setAttribute('aria-label', 'Close image preview');
-
-                var previewImage = document.createElement('img');
-                previewImage.src = src;
-                previewImage.alt = image.alt || '';
-                previewImage.decoding = 'async';
-                overlay.appendChild(previewImage);
-
-                overlay.addEventListener('click', closeImagePreview);
-                document.body.appendChild(overlay);
+                overlay.setAttribute('role', 'dialog');
+                overlay.setAttribute('aria-modal', 'true');
+                overlay.setAttribute('aria-label', previewLabels.title);
+                var stage = document.createElement('div');
+                stage.className = 'readme-image-preview-stage';
+                var status = document.createElement('div');
+                status.className = 'readme-image-preview-status';
+                status.setAttribute('role', 'status');
+                stage.appendChild(status);
+                var toolbar = document.createElement('div');
+                toolbar.className = 'readme-image-preview-controls';
+                var navigation = document.createElement('div');
+                navigation.className = 'readme-image-preview-group';
+                var zoomControls = document.createElement('div');
+                zoomControls.className = 'readme-image-preview-group';
+                toolbar.append(navigation, zoomControls);
+                function button(parent, action, symbol, label, callback) {
+                    var control = document.createElement('button');
+                    control.type = 'button';
+                    control.dataset.action = action;
+                    control.textContent = symbol;
+                    control.title = label;
+                    control.setAttribute('aria-label', label);
+                    control.addEventListener('click', callback);
+                    parent.appendChild(control);
+                    return control;
+                }
+                var close = button(overlay, 'close', '×', previewLabels.close, closeImagePreview);
+                close.className = 'readme-image-preview-close';
+                var previous = button(navigation, 'previous', '‹', previewLabels.previous, function() {
+                    showPreviewImage(previewState.index - 1);
+                });
+                var counter = document.createElement('span');
+                counter.className = 'readme-image-preview-counter';
+                counter.setAttribute('aria-live', 'polite');
+                navigation.appendChild(counter);
+                var next = button(navigation, 'next', '›', previewLabels.next, function() {
+                    showPreviewImage(previewState.index + 1);
+                });
+                var zoomOut = button(zoomControls, 'zoomOut', '−', previewLabels.zoomOut, function() {
+                    zoomPreview(previewState.scale / 1.25);
+                });
+                var zoom = document.createElement('span');
+                zoom.className = 'readme-image-preview-zoom';
+                zoomControls.appendChild(zoom);
+                var zoomIn = button(zoomControls, 'zoomIn', '+', previewLabels.zoomIn, function() {
+                    zoomPreview(previewState.scale * 1.25);
+                });
+                var fit = button(zoomControls, 'fit', previewLabels.fit, previewLabels.fit, fitPreview);
+                var actual = button(zoomControls, 'actualSize', '1:1', previewLabels.actualSize, function() {
+                    zoomPreview(1);
+                });
+                overlay.append(stage, toolbar);
+                var state = {
+                    overlay: overlay, article: article, images: images, index: index,
+                    stage: stage, status: status, previous: previous, next: next, counter: counter,
+                    zoom: zoom, zoomOut: zoomOut, zoomIn: zoomIn, zoomButtons: [zoomOut, zoomIn, fit, actual],
+                    image: null, pendingImage: null, fadingImage: null, loadingTimer: null,
+                    ready: false, scale: 1, offsetX: 0, offsetY: 0, drag: null,
+                    focus: document.activeElement, articleInert: article.inert,
+                    htmlOverflow: document.documentElement.style.overflow, bodyOverflow: document.body.style.overflow,
+                    scrollX: window.scrollX, scrollY: window.scrollY
+                };
                 previewOverlay = overlay;
+                previewState = state;
+                article.inert = true;
+                document.documentElement.style.overflow = 'hidden';
+                document.body.style.overflow = 'hidden';
+                document.body.appendChild(overlay);
+                overlay.addEventListener('click', function(event) {
+                    // pointer capture 会把图片上的抬手 / click 重定向到 stage，拖动结束不能误关浮层。
+                    var blank = event.target === overlay || (event.target === stage && !state.pointerStartedOnImage);
+                    state.pointerStartedOnImage = false;
+                    if (blank) { closeImagePreview(); }
+                });
+                stage.addEventListener('wheel', function(event) {
+                    event.preventDefault();
+                    if (!state.pinching) {
+                        zoomPreview(state.scale * Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.04 : 0.002)),
+                            event.clientX, event.clientY);
+                    }
+                }, { passive: false });
+                // WebKit 的触控板捏合使用 gesture 事件；同一手势中的 wheel 不再叠加缩放。
+                stage.addEventListener('gesturestart', function(event) {
+                    event.preventDefault();
+                    state.pinching = true;
+                    state.gestureScale = state.scale;
+                }, { passive: false });
+                stage.addEventListener('gesturechange', function(event) {
+                    event.preventDefault();
+                    zoomPreview(state.gestureScale * event.scale, event.clientX, event.clientY);
+                }, { passive: false });
+                stage.addEventListener('gestureend', function(event) {
+                    event.preventDefault();
+                    state.pinching = false;
+                }, { passive: false });
+                stage.addEventListener('pointerdown', function(event) {
+                    state.pointerStartedOnImage = event.target === state.image;
+                    if (event.button !== 0 || event.target !== state.image || !state.ready) { return; }
+                    state.drag = { x: event.clientX, y: event.clientY, offsetX: state.offsetX, offsetY: state.offsetY };
+                    stage.setPointerCapture(event.pointerId);
+                    stage.classList.add('readme-image-preview-dragging');
+                    event.preventDefault();
+                });
+                stage.addEventListener('pointermove', function(event) {
+                    if (!state.drag) { return; }
+                    state.offsetX = state.drag.offsetX + event.clientX - state.drag.x;
+                    state.offsetY = state.drag.offsetY + event.clientY - state.drag.y;
+                    renderPreviewTransform(state);
+                });
+                function endDrag() {
+                    state.drag = null;
+                    stage.classList.remove('readme-image-preview-dragging');
+                }
+                stage.addEventListener('pointerup', endDrag);
+                stage.addEventListener('pointercancel', endDrag);
+                stage.addEventListener('lostpointercapture', endDrag);
+                showPreviewImage(index);
+                close.focus({ preventScroll: true });
+                reportImagePreview(true);
                 window.requestAnimationFrame(function() {
-                    overlay.classList.add('readme-image-preview-open');
+                    if (previewState === state) { overlay.classList.add('readme-image-preview-open'); }
                 });
             }
 
@@ -1105,11 +1540,23 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                     image.classList.add('readme-image-loading');
                 }
 
+                function clearPreviewSemantics() {
+                    image.removeAttribute('data-readme-zoomable');
+                    image.removeAttribute('tabindex');
+                    image.removeAttribute('role');
+                    image.removeAttribute('aria-haspopup');
+                }
+
                 function markLoaded() {
                     clearLoading();
                     image.classList.remove('readme-image-failed');
                     image.classList.add('readme-image-loaded');
+                    // 每次 load 都重新判断，picture 换源后不能残留放大光标与按钮语义。
+                    if (isBadgeImage(image)) { clearPreviewSemantics(); return; }
                     image.dataset.readmeZoomable = 'true';
+                    image.tabIndex = 0;
+                    image.setAttribute('role', 'button');
+                    image.setAttribute('aria-haspopup', 'dialog');
                 }
 
                 // 加载失败也必须解除隐形：渐显样式把未标记的图片钉在 opacity:0，
@@ -1119,7 +1566,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                     clearLoading();
                     image.classList.remove('readme-image-loaded');
                     image.classList.add('readme-image-failed');
-                    image.removeAttribute('data-readme-zoomable');
+                    clearPreviewSemantics();
                 }
 
                 // 持续监听，picture 换源后仍能从失败恢复；缓存命中则立即结算。
@@ -1135,10 +1582,19 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 }
 
                 image.addEventListener('click', function(event) {
+                    // 徽章常包在构建 / 包版本链接中，不能吞掉它们原有的导航与冒泡。
+                    if (isBadgeImage(image)) { return; }
                     event.preventDefault();
                     event.stopPropagation();
                     if (!image.classList.contains('readme-image-loaded')) { return; }
-                    openImagePreview(image);
+                    requestImagePreview(image);
+                });
+                image.addEventListener('keydown', function(event) {
+                    if (event.key !== 'Enter' && event.key !== ' ') { return; }
+                    if (isBadgeImage(image) || !image.classList.contains('readme-image-loaded')) { return; }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    requestImagePreview(image);
                 });
             }
 
@@ -1638,23 +2094,47 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             };
 
             function schedule() {
+                if (window.starcatImagePreviewRequest) { return; }
                 if (ticking) { return; }
                 ticking = true;
                 window.requestAnimationFrame(report);
             }
 
             function scheduleAfterScroll() {
-                closeImagePreview();
                 schedule();
             }
 
             window.addEventListener('scroll', scheduleAfterScroll, { passive: true });
-            window.addEventListener('resize', schedule, { passive: true });
+            window.addEventListener('resize', function() {
+                schedule();
+                if (!previewState || !previewState.ready) { return; }
+                if (previewState.fitted) { fitPreview(); } else { renderPreviewTransform(previewState); }
+            }, { passive: true });
             window.addEventListener('keydown', function(event) {
-                if (event.key === 'Escape') {
-                    closeImagePreview();
+                if (!previewState) { return; }
+                if (event.key === 'Escape' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (event.key === 'Escape') { closeImagePreview(); }
+                    else { showPreviewImage(previewState.index + (event.key === 'ArrowLeft' ? -1 : 1)); }
+                } else if (event.key === 'Tab') {
+                    var buttons = Array.from(previewOverlay.querySelectorAll('button:not(:disabled)'));
+                    var first = buttons[0];
+                    var last = buttons[buttons.length - 1];
+                    if (event.shiftKey && document.activeElement === first) {
+                        event.preventDefault();
+                        last.focus();
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        event.preventDefault();
+                        first.focus();
+                    }
                 }
-            });
+            }, true);
+            // 窗口级浏览器只复用图片交互，不执行正文滚动、翻译与 Mermaid 桥接。
+            if (window.starcatImagePreviewRequest) {
+                openImagePreview(window.starcatImagePreviewRequest);
+                return;
+            }
             window.addEventListener('load', report);
             enhanceImages();
             enhanceVideos();
@@ -1663,8 +2143,60 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             setTimeout(report, 0);
         })();
         """
+        }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == ReadmeWebViewConstants.imagePreviewMessageName {
+                guard message.frameInfo.isMainFrame,
+                      let payload = message.body as? [String: Any],
+                      let token = payload["token"] as? String,
+                      let request = imagePreviewRequest(from: payload) else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, self.imagePreviewDocumentToken == token,
+                          let webView = self.webView,
+                          let contentView = webView.window?.contentView else { return }
+                    self.imagePreviewController?.dismiss(animated: false)
+                    let controller = ReadmeImagePreviewController(
+                        request: request,
+                        accountID: self.accountID,
+                        isDark: self.lastLoadedKey?.isDark ?? false,
+                        interfaceScale: self.lastLoadedKey?.interfaceScale ?? .standard,
+                        reduceMotion: self.translationReduceMotion
+                    )
+                    controller.onDismiss = { [weak self, weak controller] in
+                        Task { @MainActor [weak self, weak controller] in
+                            guard let self, let controller,
+                                  self.imagePreviewController === controller else { return }
+                            self.imagePreviewController = nil
+                            self.onImagePreviewVisibilityChange(false)
+                        }
+                    }
+                    self.imagePreviewController = controller
+                    controller.present(over: contentView, restoringFocusTo: webView)
+                    self.onImagePreviewVisibilityChange(true)
+                }
+                return
+            }
+            if message.name == ReadmeWebViewConstants.documentReadyMessageName {
+                guard message.frameInfo.isMainFrame,
+                      let token = message.body as? String,
+                      token == documentReadyToken,
+                      let documentID = lastLoadedKey?.documentID else { return }
+                // 避开 WebKit 回调栈触发 SwiftUI 更新；执行前再次验令牌，防止排队期间已经切仓。
+                Task { @MainActor [weak self] in
+                    guard let self, self.documentReadyToken == token else { return }
+                    self.documentReadyToken = nil
+                    self.diagnosticOperation?.event(phase: "bodyReady")
+                    self.lastAppliedTranslationRevision = nil
+                    self.applyTranslationRenderStateIfNeeded()
+                    self.lastAppliedStarHistoryRevision = nil
+                    self.applyStarHistoryRenderStateIfNeeded()
+                    self.onImagePreviewVisibilityChange(false)
+                    self.onDocumentReady(documentID)
+                }
+                return
+            }
+
             if message.name == ReadmeWebViewConstants.mermaidRequestMessageName {
                 guard let payload = message.body as? [String: Any],
                       let count = payload["count"] as? NSNumber
@@ -1705,9 +2237,9 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                         limit: 8_000
                     )
                 )
-                Task { @MainActor in
-                    self.onTranslationSourceChange(snapshot)
-                }
+                // 捕获收到消息时的文档回调；主线程任务排队期间可能已切到另一个 Skill。
+                let onSourceChange = onTranslationSourceChange
+                Task { @MainActor in onSourceChange(snapshot) }
                 return
             }
 
@@ -1758,11 +2290,10 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 diagnostic?.finish(elements > 0 ? .succeeded : .partial)
             }
             PerformanceTracer.shared.mark(.readmeWebViewNavigationFinished)
-            // `updateNSView` 可能先于 document-end script 完成；导航结束后再补一次当前状态。
-            lastAppliedTranslationRevision = nil
+            // 正文就绪时已应用增强状态；这里只补尚未成功的 revision，避免慢媒体结束后重播入场。
             applyTranslationRenderStateIfNeeded()
-            lastAppliedStarHistoryRevision = nil
             applyStarHistoryRenderStateIfNeeded()
+            // 整页完成可能等待慢媒体，仅作诊断和增强状态补应用；正文已由 document-end 独立交接。
         }
 
         func webView(
@@ -1775,12 +2306,16 @@ private struct ReadmeWebContentView: NSViewRepresentable {
                 return
             }
 
-            // 1. 用户点链接 → 一律转系统浏览器
+            // 1. 用户点链接 → 同仓 Markdown 按偏好交给调用方，其余转系统浏览器
             //
             // 历史 bug：之前默认策略是 `.cancel`，导致 `loadHTMLString(_, baseURL: repo.htmlUrl)`
             // 触发的主框架首次导航（url == baseURL，navigationType == .other）也被 cancel，
             // WebView 直接白屏。修复后改为「除 linkActivated 外有条件允许」。
             if navigationAction.navigationType == .linkActivated {
+                if allowsSameDocumentAnchors, ReadmeWebView.isSameDocumentAnchor(url, currentURL: webView.url) {
+                    decisionHandler(.allow)
+                    return
+                }
                 if openRepositoryMarkdownIfNeeded(
                     url: url,
                     modifierFlags: navigationAction.modifierFlags
@@ -1827,7 +2362,7 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             decisionHandler(.allow)
         }
 
-        /// 设置打开且不是 ⌘-点击时，把同仓 Markdown 交给独立窗。
+        /// 选择应用内打开且不是 ⌘-点击时，把同仓 Markdown 交给阅读区路由。
         ///
         /// ⌘-点击故意保留浏览器逃生口，避免偶发误拦。开关关闭时本方法直接 false，
         /// 行为与改之前完全一致。
@@ -1848,24 +2383,48 @@ private struct ReadmeWebContentView: NSViewRepresentable {
             return true
         }
 
+        /// 文档切换后仍可能收到旧 DOM 的点击；必须先核对当前导航令牌再解码图片列表。
+        func imagePreviewRequest(from messageBody: Any) -> ReadmeImagePreviewRequest? {
+            guard let payload = messageBody as? [String: Any],
+                  let token = payload["token"] as? String,
+                  token == imagePreviewDocumentToken else { return nil }
+            return ReadmeImagePreviewRequest(messageBody: payload)
+        }
+
         // 渲染失败日志，方便后续排查（沙箱、CSS、HTML 片段异常都会落在这里）
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            diagnosticOperation?.finish(.failed, error: error)
+            diagnosticOperation?.finish(.failed, error: error, impact: .blocked, summary: .readmeUnavailable)
             AppLog.ui.error("ReadmeWebView didFail: \(error.localizedDescription, privacy: .public)")
+            reportDocumentFailure(navigation, error: error)
         }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            diagnosticOperation?.finish(.failed, error: error)
+            diagnosticOperation?.finish(.failed, error: error, impact: .blocked, summary: .readmeUnavailable)
             AppLog.ui.error("ReadmeWebView didFailProvisional: \(error.localizedDescription, privacy: .public)")
+            reportDocumentFailure(navigation, error: error)
+        }
+
+        /// 切换文档会取消旧导航，该取消不能把当前文档误报成加载失败。
+        private func reportDocumentFailure(_ navigation: WKNavigation?, error: Error) {
+            guard (error as NSError).code != NSURLErrorCancelled,
+                  navigation === documentNavigation, let documentID = lastLoadedKey?.documentID else { return }
+            documentReadyToken = nil
+            imagePreviewController?.dismiss(animated: false)
+            onDocumentFailed(documentID)
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            imagePreviewController?.dismiss(animated: false)
+            guard webView.window != nil else { return }
             let diagnostic = DiagnosticOperation(category: "readme", name: "contentProcessTerminated")
-            diagnostic.finish(.failed)
+            diagnostic.finish(.failed, impact: .blocked, summary: .readmeUnavailable)
+            if let documentID = lastLoadedKey?.documentID { onDocumentFailed(documentID) }
         }
     }
 }
 
 private enum ReadmeWebViewConstants {
+    static let imagePreviewMessageName = ReadmeImagePreviewController.messageName
+    static let documentReadyMessageName = "readmeDocumentReady"
     static let scrollMessageName = "readmeScroll"
     static let translationSourceMessageName = "readmeTranslationSource"
     static let mermaidRequestMessageName = "readmeMermaidRequest"
@@ -2084,12 +2643,15 @@ private struct ReadmeFloatingToolbar: View {
     /// 「导出 README Markdown」回调。nil 时隐藏该按钮。
     let onExportMarkdown: (() -> Void)?
 
+    @Environment(\.starcatReduceMotion) private var reduceMotion
+
     /// 鼠标是否悬停在浮窗上。
     ///
     /// dong4j 2026-07-04：浮窗默认占用 README 阅读区右下角，长期 100% 不透明会与正文抢戏。
     /// 在「hover / 展开 / 用户已调整过字号」三种状态下保持 100%，其余降到 45%，
     /// 既不抢阅读视线，也保证在意这个工具的用户能稳定看到反馈。
     @State private var isHovering = false
+    @State private var bounceToken = 0
 
     private var canDecrease: Bool {
         fontSizeAdjustment > AppSettings.readmeFontSizeAdjustmentRange.lowerBound
@@ -2154,25 +2716,38 @@ private struct ReadmeFloatingToolbar: View {
                         .transition(.opacity)
                 }
             }
-            toolbarButton(
-                systemImage: "gearshape",
-                helpKey: "readme.toolbar.fontMenu",
-                isDisabled: false,
-                isActive: isExpanded || fontSizeAdjustment != 0,
-                action: toggleExpanded
-            )
+            Button {
+                if !reduceMotion { bounceToken &+= 1 }
+                toggleExpanded()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .symbolEffect(.bounce, value: bounceToken)
+                    .frame(width: 30, height: 30)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(isExpanded || fontSizeAdjustment != 0 ? Color.accentColor.opacity(0.12) : Color.clear)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .help("readme.toolbar.fontMenu")
+            .accessibilityLabel(Text("readme.toolbar.fontMenu"))
         }
-        .padding(isExpanded ? 4 : 3)
+        // 收起时与回顶、安装入口同为 30pt；展开仅为附加工具保留内边距。
+        .padding(isExpanded ? 4 : 0)
         .starcatInteractiveGlassSurface(.thinMaterial, in: RoundedRectangle(cornerRadius: isExpanded ? 12 : 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: isExpanded ? 12 : 10, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.16), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.09), radius: 8, x: 0, y: 4)
-        .animation(.easeInOut(duration: 0.16), value: isExpanded)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isExpanded)
         // idle 变淡：避免常驻浮窗与 README 正文抢视线；hover / 展开 / 已调过字号 时保持不淡。
         .opacity(isIdle ? 0.45 : 1.0)
-        .animation(.easeInOut(duration: 0.18), value: isHovering)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isHovering)
         .onHover { isHovering = $0 }
     }
 
@@ -2180,7 +2755,6 @@ private struct ReadmeFloatingToolbar: View {
         systemImage: String,
         helpKey: LocalizedStringKey,
         isDisabled: Bool,
-        isActive: Bool = false,
         assetImage: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
@@ -2193,20 +2767,12 @@ private struct ReadmeFloatingToolbar: View {
                     .frame(width: 14, height: 14)
                     .foregroundStyle(isDisabled ? Color.secondary.opacity(0.38) : Color.secondary)
                     .frame(width: 26, height: 26)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isActive ? Color.accentColor.opacity(0.12) : Color.clear)
-                    )
                     .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
                 Image(systemName: systemImage)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(isDisabled ? Color.secondary.opacity(0.38) : Color.secondary)
                     .frame(width: 26, height: 26)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isActive ? Color.accentColor.opacity(0.12) : Color.clear)
-                    )
                     .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
@@ -2221,13 +2787,15 @@ private struct ReadmeFloatingToolbar: View {
 private struct ReadmeBackToTopButton: View {
     let action: () -> Void
 
+    @Environment(\.starcatReduceMotion) private var reduceMotion
+
     /// 右下角浮动按钮常驻在阅读区，默认弱化；只有鼠标指向时才完整显示，避免压住 README 正文。
     @State private var isHovering = false
     @State private var bounceToken = 0
 
     var body: some View {
         Button {
-            bounceToken &+= 1
+            if !reduceMotion { bounceToken &+= 1 }
             action()
         } label: {
             Image(systemName: "arrow.up.circle")
@@ -2248,7 +2816,7 @@ private struct ReadmeBackToTopButton: View {
         .accessibilityLabel(Text("readme.toolbar.backToTop"))
         .shadow(color: Color.black.opacity(0.09), radius: 8, x: 0, y: 4)
         .opacity(isHovering ? 1.0 : 0.45)
-        .animation(.easeInOut(duration: 0.18), value: isHovering)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isHovering)
         .onHover { isHovering = $0 }
     }
 }
@@ -2505,33 +3073,152 @@ enum ReadmeCSS {
         inset: 0;
         z-index: 9999;
         display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
+        flex-direction: column;
+        gap: 12px;
+        padding: 44px 12px 16px;
         box-sizing: border-box;
         background: var(--image-preview-bg);
         -webkit-backdrop-filter: blur(10px);
         backdrop-filter: blur(10px);
         opacity: 0;
-        cursor: zoom-out;
+        font-size: 13px;
+        line-height: 1.35;
         transition: opacity 180ms ease;
     }
     .readme-image-preview-open {
         opacity: 1;
     }
-    .readme-image-preview img {
-        max-width: calc(100vw - 48px);
-        max-height: calc(100vh - 48px);
-        object-fit: contain;
-        border-radius: 8px;
-        box-shadow: 0 18px 60px var(--image-preview-shadow);
+    /* 整窗背景模糊与淡入淡出由原生宿主负责，避免 WebKit 内重复动画。 */
+    body.readme-image-viewer .readme-image-preview {
+        opacity: 1;
+        transition: none;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
     }
+    .readme-image-preview-stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        width: 100%;
+        overflow: hidden;
+        touch-action: none;
+        user-select: none;
+    }
+    .readme-image-preview .readme-image-preview-image,
+    .readme-image-preview .readme-image-preview-outgoing {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        max-width: none;
+        max-height: none;
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        border-radius: 4px;
+        box-shadow: 0 18px 60px var(--image-preview-shadow);
+        /* 缩放与拖动必须即时跟手，不能继承正文图片的 transform 渐显过渡。 */
+        transition: none;
+    }
+    .readme-image-preview-pannable { cursor: grab; }
+    .readme-image-preview-dragging { cursor: grabbing; }
+    .readme-image-preview-controls,
+    .readme-image-preview-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+    }
+    .readme-image-preview-controls {
+        flex: 0 1 auto;
+        max-height: 45%;
+        overflow-y: auto;
+        gap: 8px 18px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg);
+        box-sizing: border-box;
+    }
+    .readme-image-preview button {
+        appearance: none;
+        font: inherit;
+        color: var(--fg);
+        background: transparent;
+        border: 0;
+        border-radius: 6px;
+        min-width: 30px;
+        min-height: 30px;
+        max-width: 100%;
+        padding: 5px 8px;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background-color 120ms ease;
+    }
+    .readme-image-preview button:hover:not(:disabled) { background: var(--code-bg); }
+    .readme-image-preview button:active:not(:disabled) { background: var(--border); }
+    .readme-image-preview button:disabled { color: var(--muted); cursor: default; }
+    .readme-image-preview button:focus-visible,
+    body > article img[data-readme-zoomable="true"]:focus-visible {
+        outline: 2px solid var(--link);
+        outline-offset: 2px;
+    }
+    .readme-image-preview .readme-image-preview-close {
+        position: absolute;
+        top: 10px;
+        right: 12px;
+        border-radius: 50%;
+        background: var(--code-bg);
+        color: var(--muted);
+        font-size: 23px;
+        line-height: 1;
+        padding: 0;
+        min-width: 26px;
+        min-height: 26px;
+    }
+    .readme-image-preview-counter,
+    .readme-image-preview-zoom {
+        min-width: 55px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }
+    .readme-image-preview-status {
+        position: absolute;
+        z-index: 1;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        padding: 16px;
+        text-align: center;
+        pointer-events: none;
+    }
+    .readme-image-preview-status[hidden],
+    .readme-image-preview-image[hidden] { display: none; }
+    .readme-image-preview-loading {
+        border-radius: 8px;
+        background: linear-gradient(100deg, transparent 20%, var(--image-loading-highlight) 50%, transparent 80%);
+        background-size: 240% 100%;
+        animation: readme-image-loading 1.8s ease-in-out infinite;
+    }
+    /* App 内关动画与系统 Reduce Motion 同等生效；加载态保留文字，取消扫光。 */
+    body.readme-reduce-motion .readme-image-preview,
+    body.readme-reduce-motion .readme-image-preview button { transition: none; }
+    body.readme-reduce-motion .readme-image-preview-loading { animation: none; background-image: none; }
     @media (prefers-reduced-motion: reduce) {
+        .readme-image-preview-loading {
+            animation: none;
+            background-image: none;
+        }
         body.readme-js-ready > article img.readme-image-loading {
             animation: none;
             background-image: none;
         }
         .markdown-body img,
+        .readme-image-preview button,
         .readme-image-preview {
             transition: none;
         }

@@ -27,6 +27,8 @@ import SwiftUI
 struct RepoIssuesWorkspaceView: View {
     let repo: Repo
     let listViewModel: RepoIssuesViewModel
+    var onClose: (() -> Void)?
+    @Environment(AppDependencies.self) private var dependencies
 
     @State private var viewModel: RepoIssuesWorkspaceViewModel
 
@@ -36,10 +38,12 @@ struct RepoIssuesWorkspaceView: View {
         inbox: GitHubNotificationInboxService,
         threadRepository: any GitHubNotificationThreadRepositoryProtocol,
         apiClient: any GitHubAPIClientProtocol,
-        aiService: RepoAIInsightService
+        aiService: RepoAIInsightService,
+        onClose: (() -> Void)? = nil
     ) {
         self.repo = repo
         self.listViewModel = listViewModel
+        self.onClose = onClose
         _viewModel = State(
             initialValue: RepoIssuesWorkspaceViewModel(
                 repo: repo,
@@ -53,7 +57,7 @@ struct RepoIssuesWorkspaceView: View {
     }
 
     var body: some View {
-        RepoIssuesWorkspaceContent(viewModel: viewModel)
+        RepoIssuesWorkspaceContent(viewModel: viewModel, onClose: onClose)
             .task(id: repo.fullName) {
                 // 旧浮层迁移时漏掉的锚点：VM 是挂载时创建的，owner/repoName 为空，
                 // 必须 prepare 复位到当前仓库，否则 loadFirstPage 的空仓库守卫静默返回
@@ -68,6 +72,7 @@ struct RepoIssuesWorkspaceView: View {
             .onDisappear {
                 viewModel.flushCreateDraft()
             }
+            .onChange(of: dependencies.databaseScopeRevision) { _, _ in onClose?() }
             // 评论成功 / hydrate 完成：重建右栏详情项并同步左栏评论数（交互契约 ③）。
             .onReceive(NotificationCenter.default.publisher(for: .githubNotificationInboxDidChange)) { _ in
                 Task { await viewModel.reloadDetailAfterInboxChange() }
@@ -78,19 +83,12 @@ struct RepoIssuesWorkspaceView: View {
 
 /// 工作台内容（Preview 直接以种子 VM 实例化，便于 UI 迭代）。
 struct RepoIssuesWorkspaceContent: View {
+    @Namespace private var selectionSpace
     @State var viewModel: RepoIssuesWorkspaceViewModel
+    var onClose: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.starcatReduceMotion) private var reduceMotion
-
-    /// 尺寸（2026-11-01 dong4j 反馈首版过大）：宽 ~1040、高 ~660，按宿主屏幕可见区钳制。
-    private static var workspaceSize: CGSize {
-        let visible = NSScreen.main?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        let width = min(1_040, max(880, visible.width - 200))
-        let height = min(660, max(520, visible.height - 220))
-        return CGSize(width: width, height: height)
-    }
 
     private static let leftColumnWidth: CGFloat = 320
 
@@ -104,27 +102,19 @@ struct RepoIssuesWorkspaceContent: View {
                 rightPane
             }
         }
-        .frame(width: Self.workspaceSize.width, height: Self.workspaceSize.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .appLocaleEnvironment()
+        .onExitCommand {
+            viewModel.flushCreateDraft()
+            if let onClose { onClose() } else { dismiss() }
+        }
     }
 
     // MARK: - 顶栏
 
     private var topBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "circle.circle")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.green)
-            Text(String.l10n("repo.issues.popover.title", defaultValue: "Issues"))
-                .font(.headline)
-            Text(verbatim: viewModel.repo.fullName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(viewModel.repo.fullName)
-            Spacer()
+        RepoWorkspaceHeader(target: RepoFileBrowserTarget(repo: viewModel.repo)) {
             SyncIconButton(
                 isRefreshing: viewModel.listViewModel.isLoading,
                 tooltip: String.l10n("repo.issues.workspace.refresh", defaultValue: "刷新 Issues")
@@ -150,11 +140,9 @@ struct RepoIssuesWorkspaceContent: View {
             .disabled(viewModel.isCreating)
             SheetCloseButton {
                 viewModel.flushCreateDraft()
-                dismiss()
+                if let onClose { onClose() } else { dismiss() }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 
     // MARK: - 左栏
@@ -250,35 +238,47 @@ struct RepoIssuesWorkspaceContent: View {
 
     private var issueList: some View {
         let displayed = viewModel.listViewModel.displayedIssues
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if viewModel.listViewModel.isLoading && displayed.isEmpty {
-                    RepoIssuesListSkeleton()
-                } else if displayed.isEmpty {
-                    emptyListState
-                } else {
-                    ForEach(Array(displayed.enumerated()), id: \.element.id) { index, issue in
-                        RepoIssueListRow(
-                            issue: issue,
-                            isSelected: !viewModel.isCreating
-                                && viewModel.selectedIssue?.id == issue.id,
-                            onSelect: { viewModel.select(issue) }
-                        )
-                        .automaticListPagination(
-                            appearingIndex: index,
-                            visibleItemCount: displayed.count,
-                            loadedItemCount: viewModel.listViewModel.issues.count,
-                            hasMore: viewModel.listViewModel.hasMore,
-                            isLoading: viewModel.listViewModel.isLoading
-                                || viewModel.listViewModel.isLoadingMore,
-                            identity: "repo-issues-\(viewModel.repo.fullName)|\(viewModel.listViewModel.stateFilter.rawValue)|\(viewModel.listViewModel.normalizedSearchText)"
-                        ) {
-                            await viewModel.listViewModel.loadMoreIfNeeded()
-                        }
-                        if index < displayed.count - 1 {
-                            Divider().padding(.leading, 34)
+        return ScrollViewReader { scrollProxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if viewModel.listViewModel.isLoading && displayed.isEmpty {
+                        RepoIssuesListSkeleton()
+                    } else if displayed.isEmpty {
+                        emptyListState
+                    } else {
+                        ForEach(Array(displayed.enumerated()), id: \.element.id) { index, issue in
+                            RepoIssueListRow(
+                                issue: issue,
+                                isSelected: !viewModel.isCreating
+                                    && viewModel.selectedIssue?.id == issue.id,
+                                rowIndex: index,
+                                selectionNamespace: selectionSpace,
+                                onSelect: { viewModel.select(issue) }
+                            )
+                            .automaticListPagination(
+                                appearingIndex: index,
+                                visibleItemCount: displayed.count,
+                                loadedItemCount: viewModel.listViewModel.issues.count,
+                                hasMore: viewModel.listViewModel.hasMore,
+                                isLoading: viewModel.listViewModel.isLoading
+                                    || viewModel.listViewModel.isLoadingMore,
+                                identity: "repo-issues-\(viewModel.repo.fullName)|\(viewModel.listViewModel.stateFilter.rawValue)|\(viewModel.listViewModel.normalizedSearchText)"
+                            ) {
+                                await viewModel.listViewModel.loadMoreIfNeeded()
+                            }
+                            .id(issue.id)
+                            if index < displayed.count - 1 {
+                                Divider().padding(.leading, 34)
+                            }
                         }
                     }
+                }
+            }
+            .onChange(of: viewModel.selectedIssue?.id) { _, issueID in
+                guard let issueID, displayed.contains(where: { $0.id == issueID }) else { return }
+                // 箭头跨过可见边界时同步露出选中行，不强制把每次点击的行移到列表中央。
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                    scrollProxy.scrollTo(issueID)
                 }
             }
         }
@@ -364,7 +364,7 @@ struct RepoIssuesWorkspaceContent: View {
         ZStack {
             if viewModel.isCreating {
                 RepoIssueCreatePane(viewModel: viewModel)
-                    .transition(.opacity)
+                    .detailContentTransition()
             } else if let item = viewModel.detailItem {
                 // 淡出期间保留旧帖快照，但立即禁用交互，避免旧评论目标在切帖后仍可操作。
                 // 身份按会话区分；同帖的评论刷新不会重建编辑器或重复触发切换动画。
@@ -374,21 +374,27 @@ struct RepoIssuesWorkspaceContent: View {
                         guard viewModel.detailItem?.id == item.id else { return }
                         viewModel.detailItem = $0
                     }
-                ), showsHeroTint: false,
-                   commentComposerBackground: AnyShapeStyle(Color(nsColor: .windowBackgroundColor)))
+                ), showsHeroTint: false, showsRepositoryHeader: false,
+                   showsOpenInStarcatAction: false,
+                   commentComposerBackground: AnyShapeStyle(Color(nsColor: .windowBackgroundColor)),
+                   onSelectAdjacent: { delta in
+                       Task { await viewModel.selectAdjacentIssue(delta) }
+                   },
+                   canSelectPrevious: viewModel.canSelectAdjacentIssue(-1),
+                   canSelectNext: viewModel.canSelectAdjacentIssue(1))
                 .background(Color(nsColor: .windowBackgroundColor))
                 .disabled(viewModel.isCreating || viewModel.detailItem?.id != item.id)
                 .allowsHitTesting(!viewModel.isCreating && viewModel.detailItem?.id == item.id)
                 .id(item.id)
-                .transition(.opacity)
+                .detailContentTransition()
             } else {
                 emptySelectionPlaceholder
-                    .transition(.opacity)
+                    .detailContentTransition()
             }
         }
         // 既监听模式，也监听异步物化后的会话身份；仅监听 paneMode 不会覆盖 Issue 间切换。
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: viewModel.paneMode)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: viewModel.detailItem?.id)
+        .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.24), value: viewModel.paneMode)
+        .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.24), value: viewModel.detailItem?.id)
     }
 
     private var emptySelectionPlaceholder: some View {
@@ -411,9 +417,9 @@ struct RepoIssuesWorkspaceContent: View {
 private struct RepoIssueListRow: View {
     let issue: GitHubRepoIssue
     let isSelected: Bool
+    var rowIndex = 0
+    var selectionNamespace: Namespace.ID? = nil
     let onSelect: () -> Void
-
-    @State private var isHovered = false
 
     var body: some View {
         Button(action: onSelect) {
@@ -463,21 +469,7 @@ private struct RepoIssueListRow: View {
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .onHover { isHovered = $0 }
-        .background(rowBackground)
-        .animation(.easeOut(duration: 0.1), value: isHovered)
-    }
-
-    private var rowBackground: some View {
-        Group {
-            if isSelected {
-                Color.accentColor.opacity(0.10)
-            } else if isHovered {
-                Color.primary.opacity(0.05)
-            } else {
-                Color.clear
-            }
-        }
+        .listRowSurface(index: rowIndex, isSelected: isSelected, selectionNamespace: selectionNamespace)
     }
 
     /// GitHub 惯例配色：open 绿圈 / closed 紫色对勾。

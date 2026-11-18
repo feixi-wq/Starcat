@@ -2,7 +2,7 @@
 //  ProfileLinksRow.swift
 //  Starcat
 //
-//  Sidebar 头像卡的个人主页快捷链接行：bio + 一排紧凑图标（company / blog / twitter / email）。
+//  Sidebar 头像卡的个人主页快捷链接行：bio + 居中社交图标；组织移至账户资料浮层。
 //  HOM-PROFILE 2026-06-05 引入。
 //
 //  设计动机：
@@ -16,7 +16,7 @@
 //  ┌────────────────────────────────────────┐
 //  │ bio 文字（如有，最多 2 行折行）             │
 //  ├────────────────────────────────────────┤
-//  │ 🏢 🔗 🐦 ✉️                            │
+//  │             🏢 🔗 🐦 ✉️                 │
 //  └────────────────────────────────────────┘
 //
 //  关键约束：
@@ -34,8 +34,7 @@ struct ProfileLinksRow: View {
 
     var body: some View {
         // dong4j 2026-06-05 反馈：bio + 链接行整体居中（之前左对齐与三栏统计/草坪不齐）。
-        // bio 多行时按"段落居中"（multilineTextAlignment(.center)），链接图标行用
-        // HStack 不带 Spacer + frame(maxWidth:.infinity) 居中。
+        // 组织在账户浮层中以完整名称展示，社交图标继续保持原来的中心位置。
         VStack(spacing: 6) {
             if let bio = user.bio?.trimmingCharacters(in: .whitespacesAndNewlines),
                !bio.isEmpty {
@@ -50,7 +49,6 @@ struct ProfileLinksRow: View {
                     .help(bio)
             }
 
-            // 图标按钮行：每个字段独立判 nil/空，最终至少展示 1 个才渲染该行。
             let buttons = makeIconButtons()
             if !buttons.isEmpty {
                 HStack(spacing: 10) {
@@ -58,6 +56,7 @@ struct ProfileLinksRow: View {
                         ProfileIconButton(item: btn)
                     }
                 }
+                .frame(height: 20)
                 .frame(maxWidth: .infinity)
             }
         }
