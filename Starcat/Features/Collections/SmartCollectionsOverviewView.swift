@@ -20,6 +20,9 @@ struct SmartCollectionsOverviewView: View {
 
     @State private var systemCounts: [SmartCollectionKind: Int] = [:]
     @State private var userCounts: [String: Int] = [:]
+    /// 当前 userCounts 对应的集合定义快照，用于侧栏刷新后的增量判定：
+    /// 定义未变的集合沿用已有计数，只补算新增或规则变化的卡片。
+    @State private var countedUserCollections: [UserSmartCollection] = []
     @State private var isLoadingSystemCounts = false
     @State private var isLoadingUserCounts = false
     @State private var deleteError: String?
@@ -29,6 +32,10 @@ struct SmartCollectionsOverviewView: View {
     @State private var hoveredSystemCollection: SmartCollectionKind?
 
     var body: some View {
+        let systemCollections = SmartCollectionKind.allCases
+        // 总览重进时由视图生命周期播放入场，计数发布和切换卡片选中项不重播。
+        let revealSnapshotID = 0
+
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 systemCollectionsHeader
@@ -38,8 +45,9 @@ struct SmartCollectionsOverviewView: View {
                     alignment: .leading,
                     spacing: 12
                 ) {
-                    ForEach(SmartCollectionKind.allCases) { kind in
+                    ForEach(Array(systemCollections.enumerated()), id: \.element.id) { index, kind in
                         systemCollectionCard(kind)
+                            .listRowReveal(index: index, snapshotID: revealSnapshotID)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -57,8 +65,9 @@ struct SmartCollectionsOverviewView: View {
                         alignment: .leading,
                         spacing: 10
                     ) {
-                        ForEach(viewModel.userSmartCollections) { collection in
+                        ForEach(Array(viewModel.userSmartCollections.enumerated()), id: \.element.id) { index, collection in
                             userCollectionCard(collection)
+                                .listRowReveal(index: systemCollections.count + index, snapshotID: revealSnapshotID)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -74,11 +83,17 @@ struct SmartCollectionsOverviewView: View {
             .padding(.vertical, 16)
         }
         .task {
-            // 进入总览页先同步 sidebar 列表，避免 userSmartCollections 仍为空/过期时
-            // 用户看不到旧集合、但 create 门控仍按 DB 行数拦截。
-            await viewModel.refreshSidebar()
+            // 卡片用已有数据先展示，缓存和真实计数都不必等完整侧栏刷新。
             applyCachedCountsIfAvailable()
             await reloadAllCounts()
+            guard !Task.isCancelled else { return }
+
+            // 同步「我的集合」的定义，避免列表过期而新建门控已按 DB 行数生效。
+            // 同步后只补算新增或定义变化的集合；未变的集合沿用进入时已算好的计数，
+            // 避免用户规则在进入路径上全量算第二遍（主线程卡顿的历史原因之一）。
+            await viewModel.refreshSidebar()
+            guard !Task.isCancelled else { return }
+            await publishUserCountsIfDefinitionsChanged()
         }
         .onReceive(NotificationCenter.default.publisher(for: .repoLibraryStateDidChange)) { _ in
             // 入库/移出会影响「知识库」「未入库 Stars」等系统集合数量；只监听真实数据变更，
@@ -269,7 +284,9 @@ struct SmartCollectionsOverviewView: View {
 
     @ViewBuilder
     private func systemCountLabel(for kind: SmartCollectionKind) -> some View {
-        collectionCountLabel(systemCounts[kind] ?? 0, tint: kind.tint)
+        // nil = 计数尚未就绪（无缓存且未发布），显示骨架占位；
+        // 字典缺失与真实 0 由 Optional 区分，不再合并成 "0" 直接显示。
+        collectionCountLabel(systemCounts[kind], tint: kind.tint)
     }
 
     private func userCollectionCard(_ collection: UserSmartCollection) -> some View {
@@ -288,7 +305,7 @@ struct SmartCollectionsOverviewView: View {
 
                 Spacer(minLength: 4)
 
-                collectionCountLabel(userCounts[collection.id] ?? 0, tint: Color.accentColor)
+                collectionCountLabel(userCounts[collection.id], tint: Color.accentColor)
             }
 
             Text(collection.name)
@@ -324,18 +341,23 @@ struct SmartCollectionsOverviewView: View {
         .pressableHover()
     }
 
-    /// 数量刷新时保留旧数字，只在新结果落地时更新；右上角刷新按钮负责表达刷新状态。
-    private func collectionCountLabel(_ count: Int, tint: Color) -> some View {
-        Text(verbatim: "\(count)")
-            .font(.subheadline)
-            .fontWeight(.semibold)
-            .monospacedDigit()
-            .foregroundStyle(tint)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .fixedSize(horizontal: true, vertical: false)
-            .contentTransition(.numericText())
-            .animation(.easeInOut(duration: 0.18), value: count)
+    /// 缓存或实时计数就绪后使用详情同款数字过渡，未知值保留静态骨架。
+    private func collectionCountLabel(_ count: Int?, tint: Color) -> some View {
+        Group {
+            if let count {
+                RollingCountText(count: count, format: .number.grouping(.never))
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .fixedSize(horizontal: true, vertical: false)
+            } else {
+                CountSlotPlaceholder()
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: count == nil)
     }
 
     /// 用户集合卡片操作：编辑规则 / 删除（重命名在规则编辑器内一并完成）。
@@ -371,15 +393,22 @@ struct SmartCollectionsOverviewView: View {
             isLoadingUserCounts = false
         }
 
+        // 系统计数与用户规则相互独立，各自就绪即发布；不再互相等待，
+        // 先算完的一组数字先上屏（配合数字槽位的骨架 → 数字过渡）。
+        async let systemPublish: Void = publishSystemCounts()
+        async let userPublish: Void = publishUserCounts(for: viewModel.userSmartCollections)
+        _ = await (systemPublish, userPublish)
+    }
+
+    /// 内置集合计数：一次数据库事务读取保证八张卡片属于同一数据快照；
+    /// 纯 CPU 求值下放到并发执行器，回主 actor 后才发布。
+    private func publishSystemCounts() async {
         do {
-            async let system = loadSystemCounts()
-            async let user = loadUserCounts()
-            let (nextSystem, nextUser) = try await (system, user)
-            // 两组计数来自同一次刷新意图，只发布一个 UI transaction，避免卡片分批跳数。
-            withAnimation(.easeInOut(duration: 0.18)) {
-                systemCounts = nextSystem
-                userCounts = nextUser
-            }
+            let snapshot = try await SmartCollectionSystemCountsLoader.load(database: dependencies.database)
+            guard !Task.isCancelled else { return }
+            let nextSystem = await SmartCollectionSystemCountsLoader.counts(from: snapshot)
+            guard !Task.isCancelled else { return }
+            systemCounts = nextSystem
             storeCountSnapshot()
         } catch {
             // SWR 失败保留已有快照；清空会让短暂数据库故障退化成整页 0。
@@ -387,36 +416,39 @@ struct SmartCollectionsOverviewView: View {
         }
     }
 
-    /// 内置集合计数在一个数据库事务里读取，保证八张卡片属于同一数据快照。
-    private func loadSystemCounts() async throws -> [SmartCollectionKind: Int] {
-        let snapshot = try await SmartCollectionSystemCountsLoader.load(database: dependencies.database)
-        let repos = snapshot.starredRepos
-        var nextSystem: [SmartCollectionKind: Int] = [:]
-        for kind in SmartCollectionKind.allCases {
-            if kind == .library {
-                nextSystem[kind] = snapshot.knowledgeCount
-            } else if kind == .outsideLibraryStars {
-                nextSystem[kind] = repos.filter { repo in
-                    (snapshot.libraryStateByRepoID[repo.id] ?? .outsideLibrary) != .inLibrary
-                }.count
-            } else if kind == .noTags {
-                nextSystem[kind] = snapshot.noTagsCount
-            } else if kind == .using {
-                nextSystem[kind] = repos.filter {
-                    snapshot.statusByRepoID[$0.id] == .using
-                }.count
-            } else {
-                nextSystem[kind] = repos.filter { repo in
-                    HomeViewModel.matchesSmartCollection(
-                        repo: repo,
-                        health: snapshot.healthByRepoID[repo.id],
-                        status: snapshot.statusByRepoID[repo.id],
-                        kind: kind
-                    )
-                }.count
-            }
+    /// 求值并发布用户集合计数。
+    /// 传当前全量集合时整体覆盖；传变化子集时增量合并，未变集合沿用旧值，
+    /// 已删除集合的旧计数由 validIDs 过滤清理。
+    private func publishUserCounts(for collections: [UserSmartCollection]) async {
+        let nextUser = await loadUserCounts(for: collections)
+        guard !Task.isCancelled else { return }
+        let validIDs = Set(viewModel.userSmartCollections.map(\.id))
+        for (id, count) in nextUser {
+            userCounts[id] = count
         }
-        return nextSystem
+        userCounts = userCounts.filter { validIDs.contains($0.key) }
+        countedUserCollections = viewModel.userSmartCollections
+        storeCountSnapshot()
+    }
+
+    /// 侧栏刷新后的增量补算入口：只对新增或定义（规则/元数据）变化的集合重新求值，
+    /// 定义全部未变时只清理已删除集合的旧计数。
+    private func publishUserCountsIfDefinitionsChanged() async {
+        guard !isLoadingUserCounts else { return }
+        let previousByID = Dictionary(uniqueKeysWithValues: countedUserCollections.map { ($0.id, $0) })
+        let changed = viewModel.userSmartCollections.filter { previousByID[$0.id] != $0 }
+        if changed.isEmpty {
+            let validIDs = Set(viewModel.userSmartCollections.map(\.id))
+            let pruned = userCounts.filter { validIDs.contains($0.key) }
+            if pruned.count != userCounts.count {
+                userCounts = pruned
+                storeCountSnapshot()
+            }
+            return
+        }
+        isLoadingUserCounts = true
+        defer { isLoadingUserCounts = false }
+        await publishUserCounts(for: changed)
     }
 
     /// 用户集合计数：编辑规则后重算；删除时只改本地字典，不走 loading。
@@ -425,25 +457,22 @@ struct SmartCollectionsOverviewView: View {
         isLoadingUserCounts = true
         defer { isLoadingUserCounts = false }
 
-        let nextUser = await loadUserCounts()
-        withAnimation(.easeInOut(duration: 0.18)) {
-            userCounts = nextUser
-        }
-        storeCountSnapshot()
+        await publishUserCounts(for: viewModel.userSmartCollections)
     }
 
-    private func loadUserCounts() async -> [String: Int] {
+    private func loadUserCounts(for collections: [UserSmartCollection]) async -> [String: Int] {
         var nextUser: [String: Int] = [:]
-        for collection in viewModel.userSmartCollections {
-            guard let rule = collection.rule else {
-                nextUser[collection.id] = 0
-                continue
-            }
-            if let count = try? await viewModel.countRepos(matching: rule) {
-                nextUser[collection.id] = count
-            } else {
-                nextUser[collection.id] = 0
-            }
+        // 一次批量求值：同一批内的规则无关查询、同 scope 候选与 FTS / 语义搜索
+        // 共享取数，不再逐规则重复（全仓性能专项 P1-6）。单条失败在批量入口内
+        // 记 0，兜底语义与旧版逐条 try? 对等。
+        let counted = collections.filter { $0.rule != nil }
+        let rules = counted.compactMap(\.rule)
+        let counts = await viewModel.countRepos(matching: rules)
+        for (collection, count) in zip(counted, counts) {
+            nextUser[collection.id] = count
+        }
+        for collection in collections where collection.rule == nil {
+            nextUser[collection.id] = 0
         }
         return nextUser
     }
@@ -455,6 +484,9 @@ struct SmartCollectionsOverviewView: View {
         ) else { return }
         systemCounts = cached.systemCounts
         userCounts = cached.userCounts
+        // 缓存签名已按当前集合定义校验通过，视为已按当前定义计数过，
+        // 侧栏刷新后的增量补算才能正确跳过未变化集合。
+        countedUserCollections = viewModel.userSmartCollections
     }
 
     private func storeCountSnapshot() {
@@ -487,5 +519,23 @@ struct SmartCollectionsOverviewView: View {
         } catch {
             deleteError = error.localizedDescription
         }
+    }
+}
+
+/// 数字槽位的首载占位：静态圆角块，尺寸贴近 subheadline 数字。
+///
+/// 有意不做 shimmer：骨架 shimmer 依赖 `SkeletonAnimatedPhase` 的 TimelineView 时钟，
+/// 卡片网格里每张卡各挂一个时钟违背骨架体系"共享单时钟"的设计约束，
+/// 而计数首载通常不足一秒，静态块已足够表达"数字尚未就绪"。
+/// 明暗主题配色复用 `SkeletonPalette`；不拦截点击、不被 VoiceOver 朗读。
+private struct CountSlotPlaceholder: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .fill(SkeletonPalette.forColorScheme(colorScheme).base)
+            .frame(width: 26, height: 13)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

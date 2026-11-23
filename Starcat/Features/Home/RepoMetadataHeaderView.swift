@@ -68,6 +68,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     let onLanguageTapped: ((String) -> Void)?
     /// 默认展示 Hero 贡献者列。目前所有详情场景都开。
     let showsContributorsStat: Bool
+    let loadsMissingSubscriberCount: Bool
     /// 入口是否显示与工作台状态仍由 Scaffold 决定，Hero 只负责胶囊排列。
     let openIssuesCount: Int?
     let onIssuesTapped: (() -> Void)?
@@ -79,6 +80,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(AuthSession.self) private var authSession
     @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(\.linuxDoDetailBadgeSource) private var linuxDoBadgeSource
     @State private var showOpenSSFScoreSheet = false
     @State private var showRepoHealthSheet = false
     @State private var paywallContext: ProPaywallContext?
@@ -95,6 +97,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         libraryState: LibraryState = .outsideLibrary,
         onLanguageTapped: ((String) -> Void)? = nil,
         showsContributorsStat: Bool = true,
+        loadsMissingSubscriberCount: Bool = true,
         openIssuesCount: Int? = nil,
         onIssuesTapped: (() -> Void)? = nil,
         onStarTapped: @escaping () async throws -> Void,
@@ -108,6 +111,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
         self.libraryState = libraryState
         self.onLanguageTapped = onLanguageTapped
         self.showsContributorsStat = showsContributorsStat
+        self.loadsMissingSubscriberCount = loadsMissingSubscriberCount
         self.openIssuesCount = openIssuesCount
         self.onIssuesTapped = onIssuesTapped
         self.onStarTapped = onStarTapped
@@ -241,7 +245,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
     /// 来源、Issues 与技能入口共用一行紧凑胶囊，窄面板时一起移到许可证下方。
     private var sourceAndFeatureBadges: some View {
         HStack(spacing: 10) {
-            LinuxDoSourceBadge(repoID: repo.id, interactive: true)
+            LinuxDoSourceBadge(repoID: repo.id, interactive: true, source: linuxDoBadgeSource)
             if let onIssuesTapped {
                 RepoIssuesEntryButton(openIssuesCount: openIssuesCount, action: onIssuesTapped)
                     // 切仓库或账号时从 0 重新入场；同仓库计数更新保持当前动画状态。
@@ -315,6 +319,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
                 isStarred: repo.isStarred,
                 count: repo.starsCount,
                 ghRepoId: repo.id,
+                repoFullName: repo.fullName,
                 helpKey: starHelpKey,
                 action: onStarTapped
             )
@@ -324,7 +329,7 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
             // 自己的 fork 出上游 / Contribute / Sync 菜单。见 ForksMenu。
             ForksMenu(repo: repo)
 
-            WatchersMenu(repo: repo)
+            WatchersMenu(repo: repo, loadsMissingSubscriberCount: loadsMissingSubscriberCount)
 
             RepoDateStatItem(label: "repo.stats.created", value: repo.createdAt, systemImage: "calendar.badge.plus")
             RepoDateStatItem(label: "repo.stats.updated", value: repo.updatedAt, systemImage: "clock.arrow.circlepath")
@@ -353,15 +358,18 @@ struct RepoMetadataHeaderView<TrailingActions: View>: View {
 struct CollapsibleRepoMetadataPanel<Content: View>: View {
     @Binding var collapseProgress: CGFloat
     @Binding var panelHeight: CGFloat
+    private let showsBottomDivider: Bool
     private let content: Content
 
     init(
         collapseProgress: Binding<CGFloat>,
         panelHeight: Binding<CGFloat>,
+        showsBottomDivider: Bool,
         @ViewBuilder content: () -> Content
     ) {
         _collapseProgress = collapseProgress
         _panelHeight = panelHeight
+        self.showsBottomDivider = showsBottomDivider
         self.content = content()
     }
 
@@ -373,8 +381,10 @@ struct CollapsibleRepoMetadataPanel<Content: View>: View {
         ZStack(alignment: .top) {
             VStack(spacing: 0) {
                 content
-                Divider()
-                    .opacity(1 - progress)
+                if showsBottomDivider {
+                    Divider()
+                        .opacity(1 - progress)
+                }
             }
             .fixedSize(horizontal: false, vertical: true)
             .background {
@@ -761,10 +771,9 @@ struct RepoShareButton: View {
                             .controlSize(.small)
                     }
                 } else {
-                    let isShared = hasExistingShare
                     Label(
-                        isShared ? "repo.share.ai.created" : "repo.share.ai.create",
-                        systemImage: isShared ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack"
+                        "repo.share.ai.create",
+                        systemImage: "sparkles.rectangle.stack"
                     )
                 }
             }
@@ -802,6 +811,7 @@ struct RepoShareTaskSheet: View {
     let repoID: Int64
     let onCancel: () -> Void
     let onRetry: () -> Void
+    let onRecreate: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -951,7 +961,11 @@ struct RepoShareTaskSheet: View {
                 }
 
             case .success:
-                EmptyView()
+                Button {
+                    onRecreate()
+                } label: {
+                    Label("repo.share.ai.created", systemImage: "arrow.clockwise")
+                }
 
             case .failure:
                 Button {
@@ -1188,6 +1202,7 @@ private extension Repo {
 struct RepoStatItem: View {
     let label: LocalizedStringKey
     let value: Int
+    let introductionKey: RepoStatCountKey
     let businessIcon: BusinessIcon.Symbol
     let tint: Color
     @Environment(\.starcatInterfaceScale) private var interfaceScale
@@ -1197,8 +1212,7 @@ struct RepoStatItem: View {
             HStack(spacing: 4) {
                 BusinessIcon(businessIcon, pointSize: 14 * interfaceScale.multiplier)
                     .foregroundStyle(tint)
-                Text(value, format: .number)
-                    .monospacedDigit()
+                RepoMetadataCountLabel(count: value, introductionKey: introductionKey)
                     .font(interfaceScale.font(.bodyEmphasis, weight: .medium))
             }
             Text(label)

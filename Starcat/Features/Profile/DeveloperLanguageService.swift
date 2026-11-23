@@ -74,6 +74,13 @@ final class DeveloperLanguageService {
     private var inflightTask: Task<Void, Never>?
     private var inflightLogin: String?
 
+    /// 在途任务代数：每次真正启动新 load 或 reset 都递增。
+    /// 为什么需要：换号 / reset 取消旧任务后，旧任务可能在「新任务已登记」之后
+    /// 才恢复执行它的 defer 与 catch；没有代数校验时，旧 defer 会把新任务的
+    /// inflight 登记清掉（同 login 在途去重失效、isLoading 提前复位），旧 catch
+    /// 还可能把取消误记成 lastError 污染新一轮加载（全仓性能专项 P2-6 修正）。
+    private var inflightGeneration = 0
+
     init(apiClient: GitHubAPIClient) {
         self.apiClient = apiClient
     }
@@ -120,17 +127,27 @@ final class DeveloperLanguageService {
         }
 
         inflightLogin = normalizedLogin
+        // 代数递增与 Task 创建同在本 actor 上、之间无挂起点；Task 闭包内的所有
+        // 状态写入都先校验自己仍是最新一代，避免被取消的旧任务污染新一轮状态。
+        inflightGeneration += 1
+        let generation = inflightGeneration
         inflightTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                self.isLoading = false
-                self.inflightTask = nil
-                self.inflightLogin = nil
+                // 只有自己仍是最新一代时才清登记：换号 / reset 取消旧任务后，旧
+                // defer 可能在新任务已登记 in-flight 之后才恢复执行，无条件清理会
+                // 弄丢新任务的同 login 去重登记并提前复位 isLoading。
+                // defer 闭包内禁止 return（编译器禁止控制流逸出），用条件块等价表达守卫。
+                if generation == self.inflightGeneration {
+                    self.isLoading = false
+                    self.inflightTask = nil
+                    self.inflightLogin = nil
+                }
             }
 
             do {
                 let fetched = try await self.fetchSnapshot(login: login)
-                guard !Task.isCancelled else { return }
+                guard generation == self.inflightGeneration, !Task.isCancelled else { return }
                 self.snapshot = fetched
                 self.lastFetchedAt = fetched.fetchedAt
                 self.lastError = nil
@@ -138,10 +155,17 @@ final class DeveloperLanguageService {
                 AppLog.network.info("Developer languages fetched: login=\(login, privacy: .public), repos=\(fetched.repositoryCount, privacy: .public), languages=\(fetched.languages.count, privacy: .public)")
             } catch is CancellationError {
                 AppLog.network.info("Developer languages fetch cancelled: login=\(login, privacy: .public)")
+            } catch NetworkError.cancelled {
+                // API 客户端会把底层 URLsession 的任务取消包装成 NetworkError.cancelled
+                // 抛出；语义上就是取消，必须先于 LocalizedError 分支拦截，否则会把
+                // lastError 污染成「取消错误」并干扰调用方对新一次加载的判断。
+                AppLog.network.info("Developer languages fetch cancelled: login=\(login, privacy: .public)")
             } catch let err as LocalizedError {
+                guard generation == self.inflightGeneration else { return }
                 self.lastError = err
                 AppLog.network.error("Developer languages fetch failed: \(err.localizedDescription, privacy: .public)")
             } catch {
+                guard generation == self.inflightGeneration else { return }
                 AppLog.network.error("Developer languages fetch failed (unknown): \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -149,6 +173,9 @@ final class DeveloperLanguageService {
 
     /// 登出 / 401 时清掉当前账号快照。
     func reset(login: String?) {
+        // 先递增代数再取消：被取消的旧任务随后恢复执行时，其 defer / catch 因代数
+        // 不匹配而不再触碰这里正在重建的状态。
+        inflightGeneration += 1
         inflightTask?.cancel()
         inflightTask = nil
         inflightLogin = nil
@@ -163,9 +190,41 @@ final class DeveloperLanguageService {
 
     // MARK: - 拉取与聚合
 
-    private struct RepositoryRef {
+    /// 仓库引用（仅 owner + name），值类型且 Sendable，可安全进入任务组子任务。
+    private struct RepositoryRef: Sendable {
         let owner: String
         let name: String
+    }
+
+    /// `/languages` 单仓请求的有界并发上限（全仓性能专项 P2-6）。
+    ///
+    /// 并发只省等待时间，总请求数与旧串行版一致（每仓恰好一次）；6 是后台批量
+    /// 刷新的保守值，避免顶到 GitHub 二级限流。`nonisolated` 让任务组子任务
+    /// （@Sendable 闭包）可以读取该常量，不必跳回主 actor。
+    private nonisolated static let languageFetchConcurrency = 6
+
+    /// 任务组子任务入口：单仓 `/languages` 取数。
+    ///
+    /// `nonisolated static`：子任务闭包是 @Sendable，不能调用 @MainActor 隔离的
+    /// 成员。取消类错误（CancellationError 与 NetworkError.cancelled）统一映射回
+    /// CancellationError 向上抛，终止整组补位调度；其余单仓失败降级为空结果只记
+    /// 日志——与旧串行版「单仓失败只跳过」的隔离语义一致（最常见是仓库刚删除 /
+    /// 重命名后的 404）。
+    nonisolated private static func fetchRepoLanguages(
+        _ repository: RepositoryRef,
+        client: GitHubAPIClient
+    ) async throws -> [String: Int] {
+        try Task.checkCancellation()
+        do {
+            return try await client.repositoryLanguages(owner: repository.owner, repo: repository.name)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch NetworkError.cancelled {
+            throw CancellationError()
+        } catch {
+            AppLog.network.warning("Developer language repo skipped: \(repository.owner, privacy: .public)/\(repository.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            return [:]
+        }
     }
 
     private func fetchSnapshot(login: String) async throws -> DeveloperLanguageSnapshot {
@@ -185,18 +244,32 @@ final class DeveloperLanguageService {
         }
 
         var totals: [String: Int] = [:]
-        for repository in repositories {
-            try Task.checkCancellation()
-            do {
-                let languages = try await apiClient.repositoryLanguages(owner: repository.owner, repo: repository.name)
+        // 有界并发任务组（全仓性能专项 P2-6）：先填满并发窗口，每完成一个补一个
+        // 新任务。补位循环恰好执行 repositories.count 次，总请求数与旧串行版一致。
+        // 取消时 group.next() 抛 CancellationError 向上传播，任务组自动取消其余
+        // 子任务，补位循环随即终止。
+        try await withThrowingTaskGroup(of: [String: Int].self) { group in
+            // 组体闭包继承本 actor 隔离，可以安全改 totals / next；子任务闭包是
+            // @Sendable，不能捕获 @MainActor self，只捕获 actor 引用与值类型数组。
+            let client = apiClient
+            let refs = repositories
+            var next = 0
+            while next < min(Self.languageFetchConcurrency, refs.count) {
+                // @Sendable 子闭包捕获 var 是数据竞争，先拷贝为 let 再进闭包。
+                let index = next
+                group.addTask { try await Self.fetchRepoLanguages(refs[index], client: client) }
+                next += 1
+            }
+            for _ in 0..<refs.count {
+                guard let languages = try await group.next() else { break }
                 for (language, bytes) in languages where bytes > 0 {
                     totals[language, default: 0] += bytes
                 }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // 单仓库失败不应让整张分享卡空掉。最常见场景是仓库刚删除 / 重命名后的 404。
-                AppLog.network.warning("Developer language repo skipped: \(repository.owner, privacy: .public)/\(repository.name, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                if next < refs.count {
+                    let index = next
+                    group.addTask { try await Self.fetchRepoLanguages(refs[index], client: client) }
+                    next += 1
+                }
             }
         }
 
@@ -242,7 +315,7 @@ final class DeveloperLanguageService {
             snapshot: snapshot
         )
         do {
-            let data = try JSONEncoder().encode(envelope)
+            let data = try CacheJSONCodec.pack(JSONEncoder().encode(envelope))
             UserDefaults.standard.set(data, forKey: cacheKey(for: login))
         } catch {
             AppLog.network.warning("Developer languages persist failed: \(error.localizedDescription, privacy: .public)")
@@ -252,9 +325,12 @@ final class DeveloperLanguageService {
     private func restoreFromDisk(login: String) {
         guard let data = UserDefaults.standard.data(forKey: cacheKey(for: login)) else { return }
         do {
-            let envelope = try JSONDecoder().decode(DiskEnvelope.self, from: data)
+            let envelope = try JSONDecoder().decode(DiskEnvelope.self, from: CacheJSONCodec.unpack(data))
             snapshot = envelope.snapshot
             lastFetchedAt = Date(timeIntervalSince1970: envelope.fetchedAt)
+            if let upgraded = CacheJSONCodec.upgradeIfSmaller(data) {
+                UserDefaults.standard.set(upgraded, forKey: cacheKey(for: login))
+            }
             AppLog.network.debug("Developer languages restored from disk: login=\(login, privacy: .public)")
         } catch {
             UserDefaults.standard.removeObject(forKey: cacheKey(for: login))

@@ -76,6 +76,9 @@ final class AppDependencies {
     let repoRepository: any RepoRepositoryProtocol
     /// Skill 扫描证据、后台补查与详情读取共用同一份本机索引。
     let repoSkillStore: RepoSkillStore
+    /// 详情、管理窗口与 MCP 复用评估任务、账号边界和报告。
+    let skillEvaluation: SkillEvaluationService
+    let publicMCPTasks: StarcatMCPTaskStore
     /// 公开 Star 数据贡献旁路；失败不得改变同步和 UI 状态。
     let dataContributionCoordinator: DataContributionCoordinator
     /// Settings 只读取开关真值，不暴露 Outbox 或网络状态。
@@ -215,6 +218,8 @@ final class AppDependencies {
     let githubIssueSummaryStore = GitHubNotificationIssueSummaryStore(persistenceCache: .shared)
     /// 单仓 AI 摘要的进程内会话表。按 repo 保留生成 Task 与 UI 状态，切换详情不取消。
     let repoAIInsightSessionStore: RepoAIInsightSessionStore
+    /// Labs 决策引擎的 Jev 兼容执行器；CLI / MCP / HTTP 只调用这一个入口。
+    let decisionSystemOneService: DecisionSystemOneService
     let aiBackgroundBillingAlerts: AIBackgroundBillingAlerts
     /// RepoContextPacker 的共享入口。单仓 AI 与知识库 RAG 必须复用同一缓存、设置和临时目录清理约束。
     let repoAIContextProvider: RepoAIContextProvider
@@ -1142,9 +1147,56 @@ final class AppDependencies {
             tokenProvider: ProjectAccessTokenProvider(session: projectAccessSession)
         )
         self.projectGitHubAPIClient = projectAPIClient
-        self.repoSkillStore = RepoSkillStore(
+        let repoSkills = RepoSkillStore(
             database: db, publicAPI: api, privateAPI: projectAPIClient,
             privateDownloader: RepoFileDownloader(tokenProvider: ProjectAccessTokenProvider(session: projectAccessSession))
+        )
+        self.repoSkillStore = repoSkills
+        let publicTasks = StarcatMCPTaskStore()
+        self.publicMCPTasks = publicTasks
+        // 只有 Direct 可建立本机库句柄。SkillLibraryStore 到首次读写才真正打开数据库。
+        let evaluationLibrary = try? SkillLibraryStore(distributionGate: distributionGate)
+        var installPreview: (root: URL, preferences: UserDefaults)?
+        #if DEBUG
+        // 首装验收使用同一个安装器。只隔离工具目录、候选和偏好，仍可使用本机 Skill。
+        if distributionGate.isAvailable(.skillManagement),
+           ProcessInfo.processInfo.environment["STARCAT_PREVIEW_SKILL_EVALUATOR_INSTALL"] == "1" {
+            let name = "Starcat-SkillEvaluator-Preview-\(UUID().uuidString)"
+            if let preferences = UserDefaults(suiteName: name) {
+                installPreview = (FileManager.default.temporaryDirectory.appendingPathComponent(name, isDirectory: true),
+                                  preferences)
+            }
+        }
+        #endif
+        let discoversInstalledTools = installPreview == nil
+        self.skillEvaluation = SkillEvaluationService(
+            gate: distributionGate, tasks: publicTasks,
+            defaults: installPreview?.preferences ?? .standard,
+            account: { db.currentUserId.map(String.init) ?? "_anonymous" },
+            providers: { settings.aiProviderProfiles },
+            readKey: { try KeychainManager.shared.loadAIKey(forProvider: $0) },
+            source: { target in
+                switch target {
+                case .repository(let repo, _):
+                    SkillEvaluationSnapshotter(store: nil, downloader: repoSkills.downloader(for: repo))
+                case .library:
+                    SkillEvaluationSnapshotter(store: evaluationLibrary, downloader: RepoFileDownloader())
+                }
+            },
+            verifyTarget: { target in
+                guard case .repository(let repo, let skill) = target else { return }
+                guard session.state.user?.id == db.currentUserId,
+                      let scan = try await repoSkills.cachedScan(for: repo),
+                      scan.commitSHA == skill.commitSHA, scan.skills.contains(skill) else {
+                    throw SkillEvaluationFailure("input")
+                }
+            },
+            installer: installPreview.map { SkillEvaluationInstaller(root: $0.root) } ?? .init(),
+            installedCandidates: {
+                guard discoversInstalledTools else { return [] }
+                return SkillEvaluationRunner.installedCandidates(home: FileManager.default.homeDirectoryForCurrentUser,
+                                                                environment: ProcessInfo.processInfo.environment)
+            }
         )
         self.projectReadmeAPI = ReadmeAPI(
             client: projectAPIClient,
@@ -1181,6 +1233,11 @@ final class AppDependencies {
             settings: self.settings,
             readmeRepository: readmeRepo
         )
+        let decisionSystemOneService = DecisionSystemOneService(
+            engineRegistry: decisionEngineRegistry,
+            settings: self.settings
+        )
+        self.decisionSystemOneService = decisionSystemOneService
         let decisionTagSuggestionRouter = DecisionTagSuggestionRouter(
             decisionProvider: repositoryDecisionService,
             settings: self.settings
@@ -1483,7 +1540,8 @@ final class AppDependencies {
             deviceStore: mcpDeviceStore,
             facade: mcpFacade,
             writeFacade: mcpWriteFacade,
-            notificationService: notificationService
+            notificationService: notificationService,
+            decisionSystemOneService: decisionSystemOneService
         )
 
         // 2026-06-12 向量索引改进：摘要生成成功后触发单 repo 向量重建。
@@ -1932,9 +1990,17 @@ final class AppDependencies {
         // 错误处理：reopen 失败仅记日志不向上抛——AuthSession 不关心 DB 细节,
         // 而且失败状态下 currentPool 仍指向旧 pool（reopen 实现保证），用户至少
         // 还能看到自己的数据，不会进入"无 DB 可用"的死状态。
+        // 只捕获 DatabaseManager 实例而非 self：闭包挂在 session 上，
+        // session 又被 self 强持，捕获 self 会成环。换号走 reopen 复用同一实例，捕获安全。
+        session.activeDatabaseUserID = { [db] in db.currentUserId }
         session.onUserSessionChanged = { [weak self] userId in
             guard let self else { return }
+            // P2-11：账号切换屏障整体区间；DatabaseManager 的 database.open /
+            // database.migrate 会作为嵌套子区间落在其中，Instruments 按嵌套解读。
+            let barrier = PerformanceTracer.shared.begin(.accountSwitchBarrier)
+            defer { PerformanceTracer.shared.end(barrier) }
             // 先等公共任务真实退出，再让任何领域服务切换数据库，避免旧账号句柄串库。
+            self.skillEvaluation.beginAccountChange()
             await mcpFacade.publicCapabilities?.prepareForAccountChange()
             // 启动校验 401 不经过 onSignOut；在共用会话出口清理，覆盖退出和凭据失效。
             if userId == nil { self.profileExtrasService.reset() }
@@ -2013,6 +2079,7 @@ final class AppDependencies {
                 await self.screensaverRefreshCoordinator.publishReady()
             }
             mcpFacade.publicCapabilities?.finishAccountChange(succeeded: didSwitchDatabase)
+            self.skillEvaluation.finishAccountChange(succeeded: didSwitchDatabase)
         }
 
         // 启动期 reload：异步 Task，不阻塞 init。测试 host 跳过避免触发 DB 启动期成本。

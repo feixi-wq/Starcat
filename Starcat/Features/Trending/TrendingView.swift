@@ -104,18 +104,15 @@ struct TrendingView: View {
             // 因而工具栏、侧栏、详情栏和其它 TimelineView 动画都不会跟随重建。
             VStack(spacing: 0) {
                 cacheWarningBanner
-                ZStack {
-                    contentView
-                        .opacity(viewModel.hasPublishedCurrentQuery ? 1 : 0)
-                        .allowsHitTesting(viewModel.hasPublishedCurrentQuery)
-
-                    if !viewModel.hasPublishedCurrentQuery {
-                        if let error = viewModel.loadError, !viewModel.isLoading {
-                            errorView(message: error)
-                        } else {
-                            RepoSkeletonListView(rowCount: 10)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
+                MiddleListPresentation(
+                    showsSkeleton: !viewModel.hasPublishedCurrentQuery && (viewModel.isLoading || viewModel.loadError == nil),
+                    rowCount: 10,
+                    retainsContentDuringLoading: true
+                ) {
+                    if !viewModel.hasPublishedCurrentQuery, let error = viewModel.loadError {
+                        errorView(message: error)
+                    } else {
+                        contentView
                     }
                 }
             }
@@ -154,7 +151,9 @@ struct TrendingView: View {
         .task(id: settings.wikiAvailabilityFilter.rawValue) {
             await reloadWikiAvailabilityMap(for: viewModel.filterCandidateRepos)
         }
-        .task(id: "\(skillCandidates.map(\.id)):\(viewModel.selectedPeriod.rawValue):\(selectedLanguage):\(settings.skillScanFilterIdentity):\(quickSearchQuery)") {
+        // 技能筛选关闭时候选构造（临时 Repo 排序 / registry 查询）没有消费方；
+        // 任务身份在此场景取常量，状态变化不再白算 skillCandidates，任务体 guard 天然 no-op。
+        .task(id: settings.skillFilter == .any ? "skills-off" : "\(skillCandidates.map(\.id)):\(viewModel.selectedPeriod.rawValue):\(selectedLanguage):\(settings.skillScanFilterIdentity):\(quickSearchQuery)") {
             guard settings.skillFilter != .any else { return }
             dependencies.repoSkillStore.enqueue(
                 skillCandidates,
@@ -645,16 +644,7 @@ struct TrendingView: View {
                 )
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                .automaticListPagination(
-                    appearingIndex: index,
-                    visibleItemCount: visibleRepos.count,
-                    loadedItemCount: viewModel.visibleLimit,
-                    hasMore: viewModel.hasMore,
-                    isLoading: viewModel.isLoading,
-                    identity: "trending-\(viewModel.reposRevision)"
-                ) {
-                    await viewModel.loadMoreIfNeeded()
-                }
+                .automaticListPagination(appearingIndex: index)
                 // HOM-201 P1-1（2026-06-14）：hover 500ms 后预拉 trending README，
                 // softTtl 短路在 API 层做（命中 6h 内 trending 缓存不打 GitHub；
                 // P1-4 让详情页 loadTrending 也用 softTtl,整条路径闭环）。
@@ -665,12 +655,14 @@ struct TrendingView: View {
         }
         .listStyle(.inset)
         .alternatingRowBackgrounds()
-        .automaticListPaginationFill(
+        .linuxDoSourceBadges(for: visibleRepos.map { $0.element.ghRepoId })
+        .automaticListPagination(
             visibleItemCount: visibleRepos.count,
             loadedItemCount: viewModel.visibleLimit,
             hasMore: viewModel.hasMore,
             isLoading: viewModel.isLoading,
-            identity: "trending-\(viewModel.reposRevision)"
+            identity: "trending-\(viewModel.reposRevision)",
+            fillsFilteredWindow: true
         ) {
             await viewModel.loadMoreIfNeeded()
         }

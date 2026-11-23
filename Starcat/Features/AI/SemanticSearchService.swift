@@ -268,24 +268,62 @@ final class SemanticSearchService {
         let queryVector = try await embedding(forQuery: trimmed, model: model, client: client)
         let cosineQuery = CosineSimilarityQuery(queryVector)
 
+        // 打分 / 排序 / 截断整体调度出主 actor（P1-3），主线程只等待 Sendable 结果。
+        return try await Self.rankCandidates(
+            candidates: candidates,
+            stored: stored,
+            queryVector: queryVector,
+            cosineQuery: cosineQuery,
+            query: trimmed,
+            ftsHitIDs: ftsHitIDs,
+            limit: limit
+        )
+    }
+
+    /// 逐候选余弦打分 + 字面 / FTS 加权 + 排序截断，纯 CPU 段整体离开主 actor（P1-3）。
+    ///
+    /// 5k 候选的逐条 vDSP 余弦与排序在主 actor 上会连续占用数百毫秒，直接顶住 UI；
+    /// 抽成 `@concurrent` 静态函数后，输入是本轮请求内的不可变 Sendable 值
+    /// （Repo / RepoEmbedding / 向量），期间不触碰任何主 actor 隔离状态，结果按值返回。
+    ///
+    /// 打分、boost、排序公式与抽离前逐字一致；`sorted` 与旧实现是同一调用、同一输入序，
+    /// 相同输入下输出逐位一致（对拍回归见 `SemanticSearchTests` 的 5k 用例）。
+    ///
+    /// 取消语义：入口、每条候选与返回前各检查一次取消；仍以 `CancellationError` 抛出
+    /// （`LocalSemanticSearchProvider` 捕获后返回空页），只是不再等整轮扫描结束才让位。
+    @concurrent
+    private nonisolated static func rankCandidates(
+        candidates: [Repo],
+        stored: [Int64: RepoEmbedding],
+        queryVector: [Float],
+        cosineQuery: CosineSimilarityQuery,
+        query: String,
+        ftsHitIDs: Set<Int64>,
+        limit: Int
+    ) async throws -> [SemanticSearchHit] {
+        try Task.checkCancellation()
+
         // 用 (hit, sortScore) 元组临时承载排序分；最终输出只暴露 hit。
-        let scored: [(hit: SemanticSearchHit, sortScore: Double)] = candidates.compactMap { repo in
-            guard let row = stored[repo.id] else { return nil }
+        var scored: [(hit: SemanticSearchHit, sortScore: Double)] = []
+        scored.reserveCapacity(candidates.count)
+        for repo in candidates {
+            try Task.checkCancellation()
+            guard let row = stored[repo.id] else { continue }
             let vector = row.vector
-            guard !vector.isEmpty, vector.count == queryVector.count else { return nil }
+            guard !vector.isEmpty, vector.count == queryVector.count else { continue }
             let cosine = cosineQuery.similarity(to: vector)
-            guard cosine.isFinite else { return nil }
+            guard cosine.isFinite else { continue }
 
             // B：字面命中 boost。先看仓卡片字段；没命中再解码 snapshot，扫已索引的
             // body（摘要+README）和简介。README 标题这类句子不在 FTS 里，只能走这里。
             let snapshot: IndexedSnapshot?
             let literalHit: Bool
-            if Self.hasLiteralMatch(repo: repo, query: trimmed) {
+            if Self.hasLiteralMatch(repo: repo, query: query) {
                 snapshot = nil
                 literalHit = true
             } else {
-                snapshot = try? IndexedSnapshot.decode(json: row.snapshotJson)
-                literalHit = Self.hasLiteralMatch(repo: repo, query: trimmed, snapshot: snapshot)
+                snapshot = try? IndexedSnapshot.decode(payload: row.snapshotPayload)
+                literalHit = Self.hasLiteralMatch(repo: repo, query: query, snapshot: snapshot)
             }
             let effectiveScore = literalHit ? max(cosine, Self.literalBoostFloor) : cosine
 
@@ -304,16 +342,17 @@ final class SemanticSearchService {
                 tier: tier,
                 reason: Self.reason(
                     for: repo,
-                    query: trimmed,
+                    query: query,
                     displayScore: displayScore,
                     literalHit: literalHit,
                     ftsHit: ftsHitIDs.contains(repo.id),
                     snapshot: snapshot
                 )
             )
-            return (hit, sortScore)
+            scored.append((hit, sortScore))
         }
 
+        try Task.checkCancellation()
         return Array(scored.sorted { $0.sortScore > $1.sortScore }.prefix(limit).map(\.hit))
     }
 
@@ -481,7 +520,7 @@ final class SemanticSearchService {
         // 用户在 Settings 编辑过的 embedding template（默认值见 AIDefaultPrompts.embedding）。
         // template 是用户层面可改的，每次重建索引都拿当前最新值。
         let embeddingTemplate = settings.aiEmbeddingTask.prompt.userPromptTemplate
-        let summaryLookup = await loadAISummaryLookup()
+        let summaryLookup = await loadAISummaryLookup(repos: repos)
 
         for repo in repos {
             let snapshot = await buildSnapshot(
@@ -495,7 +534,7 @@ final class SemanticSearchService {
             )
 
             if !force, let row = existing[repo.id] {
-                let oldSnapshot = (try? IndexedSnapshot.decode(json: row.snapshotJson))
+                let oldSnapshot = try? IndexedSnapshot.decode(payload: row.snapshotPayload)
                 if !IndexedTextDiff.shouldRebuild(
                     old: oldSnapshot,
                     new: snapshot,
@@ -517,12 +556,11 @@ final class SemanticSearchService {
             let vectors = try await client.embeddings(inputs: chunk.map(\.renderedText), model: model)
             let now = ISO8601DateFormatter.shared.string(from: Date())
             let rows = try zip(chunk, vectors).map { item, vector -> RepoEmbedding in
-                let json = try item.snapshot.encodedJSONString()
                 return RepoEmbedding(
                     repoId: item.repo.id,
                     model: model,
                     vector: vector,
-                    snapshotJson: json,
+                    snapshotPayload: try item.snapshot.encodedPayload(),
                     updatedAt: now
                 )
             }
@@ -580,9 +618,20 @@ final class SemanticSearchService {
     /// `fetchLatestPerRepo()` 本身会按 `generated_at DESC` 读全表并在应用层去重；
     /// 如果在 `buildSnapshot` 的 per-repo 循环里调用，语义搜索 1.8K stars 时会退化为
     /// 1.8K 次全表扫描。这里在 `ensureIndexed` 开头只读一次，后续按 repo id 查字典。
-    private func loadAISummaryLookup() async -> [Int64: AISummaryRecord] {
+    ///
+    /// P2-2（2026-11-22 性能专项）：单仓刷新（笔记保存 / 摘要生成后的
+    /// `refreshIndexIfChanged(for:)`）只带一个 repo 进来，改走 `fetchLatest(repoId:)`
+    /// 的 `WHERE repo_id = ?` 限定查询，不为一条摘要付全表扫描；结果语义与全表
+    /// 去重一致（同 repo 按 `generated_at DESC` 取首条）。internal 可见性供单测直验
+    /// 单仓路由。
+    func loadAISummaryLookup(repos: [Repo]) async -> [Int64: AISummaryRecord] {
         guard let summaryRepo = summaryRepository else { return [:] }
         do {
+            if repos.count == 1 {
+                let repoID = repos[0].id
+                guard let record = try await summaryRepo.fetchLatest(repoId: repoID) else { return [:] }
+                return [repoID: record]
+            }
             return try await summaryRepo.fetchLatestPerRepo()
         } catch {
             AppLog.ai.error("loadAISummaryLookup failed: \(error.localizedDescription, privacy: .public)")
@@ -659,7 +708,7 @@ final class SemanticSearchService {
 
     /// 判定 query 是否字面出现在仓卡片字段，或已索引 snapshot 的 body / 简介。
     ///
-    /// `snapshot` 来自 `repo_embeddings.snapshot_json`：刷新后 body 含摘要+README。
+    /// `snapshot` 来自 `repo_embeddings.snapshot_payload`：刷新后 body 含摘要和 README。
     /// 用 `localizedLowercase + contains` 做大小写不敏感子串匹配；不做分词、不做正则。
     /// 不扫笔记：笔记已走 FTS，且不应把私有笔记字面命中抬到 95% 展示分。
     nonisolated static func hasLiteralMatch(
@@ -682,7 +731,9 @@ final class SemanticSearchService {
 
     /// 生成展示用的命中原因文案。
     /// 用 displayScore 而非原始 cosine 作为百分数显示，与 UI 阈值滑杆同语义。
-    private static func reason(
+    /// P1-3：评分已调度出主 actor，reason 需在并发执行器上生成 → 加 `nonisolated`；
+    /// 可见性从 private 放开为 internal，供单测直调对拍期望文案（避免测试镜像本函数逻辑）。
+    nonisolated static func reason(
         for repo: Repo,
         query: String,
         displayScore: Double,

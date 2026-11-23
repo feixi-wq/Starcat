@@ -12,7 +12,7 @@
 //  关键约束：
 //  - 本仓库只处理本地缓存，不直接调用 AI 服务。
 //  - 是否需要重建向量的判定逻辑（diff / 阈值）放在 `SemanticSearchService` 中，
-//    Repository 只负责按主键存取 `snapshot_json` + 向量 BLOB。
+//    Repository 只负责按主键存取 `snapshot_payload` + 向量 BLOB。
 //
 
 import Foundation
@@ -28,22 +28,47 @@ protocol RepoEmbeddingRepositoryProtocol: Sendable {
 
 struct GRDBRepoEmbeddingRepository: RepoEmbeddingRepositoryProtocol {
 
+    /// IN 查询单块最大 ID 数，`fetchEmbeddings` / `countEmbeddings` 共用。
+    /// SQLite 变量上限默认 999（SQLITE_MAX_VARIABLE_NUMBER），500 留足余量。
+    private static let queryChunkSize = 500
+
     private let database: any DatabaseManaging
 
     init(database: any DatabaseManaging) {
         self.database = database
     }
 
+    /// 重复候选 ID 落进不同分块时，同一行会被各块分别返回 / 计数：IN 查询只在块内
+    /// 天然去重，跨块不会（评分重复叠加、覆盖率虚高）。分块前按值去重，顺便减少分块数。
+    private static func deduplicatedIDs(_ ids: [Int64]) -> [Int64] {
+        var seen = Set<Int64>()
+        return ids.filter { seen.insert($0).inserted }
+    }
+
     func fetchEmbeddings(model: String, repoIDs: [Int64]) async throws -> [RepoEmbedding] {
-        guard !repoIDs.isEmpty else { return [] }
-        return try await database.writer.read { db in
-            let placeholders = Array(repeating: "?", count: repoIDs.count).joined(separator: ",")
-            var args: [any DatabaseValueConvertible] = [model]
-            args.append(contentsOf: repoIDs)
-            return try RepoEmbedding.fetchAll(db, sql: """
-                SELECT * FROM repo_embeddings
-                WHERE model = ? AND repo_id IN (\(placeholders))
-                """, arguments: StatementArguments(args))
+        let uniqueIDs = Self.deduplicatedIDs(repoIDs)
+        guard !uniqueIDs.isEmpty else { return [] }
+        // P1-3（2026-11-22 性能专项）：按 500-ID 分块（与 countEmbeddings 对齐）。
+        // 5k 候选一条 IN 会超 SQLite 变量上限；分块循环放在同一个 read 快照内，
+        // 整批向量仍来自同一份数据快照，评分输入不会跨快照不一致。
+        return try await database.writer.read { db -> [RepoEmbedding] in
+            var rows: [RepoEmbedding] = []
+            rows.reserveCapacity(uniqueIDs.count)
+            var start = uniqueIDs.startIndex
+            while start < uniqueIDs.endIndex {
+                let end = uniqueIDs.index(start, offsetBy: Self.queryChunkSize, limitedBy: uniqueIDs.endIndex) ?? uniqueIDs.endIndex
+                let placeholders = Array(repeating: "?", count: end - start).joined(separator: ",")
+                var args: [any DatabaseValueConvertible] = [model]
+                // 切片形态必须元素级上转型：`[any DVC].append(contentsOf:)` 的泛型约束
+                // 要求 S.Element 恰好等于存在类型，ArraySlice<Int64> 不满足（Array 直传可以）。
+                args.append(contentsOf: uniqueIDs[start..<end].map { $0 as (any DatabaseValueConvertible) })
+                rows.append(contentsOf: try RepoEmbedding.fetchAll(db, sql: """
+                    SELECT * FROM repo_embeddings
+                    WHERE model = ? AND repo_id IN (\(placeholders))
+                    """, arguments: StatementArguments(args)))
+                start = end
+            }
+            return rows
         }
     }
 
@@ -53,14 +78,15 @@ struct GRDBRepoEmbeddingRepository: RepoEmbeddingRepositoryProtocol {
     }
 
     func countEmbeddings(model: String, repoIDs: [Int64]) async throws -> Int {
-        guard !repoIDs.isEmpty else { return 0 }
+        let uniqueIDs = Self.deduplicatedIDs(repoIDs)
+        guard !uniqueIDs.isEmpty else { return 0 }
         // 分块避免 SQLite 变量上限；覆盖率只关心 COUNT，不必一次塞进全部 ID。
         var total = 0
-        let chunkSize = 500
-        var start = repoIDs.startIndex
-        while start < repoIDs.endIndex {
-            let end = repoIDs.index(start, offsetBy: chunkSize, limitedBy: repoIDs.endIndex) ?? repoIDs.endIndex
-            let chunk = Array(repoIDs[start..<end])
+        let chunkSize = Self.queryChunkSize
+        var start = uniqueIDs.startIndex
+        while start < uniqueIDs.endIndex {
+            let end = uniqueIDs.index(start, offsetBy: chunkSize, limitedBy: uniqueIDs.endIndex) ?? uniqueIDs.endIndex
+            let chunk = Array(uniqueIDs[start..<end])
             total += try await countEmbeddingsChunk(model: model, repoIDs: chunk)
             start = end
         }

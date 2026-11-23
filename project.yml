@@ -220,6 +220,16 @@ targets:
     # 显式依赖最终 Info.plist，让版本写入在 ProcessInfoPlistFile 之后、签名之前执行。
     # postBuildScripts 仅决定 phase 位置，不能约束 Xcode 的 plist 生成任务。
     postBuildScripts:
+      - &tagIconCatalogBuildPhase
+        name: "Generate Tag Icon Catalog"
+        script: |
+          python3 "${SRCROOT}/scripts/generate-tag-icon-catalog.py" \
+            "${SRCROOT}/Starcat/Resources/Assets.xcassets" "${SCRIPT_OUTPUT_FILE_0}"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/TagIconCatalog.json"
+        showEnvVarsInLog: false
+        # 目录里的新增和删除都要参与索引，不依赖手工维护 input file list。
+        basedOnDependencyAnalysis: false
       - name: "Auto Bump Version (from git)"
         script: '"${SRCROOT}/scripts/bump-version.sh"'
         inputFiles:
@@ -265,6 +275,11 @@ targets:
     platform: macOS
     sources:
       - path: StarcatTests
+        excludes:
+          - Fixtures/SkillEvaluation
+      - path: StarcatTests/Fixtures/SkillEvaluation
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Starcat
     configFiles:
@@ -387,6 +402,7 @@ targets:
         embed: true
         codeSign: true
     postBuildScripts:
+      - *tagIconCatalogBuildPhase
       - name: "Auto Bump Version (from git)"
         script: '"${SRCROOT}/scripts/bump-version.sh"'
         inputFiles:
@@ -435,6 +451,7 @@ targets:
       - path: StarcatWidgets
       # 仅复用纯 Foundation 快照契约；Extension 不编译 GRDB、网络或业务层。
       - path: Starcat/Core/Widget/Shared
+      - path: Starcat/Core/Cache/CacheJSONCodec.swift
       - path: Starcat/Resources/Localizable.xcstrings
         buildPhase: resources
     # Extension 必须复用宿主的本地签名 Team；否则宿主可以签名而 Widget
@@ -477,6 +494,7 @@ targets:
     sources:
       - path: StarcatWidgets
       - path: Starcat/Core/Widget/Shared
+      - path: Starcat/Core/Cache/CacheJSONCodec.swift
       - path: Starcat/Resources/Localizable.xcstrings
         buildPhase: resources
     configFiles:

@@ -2,42 +2,93 @@
 //  RepoMetadataCountLabel.swift
 //  Starcat
 //
-//  Hero 元信息胶囊共用的数字过渡，保持 Skills 与 Issues 的动画节奏和宽度策略一致。
+//  详情统计、元信息胶囊与智能集合卡片共用的数字过渡。
 //
 
 import SwiftUI
 
-/// 只持有显示数字，不回写业务 Store；未完成的 Skill 扫描可继续携带数量后的「+」。
+/// 列表快照的仓库 ID 有时为 0，按完整仓库名区分详情，补全 ID 时延续当前展示。
+struct RepoStatCountKey: Hashable {
+    enum Metric: Hashable { case stars, forks, subscribers }
+
+    let fullName: String
+    let metric: Metric
+
+    init(_ fullName: String, _ metric: Metric) {
+        self.fullName = fullName.lowercased()
+        self.metric = metric
+    }
+}
+
+/// 未知值保留占位。只给数字绑定仓库身份，让切换仓库时菜单和加载任务维持各自的生命周期。
 struct RepoMetadataCountLabel: View {
+    let count: Int?
+    var complete = true
+    var introductionKey: RepoStatCountKey?
+
+    var body: some View {
+        if let count {
+            RollingCountText(count: count, complete: complete)
+                .id(introductionKey)
+        } else {
+            Text(verbatim: "-").monospacedDigit()
+        }
+    }
+}
+
+/// 入场播放一次数字过渡，同一视图中目标值改变时沿用已显示的计数。
+struct RollingCountText: View {
     let count: Int
     var complete = true
+    var format: IntegerFormatStyle<Int> = .number
 
     @Environment(\.locale) private var locale
     @Environment(\.starcatReduceMotion) private var reduceMotion
-    @State private var displayedCount = 0
+    @State private var presentation = Presentation.entering
 
-    /// 按真实数量预留空间，让原生数字过渡只影响字形，不逐帧推动整行胶囊。
+    enum Presentation: Equatable {
+        case entering
+        case showing(Int)
+
+        func display(for count: Int, reduceMotion: Bool) -> (value: Int, opacity: Double) {
+            if reduceMotion { return (count, 1) }
+            switch self {
+            case .entering: return (0, count == 0 ? 0 : 1)
+            case .showing(let value): return (value, 1)
+            }
+        }
+    }
+
     var body: some View {
+        let display = presentation.display(for: count, reduceMotion: reduceMotion)
+        let localizedFormat = format.locale(locale)
+        let targetText = count.formatted(localizedFormat)
         HStack(spacing: 0) {
-            Text(verbatim: count.formatted(.number.locale(locale)))
+            Text(verbatim: targetText)
                 .hidden()
                 .overlay(alignment: .trailing) {
-                    Text(verbatim: displayedCount.formatted(.number.locale(locale)))
-                        .contentTransition(.numericText(value: Double(displayedCount)))
+                    Text(verbatim: display.value.formatted(localizedFormat))
+                        .contentTransition(reduceMotion ? .identity : .numericText(value: Double(display.value)))
                 }
             if !complete {
                 Text(verbatim: "+")
             }
         }
+        .opacity(display.opacity)
         .monospacedDigit()
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: displayedCount)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: count.formatted(.number.locale(locale)) + (complete ? "" : "+")))
+        .accessibilityLabel(Text(verbatim: targetText + (complete ? "" : "+")))
         .task(id: count) {
-            // 首次让 0 先进入视图事务；后续从当前值过渡，离页取消，不引入逐数定时器。
+            guard presentation != .showing(count) else { return }
             if !reduceMotion { await Task.yield() }
             guard !Task.isCancelled else { return }
-            displayedCount = count
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                presentation = .showing(count)
+            }
+        }
+        .onDisappear {
+            // 视图身份可能被容器保留，恢复入场状态使同一数字下次出现时也能播放。
+            presentation = .entering
         }
     }
 }

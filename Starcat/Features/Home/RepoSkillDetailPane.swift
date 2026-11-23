@@ -39,6 +39,8 @@ struct RepoSkillDetailPane: View {
     @State private var installationIssueToast: String?
     @State private var aiInstallToast: String?
     @State private var aiInstallToastRevision = 0
+    @State private var evaluationItem: SkillEvaluationPanelItem?
+    @State private var evaluationTask: SkillEvaluationPanelTaskLink?
 
     /// 只共享翻译服务与设置；窗口拥有自己的 VM，翻译 Skill 不会打断主窗口的 README。
     init(
@@ -104,12 +106,12 @@ struct RepoSkillDetailPane: View {
                 HStack(spacing: 8) {
                     contentTabs
                     Spacer(minLength: 8)
-                    if tab == .manifest { manifestToolbar }
+                    detailToolbar
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     contentTabs
-                    if tab == .manifest {
-                        HStack { Spacer(minLength: 0); manifestToolbar }
+                    if tab == .manifest || canEvaluate {
+                        HStack { Spacer(minLength: 0); detailToolbar }
                     }
                 }
             }
@@ -172,11 +174,21 @@ struct RepoSkillDetailPane: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .allowsHitTesting(previewedFile == nil)
-        .accessibilityHidden(previewedFile != nil)
+        .allowsHitTesting(previewedFile == nil && evaluationItem == nil)
+        .accessibilityHidden(previewedFile != nil || evaluationItem != nil)
         .overlay {
             filePreviewOverlay
         }
+        .overlay {
+            // 仓库阅读区已由 AppKit sheet 承载，评估借用当前栏的尺寸与注入环境。
+            if let evaluationItem {
+                SkillEvaluationPanel(items: [evaluationItem], service: dependencies.skillEvaluation, rememberedTask: $evaluationTask) {
+                    self.evaluationItem = nil
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(contentAnimation, value: evaluationItem != nil)
         .sheet(item: translationPaywallBinding) { context in
             ProPaywallSheet.hosted(context: context, dependencies: dependencies)
         }
@@ -221,11 +233,16 @@ struct RepoSkillDetailPane: View {
         }
         .onChange(of: skill.id, initial: true) { _, _ in
             previewedFile = nil
+            evaluationItem = nil
             aiInstallToast = nil
             translationSourceDocumentID = nil
             translationSourceSnapshot = .empty
             // 只在切换 Skill 时提示，手动关闭后不因正文重绘或翻译更新再次弹出。
             installationIssueToast = skill.installationIssue
+        }
+        .onChange(of: dependencies.databaseScopeRevision) {
+            evaluationItem = nil
+            evaluationTask = nil
         }
         .onChange(of: tab) { _, _ in
             aiInstallToast = nil
@@ -325,14 +342,43 @@ struct RepoSkillDetailPane: View {
         }
     }
 
-    /// 链接和下载绑定扫描时的提交，不受阅读层译文影响。
-    private var manifestToolbar: some View {
-        HStack(spacing: 6) {
-            if !showsManifestSource,
-               let manifestURL = contentBaseURL(raw: false)?.appendingPathComponent("SKILL.md") {
-                aiInstallButton(manifestURL: manifestURL)
-                    .id(skill.id)
+    private var canEvaluate: Bool {
+        dependencies.distributionGate.isAvailable(.externalToolBridge)
+    }
+
+    private var isManifestPreviewDisabled: Bool {
+        document?.skillID != skill.id || !isContentVisible
+    }
+
+    @ViewBuilder private var detailToolbar: some View {
+        if tab == .manifest || canEvaluate {
+            HStack(spacing: 6) {
+                if tab == .manifest, !showsManifestSource,
+                   let manifestURL = contentBaseURL(raw: false)?.appendingPathComponent("SKILL.md") {
+                    aiInstallButton(manifestURL: manifestURL)
+                        .id(skill.id)
+                        .disabled(isManifestPreviewDisabled)
+                }
+                if canEvaluate {
+                    Button("skills.evaluation.action") {
+                        let source = [session.repo.fullName, skill.directory].filter { !$0.isEmpty }.joined(separator: "/")
+                        evaluationItem = SkillEvaluationPanelItem(
+                            target: .repository(session.repo, skill), name: skill.name, source: source
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if tab == .manifest {
+                    manifestPreviewControls
+                }
             }
+            .fixedSize()
+        }
+    }
+
+    /// 链接和下载绑定扫描时的提交，不受阅读层译文影响。
+    private var manifestPreviewControls: some View {
+        HStack(spacing: 6) {
             Picker("repo.files.markdown.mode", selection: $showsManifestSource) {
                 Text("repo.files.markdown.rendered").tag(false)
                 Text("repo.files.markdown.source").tag(true)
@@ -360,8 +406,7 @@ struct RepoSkillDetailPane: View {
             .disabled(showsManifestSource)
             previewSizeButton
         }
-        .disabled(document?.skillID != skill.id || !isContentVisible)
-        .fixedSize()
+        .disabled(isManifestPreviewDisabled)
     }
 
     /// 只把当前 Skill 的固定提交链接交给 AI，避免复制整仓安装指令或随分支更新改变目标。
@@ -529,6 +574,9 @@ struct RepoSkillDetailPane: View {
                     onTranslationSourceChange: { snapshot in
                         receiveTranslationSource(snapshot, documentID: document.skillID)
                     },
+                    // 源码视图覆盖阅读层时不消费翻译；仅当前已加载文档参与提取与上桥。
+                    translationMode: document.skillID == skill.id && !showsManifestSource
+                        ? settings.readmeTranslationMode : nil,
                     onDocumentReady: revealManifest,
                     registersFindShortcut: !showsManifestSource && previewedFile == nil
                 )

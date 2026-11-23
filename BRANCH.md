@@ -6,7 +6,7 @@
 >
 > 操作规范：[`docs/5-规范/Git-分支与Worktree规范.md`](docs/5-规范/Git-分支与Worktree规范.md)
 >
-> 最后核对：2026-11-16
+> 最后核对：2026-11-23
 
 ## 登记说明
 
@@ -45,10 +45,20 @@ Search Center 内容过滤、误杀控制、来源胶囊筛选、主题适配与
 
 | 分支 | 位置 | 用途 | 当前状态 | 下一步 |
 |---|---|---|---|---|
+| `dong4j/docs-app-wide-performance` | 本地 Orca worktree：`/Users/dong4j/orca/workspaces/Starcat/bonnethead` | 发版前全仓性能审查与审查 Skill；2026-11-22 起 dong4j 授权扩展为承载全仓性能优化专项修复（P0-1 起逐项修复，见 `docs/4-工程进度/全仓性能优化专项/checklist.md`）。 | `已合并`；2026-11-22 先将本地 `dev`（21 个独有提交）合入本分支（合并提交 `e6ef6042`，解决 `SemanticSearchService` 语义排序与 `ActivityView` 任务身份两处冲突，并适配 dev 侧 `snapshotPayload` 压缩 BLOB 新 API，`StarringSubsystemTests` fixture 补提交 `1708b3b6`），在合并树上通过全量 4835 项 / 520 suites 单测（1 个已知 issue）及双渠道 build-only，再快进合回本地 `dev`（未 push）。人工性能验收仍待 dong4j 完成。 | 保留本地分支与 worktree 供验收；如需删除或推送远端，等待 dong4j 单独授权。 |
+| `codex/skill-evaluator` | 本地 `../Starcat-skill-evaluator`；无远端专项分支 | 基于 `origin/dev@d436acf6`，为 Direct 的仓库 Skills 面板和本机管理窗口加入静态及 AI 评估、批量报告与 CLI/MCP 能力。 | `已合并`；2026-11-22 两次将 `dev` 合入本分支（`388f3bf8` / `4a49731e`），解决能力覆盖清单 CAP 编号、`StarcatMCPPublicFacade` init 与 `BRANCH.md` 冲突，并以 `eee16eea` 修复 `tasks` 初始化编译错误；在合并树上通过 121 项定向测试及双渠道构建，再经 `dab386de` 以 merge commit 合回本地 `dev`（未 push）。仍待 dong4j 功能与 UI 验收。 | 保留本地分支与 worktree 供验收；如需删除或推送远端，等待 dong4j 单独授权。 |
+| `codex/repo-list-loading-motion` | 本地，`../Starcat-repo-list-loading-motion` | 从 `dev@df9db309` 统一星标、探索与活动中栏的列表切换及加载衔接。按[专题清单](docs/4-工程进度/中栏列表加载动效专题/实施Checklist.md)执行。 | `已合并`；2026-11-22 将 `dev` 合入本分支并解决 `HomeView` / `RepoListView` 两处冲突（保留 dev 洞察全窗口覆盖与专题 `MiddleListPageFade` 动效），再 fast-forward 合回 `dev`。 | 保留本地分支与 worktree；如需删除，等待 dong4j 单独授权。 |
 | `codex/go-security-20261102` | 本地隔离 clone：`task-2/repos/Starcat`；无远端分支 | 从 `main`（`6908f483`）修复 SQLite 备份 helper 的安全构建基线，并统一跨仓 Go 工具链约定。 | `已合并`；2026-11-02 经确认以 fast-forward 合入 `main`（`a787c48`），未发布或操作生产数据。 | 保留本地分支；`dev` 同步与后续发布待单独授权。 |
-| `dev` | 本地 + `origin/dev`；仓库根目录 worktree | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；2026-11-15 按 dong4j 要求经 `4712a2b6` 合入 Skill 管理 `3162ca5d`，包含研究文档、M0–M3 实现及开窗崩溃修复。dong4j 确认目前可用，后续优化与剩余验收直接在本工作区进行；每日推荐已合入本地 `dev`，2026-11-16 再整合列表与详情动效、七项性能修复及独立洞察图标改动；CLI/MCP 能力与浏览器配对经 `8eea1a1b` 合入，四个支持仓也已同步至各自 `dev`。 | 本次仅本地合并，不推送；继续承载后续开发。每次发布后同步主仓库及全部 supports 独立项目的本地与远端 `dev/main`，新增变更不得回写已公开 tag。 |
+| `dev` | 本地 + `origin/dev`；仓库根目录 worktree | 日常开发与功能集成主线。新功能完成验收后先进入这里，再按发布流程进入 `main`。 | `开发中`；2026-11-15 按 dong4j 要求经 `4712a2b6` 合入 Skill 管理 `3162ca5d`，包含研究文档、M0–M3 实现及开窗崩溃修复。dong4j 确认目前可用，后续优化与剩余验收直接在本工作区进行；每日推荐已合入本地 `dev`，2026-11-16 再整合列表与详情动效、七项性能修复及独立洞察图标改动；CLI/MCP 能力与浏览器配对经 `8eea1a1b` 合入，四个支持仓也已同步至各自 `dev`。2026-11-19 从 `d436acf6` 构建 Direct `1.9.6 Beta 1`。2026-11-23 从 `c6e510e0` 发布 Direct `1.9.7-beta.1`（GitHub prerelease、`starcat.ink` 开发 feed 与官网双语日志均核验），并提交发布器上传时限修复与发布审计落档。 | 继续承载后续开发。每次发布后同步主仓库及全部 supports 独立项目的本地与远端 `dev/main`，新增变更不得回写已公开 tag。 |
 | `codex/laya-mlx-swift-poc` | 本地；无独立 worktree、无远端分支 | Laya MLX 决策引擎 PoC 的历史分支。 | `已合并`；分支头 `706f6bff` 已是 `dev` 的 ancestor，独有提交为 0。 | 暂时保留本地分支；如需删除，等待 dong4j 单独授权。 |
-| `main` | 本地 + `origin/main`；仓库根目录 worktree（发布期间检出） | 远端默认稳定主线和发布基线。 | `长期保留`；2026-11-12 按本次发布收尾要求从 `dev` fast-forward 并推送，本地及远端 `dev/main` 保持一致。 | 保持稳定；发布收尾覆盖全部独立项目，回读远端 refs 确认同步结果，不改写已公开 tag。 |
+| `main` | 本地 + `origin/main`；仓库根目录 worktree（正式发布期间检出） | 远端默认稳定主线和发布基线。 | `长期保留`；2026-11-19 在 Direct `1.9.6 Beta 1` 发布后快进到 `d436acf6`，核实本地和远端 `dev/main` 均指向该提交。2026-11-23 在 Direct `1.9.7-beta.1` 发布收尾后随 `dev` 再次快进，发布器修复与发布审计落档随同进入 `main`。 | 保持稳定；发布收尾覆盖全部独立项目，回读远端 refs 确认同步结果，不改写已公开 tag。 |
+
+2026-11-19 核对主仓库及 supports 下共 31 个独立 Git 仓库，`dev/main` 已对齐，
+包括官网 `1264f7f`、CLI `4e0d274`、Homebrew CLI `7fdf7a7`，以及仅有本地分支的
+`supports/ai-file-wall`。经 dong4j 授权，其余五仓的 `main` 均已快进并推送：
+`starcat-docs` 为 `99d0ca9`，`starcat-sharing-api` 为 `a09d8d9`，
+`starcat-trending-api` 为 `b8ae0d5`，`starcat-weekly-api` 为 `ec11487`，
+`starcat-wiki-api` 为 `2e32951`；回读远端 `dev/main` 与本地对应分支一致。
 
 2026-11-12 发布收尾覆盖主仓库及 supports 下共 31 个独立 Git 仓库。其中 30 个有
 `origin`，逐仓核对本地 `dev/main` 与远端同名分支；`supports/ai-file-wall` 无远端，
@@ -103,6 +113,12 @@ worktree 干净且无独有本地数据，以非强制方式删除后端专项 w
 
 | 分支 | 处理结论 | 清理依据 |
 |---|---|---|
+| `dong4j/ui-insights-subscription-polish` | 已合入本地 `dev` 并删除本地分支；Orca worktree 保留为 detached HEAD。 | 2026-11-22 按 dong4j 授权合并洞察页面与订阅发布窗口的图标、布局优化；专项分支先经 `f6ec813d` 合入，后续提交 `f40a8cc4`、`918c847f` 经 `20b4c3a7` 合入。确认分支为 `dev` 祖先后删除本地分支；主工作区其他未提交改动保留，界面效果待验收，未推送。 |
+| 主仓及 CLI、用户手册的 `codex/http-only-bridge` | 已删除三个本地专项分支及 `../Starcat-http-only-bridge` 下对应的三个 worktree。 | 2026-11-22 按 dong4j 授权清理。主仓 `9c3a3169`、CLI `9669693`、手册 `95cab9f` 均已合入各自 `dev`。删除前逐仓确认独有提交为 0、工作区干净，主仓 Secrets 配置与主工作区一致。跨设备配对、设置页和真实 Laya 请求后续在 `dev` 实机验收。 |
+| `dong4j/check-dev-branch-base` | 已合入本地 `dev` 并推送远端；分支保留，待 dong4j 授权后删除。 | 2026-11-22 按 dong4j 授权修复 Skill 工作台原生分栏测试的宿主环境崩溃（补齐 AppSettings / AuthSession / StarcatCommandRouter 注入）；测试提交 `f4c0b32e` 经 fast-forward 合入本地 `dev` 并推送远端。定向 6 项与全量 4766 项、520 Suite 测试通过，顺带解决 `dong4j/feat-tag-graph-detail` 行遗留的 3 项 Skill 工作台测试失败。 |
+| `dong4j/feat-tag-graph-detail` | 已合入本地 `dev`；分支及 worktree 保留。 | 2026-11-22 按 dong4j 授权合并标签图谱仓库卡片独立详情窗口入口；功能提交 `02873c1`。全量测试有 3 项 Skill 工作台测试因宿主进程崩溃失败，定向复跑被中断；人工界面及译文审核待完成。 |
+| `codex/knowledge-profile` | 已合入本地 `dev` 并删除 `../Starcat-knowledge-profile` 和本地分支。 | 2026-11-21 按 dong4j 授权，专项分支头 `9690682d` 经 `e9af0e3f` 合入，包含 #210 的个人知识画像、洞察双栏布局和年报共享统计。151 项定向测试和双渠道 Debug 构建通过。确认独有提交为 0、专项 worktree 干净、Secrets 与主工作区一致后，经 `git worktree remove` 和 `git branch -d` 清理。后续在主工作区 `dev` 开发。 |
+| `codex/tag-cooccurrence-graph` | 已合入本地 `dev` 并删除专项 worktree 和本地分支。 | 2026-11-21 按 dong4j 授权，分支头 `916fb3e1` 的 35 个专项提交经 `662ec862` 合入 `dev`。确认独有提交为 0、专项 worktree 干净、本机配置与主工作区一致后，通过 `git worktree remove` 和 `git branch -d` 清理。标签与仓库归属图（HOM-242 / #211）后续在主工作区 `dev` 继续验收。 |
 | 五仓 `codex/cli-browser-access` | 已删除五组本地分支及 worktree。 | 2026-11-16 按 dong4j 授权，主仓分支头 `22bda9c7` 经 `8eea1a1b` 合入 `dev`；CLI、Skill、Chrome、Safari 分别快进至 `2a0ba9f`、`3aed05b`、`8ec2484`、`4808117`。整合回归 374 项、24 Suite，CLI/Skill 与 96 项浏览器控制流检查通过。删除前逐仓确认分支为 `dev` 祖先、独有提交 0、`git cherry` 与三点 diff 为空、专项 worktree 干净；Secrets 与主工作区一致，仅有可再生工程/构建产物，CLI 已在主工作区重建，无旧工作区运行程序或已安装浏览器宿主引用。先支持仓、后主仓，以非强制 `git worktree remove` 与 `git branch -d` 清理。主工作区双渠道构建和最终复核见 `docs/4-工程进度/CLI与MCP能力开放专项/2026-11-16-dev合并与worktree清理记录.md`；剩余范围和人工验收继续开放，未操作远端。 |
 | `codex/list-detail-motion` | 已删除本地分支及 worktree。 | 2026-11-16 按 dong4j 授权，分支头 `a0db1dd9` 的专题实现、七项性能修复和独立洞察图标经 `fd3c66b7` 合入本地 `dev`；冲突处理保留推荐与 Issues 的后续修复。145 项、9 个 Suite 集成回归及双渠道构建与产物校验通过。删除前确认分支为 `dev` 祖先、独有提交为 0、`git cherry` 与三点 diff 为空、worktree 干净且 Secrets 配置与主工作区一致；忽略文件仅为该配置及可再生工程、构建产物，无该 worktree 中运行的程序。已通过非强制 `git worktree remove` 与 `git branch -d` 清理；未操作远端，专题人工视觉与实机性能验收仍开放。 |
 | `codex/daily-recommendation-cards` | 已删除本地分支及 worktree。 | 2026-11-15 集成提交 `5ffd0547` 经 `d059f933` 合入本地 `dev`，包含每日推荐卡片、历史、真实来源依据及 Pro 理由；199 项定向测试、17 个测试套件与双渠道构建通过。dong4j 授权清理前确认分支是 `dev` 祖先、独有提交为 0、`git cherry` 与三点 diff 为空，worktree 干净且 Secrets 配置与主工作区一致；先清理嵌套推荐后端 worktree，再以非强制方式删除 App worktree 和分支。未操作远端，界面与真实 LLM 验收及动效推广另行处理。 |

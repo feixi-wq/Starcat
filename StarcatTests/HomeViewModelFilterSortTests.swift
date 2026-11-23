@@ -1311,6 +1311,89 @@ struct HomeViewModelFilterSortTests {
         #expect(vm.items.count == expectedCount)
     }
 
+    /// 构造批量计数对拍规则；默认全量 allStars 无过滤。
+    private func makeRule(
+        scope: SmartCollectionRule.Scope = .allStars,
+        healthScoreMin: Int? = nil
+    ) -> SmartCollectionRule {
+        SmartCollectionRule(
+            scope: scope,
+            query: nil,
+            searchModeRaw: SmartSearchMode.keyword.rawValue,
+            statusRaw: nil,
+            selectedTagIDs: [],
+            hideArchived: false,
+            hideForks: false,
+            sortRaw: RepoSortOption.starredAtDesc.rawValue,
+            healthScoreMin: healthScoreMin
+        )
+    }
+
+    @Test("批量 countRepos 与逐条计数一致；完全相同的规则同批只求值一次")
+    func batchCountReposMatchesPerRuleCounts() async throws {
+        let db = try InMemoryDatabaseManager()
+        let repo = GRDBRepoRepository(database: db)
+        let tagRepo = GRDBTagRepository(database: db)
+        let rtRepo = GRDBRepoTagRepository(database: db)
+        let noteRepo = GRDBRepoNoteRepository(database: db)
+        let healthRepo = GRDBRepoHealthRepository(database: db)
+        let smartRepo = GRDBSmartCollectionRepository(database: db)
+
+        try await insertRepo(db, id: 1, fullName: "o/low", stars: 10, starredAt: "2026-05-01T00:00:00Z")
+        try await insertRepo(db, id: 2, fullName: "o/mid", stars: 20, starredAt: "2026-05-02T00:00:00Z")
+        try await insertRepo(db, id: 3, fullName: "o/high", stars: 30, starredAt: "2026-05-03T00:00:00Z")
+        try await insertRepo(db, id: 4, fullName: "o/bare", stars: 40, starredAt: "2026-05-04T00:00:00Z")
+
+        let now = "2026-06-21T12:00:00.000Z"
+        let stale = "2026-07-21T12:00:00.000Z"
+        for (repoId, score) in [(Int64(1), 40.0), (Int64(2), 75.0), (Int64(3), 95.0)] {
+            try await healthRepo.upsert(
+                RepoHealthSnapshot(
+                    repoId: repoId,
+                    overallScore: score,
+                    grade: "B",
+                    maintenanceScore: score,
+                    popularityScore: score,
+                    qualityScore: score,
+                    securityScore: score,
+                    payloadJSON: "{}",
+                    computedAt: now,
+                    staleAfter: stale,
+                    fetchStatus: .success,
+                    lastError: nil
+                )
+            )
+        }
+
+        let vm = HomeViewModel(
+            repository: repo,
+            tagRepository: tagRepo,
+            repoTagRepository: rtRepo,
+            repoNoteRepository: noteRepo,
+            repoHealthRepository: healthRepo,
+            smartCollectionRepository: smartRepo
+        )
+
+        // 规则矩阵：② 与 ① 完全相同（同批应去重复用）；③ 触发 health 上下文
+        // 共享；④ 不同 scope 候选。无 tag / 笔记数据时 ① 与 ④ 语义上都命中全部 4 仓。
+        let rules = [
+            makeRule(),
+            makeRule(),
+            makeRule(healthScoreMin: 60),
+            makeRule(scope: .untagged)
+        ]
+        let batchCounts = await vm.countRepos(matching: rules)
+        var perRule: [Int] = []
+        for rule in rules {
+            perRule.append(try await vm.countRepos(matching: rule))
+        }
+
+        #expect(batchCounts == perRule)
+        #expect(batchCounts[0] == 4)
+        #expect(batchCounts[2] == 2, "healthScoreMin=60 应只保留 mid/high")
+        #expect(batchCounts[3] == batchCounts[0])
+    }
+
     @Test("refreshSidebar: 加载 GitHub Stars List 与未分组计数")
     func refreshSidebarLoadsGitHubStarLists() async throws {
         let db = try InMemoryDatabaseManager()
@@ -1400,8 +1483,8 @@ struct HomeViewModelFilterSortTests {
         #expect(vm.githubStarListIDsByRepo[2] == ["list-1"])
     }
 
-    @Test("GitHub Stars List: 切换分组临时跳过 row reveal")
-    func githubStarListSwitchSkipsRowReveal() async throws {
+    @Test("GitHub Stars List: 冷切换不会在新分类下展示旧行")
+    func githubStarListColdSwitchRemovesPreviousRows() async throws {
         let db = try InMemoryDatabaseManager()
         let repo = GRDBRepoRepository(database: db)
         let tagRepo = GRDBTagRepository(database: db)
@@ -1424,12 +1507,17 @@ struct HomeViewModelFilterSortTests {
             repoNoteRepository: noteRepo
         )
         await vm.refreshSidebar()
+        await vm.reloadItems()
+        #expect(vm.items.map(\.id) == [1])
 
         vm.selectSidebar(.githubStarList("list-1"))
 
-        #expect(vm.skipListRowReveal == true)
-        try await Task.sleep(nanoseconds: 20_000_000)
-        #expect(vm.skipListRowReveal == false)
+        #expect(vm.isLoading)
+        #expect(vm.items.isEmpty)
+        #expect(vm.hasMore == false)
+        await vm.reloadItems()
+        #expect(vm.isLoading == false)
+        #expect(vm.items.map(\.id) == [1])
     }
 
     @Test("GitHub Stars List: 切到已知空分组立即清空旧列表")
@@ -1475,13 +1563,12 @@ struct HomeViewModelFilterSortTests {
         #expect(vm.items.isEmpty)
         #expect(vm.isLoading == false)
         #expect(vm.hasMore == false)
-        #expect(vm.isGitHubStarListSwitchLoading == false)
         #expect(vm.itemsRevision == revisionAfterFilledList + 1)
 
         // 切回已访问过的有数据分组：eager DB snapshot 同步恢复列表，
         // 不再清空再走 switch-loading 占位（那条路径只留给「无 snapshot」首次进入）。
         vm.selectSidebar(.githubStarList("list-filled"))
-        #expect(vm.isGitHubStarListSwitchLoading == false)
+        #expect(vm.isLoading == false)
         #expect(vm.items.map(\.id) == [1])
 
         // 再经空分组切到从未访问过的有数据分组：无 snapshot → switch-loading + 保持空列表。
@@ -1489,12 +1576,12 @@ struct HomeViewModelFilterSortTests {
         #expect(vm.items.isEmpty)
 
         vm.selectSidebar(.githubStarList("list-cold"))
-        #expect(vm.isGitHubStarListSwitchLoading == true)
+        #expect(vm.isLoading)
         #expect(vm.items.isEmpty)
 
         await vm.reloadItems()
 
-        #expect(vm.isGitHubStarListSwitchLoading == false)
+        #expect(vm.isLoading == false)
         #expect(vm.items.map(\.id) == [2])
     }
 

@@ -178,7 +178,8 @@ struct SmartCollectionDetailPanel: View {
             ) { item in
                 SmartCollectionRepoCard(
                     item: item,
-                    chipAvailableWidth: chipAvailableWidth
+                    chipAvailableWidth: chipAvailableWidth,
+                    isScrollActive: isScrollActive
                 )
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -555,12 +556,14 @@ private struct SmartCollectionRepoCard: View {
     let item: SmartCollectionCardItem
     /// 由 panel 按列宽一次算出；卡片不得再用 GeometryReader 反向读取自身宽度。
     let chipAvailableWidth: CGFloat
+    let isScrollActive: Bool
 
     @Environment(AppDependencies.self) private var dependencies
     @Environment(HomeViewModel.self) private var viewModel
     @Environment(\.locale) private var locale
     @Environment(\.colorScheme) private var colorScheme
     @State private var isAddingToLibrary = false
+    @State private var isVisible = false
 
     private var forkTint: Color {
         StatSemanticColor.fork.resolved(colorScheme: colorScheme)
@@ -606,6 +609,8 @@ private struct SmartCollectionRepoCard: View {
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
+        // LazyVStack 会预建屏外卡片，只给真正进入视口且停稳的卡片补查。
+        .onScrollVisibilityChange(threshold: 0.1) { isVisible = $0 }
     }
 
     private var header: some View {
@@ -675,7 +680,7 @@ private struct SmartCollectionRepoCard: View {
             SmartCollectionInfoChip(
                 text: tag.name,
                 helpText: tag.name,
-                systemImage: tag.icon ?? "tag",
+                icon: tag.icon ?? "tag",
                 tint: Color(hex: tag.color ?? TagColorPalette.defaultHex) ?? .accentColor
             )
         }
@@ -688,7 +693,7 @@ private struct SmartCollectionRepoCard: View {
                             SmartCollectionInfoChip(
                                 text: topic,
                                 helpText: topic,
-                                systemImage: "number",
+                                icon: "number",
                                 tint: .secondary
                             )
                         },
@@ -717,7 +722,9 @@ private struct SmartCollectionRepoCard: View {
                 style: .full
             )
             MetaBadge(businessIcon: .forkCount, text: repo.forksCount.formattedShort, tint: forkTint)
-            MetaBadge(systemImage: "eye", text: repo.watchersCount.formattedShort, tint: watchersTint)
+            RepoSubscriberCountView(repo: repo, loadsIfMissing: isVisible && !isScrollActive) { count in
+                MetaBadge(systemImage: "eye", text: count?.formattedShort ?? "-", tint: watchersTint)
+            }
             MetaBadge(
                 systemImage: "exclamationmark.circle",
                 text: (repo.openIssuesCount ?? 0).formattedShort,
@@ -862,10 +869,10 @@ private struct SmartCollectionRepoCard: View {
 }
 
 private struct SmartCollectionInfoChip: Identifiable {
-    var id: String { "\(systemImage)|\(text)" }
+    var id: String { "\(icon)|\(text)" }
     let text: String
     let helpText: String
-    let systemImage: String
+    let icon: String
     let tint: Color
 }
 
@@ -893,7 +900,7 @@ private struct SmartCollectionMeasuredChipRow: View {
         HStack(spacing: Self.chipSpacing) {
             ForEach(visibleChips) { chip in
                 SmartCollectionCompactInfoChip(
-                    systemImage: chip.systemImage,
+                    icon: chip.icon,
                     text: chip.text,
                     helpText: chip.helpText,
                     tint: chip.tint
@@ -926,7 +933,7 @@ private struct SmartCollectionMeasuredChipRow: View {
     }
 
     private static func overflowChip(helpText: String) -> SmartCollectionInfoChip {
-        SmartCollectionInfoChip(text: overflowText, helpText: helpText, systemImage: "ellipsis", tint: .secondary)
+        SmartCollectionInfoChip(text: overflowText, helpText: helpText, icon: "ellipsis", tint: .secondary)
     }
 
     private static func chipWidth(text: String) -> CGFloat {
@@ -944,15 +951,14 @@ private struct SmartCollectionMeasuredChipRow: View {
 
 /// 右栏集合卡片专用 chip。列宽由 Masonry 约束，过长文案在胶囊内截断，行容器 `.clipped()` 防溢出。
 private struct SmartCollectionCompactInfoChip: View {
-    let systemImage: String
+    let icon: String
     let text: String
     let helpText: String
     let tint: Color
 
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: systemImage)
-                .font(.system(size: 8, weight: .medium))
+            TagIconView(identifier: icon, size: 8, weight: .medium, fallback: "tag")
                 .frame(width: 8)
             Text(text)
                 .font(.system(size: 11, weight: .medium))

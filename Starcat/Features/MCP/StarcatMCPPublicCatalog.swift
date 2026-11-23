@@ -53,6 +53,11 @@ enum StarcatMCPPublicCatalog {
         "repo_id": integer(1, Int.max), "owner": string(), "name": string()
     ]
     static let pagination: [String: Value] = ["limit": integer(), "offset": integer(0, 10_000)]
+    /// 边与仓库都按页返回。目录里的默认值与执行器保持一致，客户端可直接发现。
+    static let tagGraphPaging: [String: Value] = [
+        "limit": .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(100), "default": .int(20)]),
+        "offset": .object(["type": .string("integer"), "minimum": .int(0), "default": .int(0)])
+    ]
     static let preview: [String: Value] = ["dry_run": .object(["type": .string("boolean"), "default": .bool(true)])]
     static let ids: Value = .object([
         "type": .string("array"), "items": integer(1, Int.max), "minItems": .int(1), "maxItems": .int(30)
@@ -84,7 +89,44 @@ enum StarcatMCPPublicCatalog {
         ])
     ]
 
-    static let specs: [StarcatMCPPublicSpec] = [
+    /// 目录、tools/list 和调用白名单共同使用渠道过滤后的同一份契约。
+    static let specs = specs(for: DistributionChannel.current)
+
+    static func specs(for channel: DistributionChannel) -> [StarcatMCPPublicSpec] {
+        commonSpecs + (channel.isDirect ? skillEvaluationSpecs : [])
+    }
+
+    private static let skillEvaluationInput: [String: Value] = [
+        "mode": string(SkillEvaluationMode.allCases.map(\.rawValue)),
+        "targets": .object([
+            "type": .string("array"), "minItems": .int(1), "maxItems": .int(30),
+            "items": .object([
+                "type": .string("object"), "additionalProperties": .bool(false),
+                "properties": .object([
+                    "library_id": string(), "repo_id": integer(1, Int.max),
+                    "commit_sha": string(), "skill_id": string()
+                ])
+            ])
+        ])
+    ]
+    private static let skillEvaluationStartInput = skillEvaluationInput.merging(preview) { _, new in new }.merging([
+        "consent": boolean,
+        "model": .object([
+            "type": .string("object"), "additionalProperties": .bool(false),
+            "required": .array([.string("provider_id"), .string("endpoint")]),
+            "properties": .object([
+                "provider_id": string(), "endpoint": string(), "chat": string(), "embedding": string()
+            ])
+        ])
+    ]) { _, new in new }
+
+    private static let skillEvaluationSpecs: [StarcatMCPPublicSpec] = [
+        .init(name: "get_skill_evaluation", summary: "Read cached Skill evaluation reports for library UUIDs or account repositories at an explicit commit. No scan, refresh, or model call.", properties: skillEvaluationInput, required: ["mode", "targets"]),
+        .init(name: "export_skill_evaluation", summary: "Export matching cached Skill evaluation reports as JSON content; the caller owns output files.", properties: skillEvaluationInput, required: ["mode", "targets"]),
+        .init(name: "start_skill_evaluation", summary: "Preview or start a static Skill evaluation, for one Skill or a batch. AI modes require configured models and consent to send selected data. Query or cancel through the existing task tools.", properties: skillEvaluationStartInput, required: ["mode", "targets"], permission: "write", network: "conditional_github_scanner_and_configured_ai", task: true)
+    ]
+
+    private static let commonSpecs: [StarcatMCPPublicSpec] = [
         .init(name: "get_public_settings", summary: "Read non-secret integration settings and channel information.", properties: [:]),
         .init(name: "get_repo_health", summary: "Read the cached health snapshot without refreshing or fetching.", properties: selector),
         .init(name: "get_repo_security", summary: "Read the cached OpenSSF snapshot without fetching.", properties: selector),
@@ -98,6 +140,10 @@ enum StarcatMCPPublicCatalog {
         .init(name: "list_notifications", summary: "Read the cached notification and Issue/PR inbox without remote hydration.", properties: pagination),
         .init(name: "list_activity_timeline", summary: "Read cached notifications and Star/Unstar/Fork activity with combined filters and cursor pagination. Values within events/reasons are OR; groups are AND. Does not hydrate remote state.", properties: activityTimeline),
         .init(name: "get_notification", summary: "Read one cached notification or Issue/PR conversation.", properties: ["id": string()], required: ["id"]),
+        .init(name: "get_tag_graph", summary: "Read current-account tags and one page of tag-to-starred-repository memberships, with repository nodes for that page.", properties: tagGraphPaging),
+        .init(name: "list_repos_by_tags", summary: "Read a page of currently starred repositories carrying every supplied tag ID. Repeated IDs count once.", properties: tagGraphPaging.merging([
+            "tag_ids": .object(["type": .string("array"), "items": string(), "minItems": .int(1)])
+        ]) { _, new in new }, required: ["tag_ids"]),
         .init(name: "list_collections", summary: "Read local smart collection definitions.", properties: pagination),
         .init(name: "list_languages", summary: "Read language aggregates for Starred or Knowledge repositories.", properties: ["scope": string(["starred", "knowledge"])]),
         .init(name: "list_trending", summary: "Read cached Trending with period, language and pagination.", properties: pagination.merging([
@@ -152,6 +198,11 @@ enum StarcatMCPPublicCatalog {
         ], required: ["query", "repo_ids"], network: "configured_embedding_and_reranker"),
         .init(name: "start_summary", summary: "Explicitly start cached-or-generated repository summary as an App-owned task; may consume AI quota.", properties: selector.merging(preview) { _, new in new }, permission: "write", network: "configured_ai", task: true),
         .init(name: "start_tag_suggestions", summary: "Explicitly generate tag suggestions; suggestions are never automatically applied.", properties: selector.merging(preview) { _, new in new }, permission: "write", network: "configured_ai", task: true),
+        .init(name: "evaluate_system_one", summary: "Evaluate a Jev-compatible System One request with the App-selected decision engine. Returns answers synchronously; may consume AI quota and accepts model only for protocol compatibility.", properties: [
+            "state": .object(["description": .string("A string, object or array accepted by the decision protocol")]),
+            "questions": .object([:]), "assets": .object([:]), "model": string(),
+            "dry_run": .object(["type": .string("boolean"), "default": .bool(true)])
+        ], required: ["state", "questions"], permission: "write", network: "configured_decision_engine"),
         .init(name: "start_note_draft", summary: "Generate a note draft using the App README cache/download workflow. Returns a draft without saving the note.", properties: selector.merging(preview) { _, new in new }.merging([
             "include_private_notes": boolean
         ]) { _, new in new }, permission: "write", network: "github_and_configured_ai", task: true),

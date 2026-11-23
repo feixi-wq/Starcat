@@ -136,8 +136,7 @@ struct SettingsView: View {
         case ragRetrieval
         case storage
         case diagnostics
-        /// 实验性功能(Labs):TypeSafe Jev 决策引擎 POC 等未定型能力的统一开关入口,
-        /// 与稳定功能隔离,便于后续整体下线。
+        /// 决策引擎设置沿用 `labs` 导航标识，供模型下载任务跳回配置页。
         case labs
 
         var id: String { rawValue }
@@ -162,7 +161,7 @@ struct SettingsView: View {
             case .ragRetrieval: return "rag.workspace.settings.section.retrieval"
             case .storage:      return "settings.navigation.item.dataStorage"
             case .diagnostics:  return "settings.navigation.item.diagnosticsSupport"
-            case .labs:         return "settings.navigation.item.labs"
+            case .labs:         return "settings.labs.decision.section"
             }
         }
 
@@ -190,31 +189,31 @@ struct SettingsView: View {
             case .ragRetrieval: return RAGSettingsSection.retrieval.businessIcon
             case .storage:      return .storage
             case .diagnostics:  return .diagnostics
-            case .labs:         return .labs
+            case .labs:         return .inference
             }
         }
 
-        /// 按功能分配颜色，侧栏和搜索建议共用。深色主题提亮底板，避免与侧栏材质融在一起。
-        var iconBackground: (light: UInt32, dark: UInt32) {
+        /// 彩色底板标识设置分类，侧栏和搜索建议共用系统配色，避免自定义暗色显得浑浊。
+        var iconBackground: Color {
             switch self {
             case .general, .shortcuts, .localTools, .storage, .diagnostics:
-                return (0x525C6A, 0x697587)
+                return .gray
             case .notifications:
-                return (0xC72B51, 0xD13C67)
+                return .red
             case .pro:
-                return (0xD99B31, 0xF0BD61)
+                return .orange
             case .privacy:
-                return (0x244FA3, 0x4267C6)
+                return .blue
             case .aiModels, .aiAutomation, .ragInference:
-                return (0x5841B4, 0x6F54C9)
+                return .purple
             case .translation:
-                return (0x21725F, 0x27836D)
+                return .green
             case .aiIndexContext, .externalSearch, .ragRetrieval:
-                return (0x0C688A, 0x197CA1)
+                return .cyan
             case .browserExtensions, .mcp, .services:
-                return (0x186F76, 0x268089)
+                return .teal
             case .labs:
-                return (0x8A3F92, 0xA14EA7)
+                return .pink
             }
         }
 
@@ -283,7 +282,6 @@ struct SettingsView: View {
         // 提示词继续通过推理页的编辑弹窗进入，不新增侧栏分类。
         ("RAG", [.ragInference, .ragRetrieval]),
         ("settings.navigation.group.extensionsConnections", [.browserExtensions, .mcp, .localTools, .services]),
-        // Labs 仍位于末尾，与稳定功能分组。
         ("settings.navigation.group.support", [.storage, .diagnostics, .labs])
     ]
 
@@ -485,7 +483,7 @@ struct SettingsView: View {
         settingsTabSelection.wrappedValue = tabs[destination]
     }
 
-    /// 底板颜色只标识功能。选中和悬停仍由导航行表达，搜索建议也能保持同样的图标辨识度。
+    /// 彩色底板用轻微明暗和贴边柔影表现系统设置式质感；选中和悬停仍由导航行表达。
     private struct SettingsNavigationIcon: View {
         let tab: SettingsTab
 
@@ -493,21 +491,35 @@ struct SettingsView: View {
         @Environment(\.colorSchemeContrast) private var contrast
 
         var body: some View {
-            let palette = tab.iconBackground
-            let rgb = colorScheme == .dark ? palette.dark : palette.light
-            let background = Color(
-                red: Double((rgb >> 16) & 0xFF) / 255,
-                green: Double((rgb >> 8) & 0xFF) / 255,
-                blue: Double(rgb & 0xFF) / 255
-            )
             let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
 
-            BusinessIcon(tab.businessIcon, pointSize: tab.businessIcon.isAsset ? 16 : 13)
+            // 保持图形尺寸，用更大的底板留出四周间距，避免图形贴近圆角边缘。
+            BusinessIcon(tab.businessIcon, pointSize: tab.businessIcon.isAsset ? 17 : 14)
                 .foregroundStyle(.primary)
-                // 局部外观让模板图形在琥珀底上用深色、其他底板用浅色，不影响行标题和底板描边。
+                // 暖金底上的 Pro 保留深色图形，其余用浅色；局部外观不影响底板和行标题。
                 .environment(\.colorScheme, tab == .pro ? .light : .dark)
-                .frame(width: 20, height: 20)
-                .background(background, in: shape)
+                .frame(width: 24, height: 24)
+                .background {
+                    shape
+                        .fill(tab.iconBackground)
+                        .overlay {
+                            // 高光限制在小底板内，避免大面积渐变或强阴影抢过导航选中态。
+                            shape.fill(LinearGradient(
+                                colors: [.white.opacity(0.16), .clear, .black.opacity(0.04)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                        }
+                        .overlay {
+                            shape.strokeBorder(.white.opacity(0.24), lineWidth: 0.5)
+                        }
+                        .shadow(
+                            color: .black.opacity(colorScheme == .dark ? 0.20 : 0.14),
+                            radius: 0.8,
+                            x: 0,
+                            y: 0.7
+                        )
+                }
                 .overlay {
                     if contrast == .increased {
                         shape.strokeBorder(Color.primary.opacity(0.8), lineWidth: 1)
@@ -703,8 +715,8 @@ struct SettingsView: View {
                                keywords: ["浏览器", "chrome", "safari", "extension", "plugin"]),
             SettingsSearchItem("localTools", titleKey: "settings.navigation.item.codeAndLocalTools", tab: .localTools,
                                keywords: ["本地工具", "代码上下文", "仓库上下文", "context", "agent runtime", "codeflow", "codebase memory"]),
-            SettingsSearchItem("labs", titleKey: "settings.navigation.item.labs", tab: .labs,
-                               keywords: ["实验性", "实验室", "labs", "typesafe", "jev", "决策"]),
+            SettingsSearchItem("labs", titleKey: SettingsTab.labs.titleKeyString, tab: .labs,
+                               keywords: ["实验性", "labs", "typesafe", "jev", "laya", "决策", "http", "system one"]),
             SettingsSearchItem("integrations.codebaseMemory", titleKey: "settings.navigation.item.codeAndLocalTools",
                                tab: .localTools, target: "integrations.codebaseMemory",
                                keywords: ["codebase memory", "codebasememory", "代码索引"]),

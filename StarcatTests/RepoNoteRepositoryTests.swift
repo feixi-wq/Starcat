@@ -33,6 +33,8 @@ struct RepoNoteRepositoryTests {
         try await repository.updateContent(repoId: 3, content: " \n真正的笔记\t ")
         try await repository.updateContent(repoId: 4, content: "")
         #expect(try await repository.fetchRepoIdsWithNonEmptyContent() == [3])
+        #expect(try await repository.find(repoId: 1)?.editedAt == nil)
+        #expect(try await repository.find(repoId: 4)?.editedAt == nil)
         try await repository.updateContent(repoId: 3, content: nil)
         #expect(try await repository.fetchRepoIdsWithNonEmptyContent().isEmpty)
     }
@@ -43,6 +45,31 @@ struct RepoNoteRepositoryTests {
         try await db.insertRepoFixture(id: 1)
         let got = try await repo.find(repoId: 1)
         #expect(got == nil)
+    }
+
+    @Test("find 批量: 一条 IN 查询取回多行，缺失 repo 不进结果")
+    func findBatchReturnsExistingRowsOnly() async throws {
+        let (repo, db) = try makeRepo()
+        try await db.insertRepoFixtures(count: 3, idStart: 1)
+        try await repo.updateContent(repoId: 1, content: "note-1")
+        try await repo.updateStatus(repoId: 3, status: .using)
+
+        // 2 没写过 repo_notes 行、999 不存在，都不应出现在结果里
+        let map = try await repo.find(repoIds: [1, 2, 3, 999])
+        #expect(Set(map.keys) == [1, 3])
+        #expect(map[1]?.content == "note-1")
+        #expect(map[1]?.status == RepoStatus.unread.rawValue)
+        #expect(map[3]?.status == RepoStatus.using.rawValue)
+        #expect(map[3]?.content == nil)
+    }
+
+    @Test("find 批量: 空输入 / 全缺失返回空字典")
+    func findBatchEmptyAndMissingInput() async throws {
+        let (repo, db) = try makeRepo()
+        try await db.insertRepoFixture(id: 1)
+
+        #expect(try await repo.find(repoIds: []).isEmpty)
+        #expect(try await repo.find(repoIds: [42, 43]).isEmpty)
     }
 
     // MARK: - upsert
@@ -67,6 +94,12 @@ struct RepoNoteRepositoryTests {
         #expect(got.libraryState == LibraryState.outsideLibrary.rawValue)
         #expect(got.libraryUpdatedAt == nil)
         #expect(got.editedAt == "2026-05-30T10:00:00Z")
+
+        var statusOnly = got
+        statusOnly.status = RepoStatus.unread.rawValue
+        statusOnly.editedAt = "2026-05-31T10:00:00Z"
+        try await repo.upsert(statusOnly)
+        #expect(try await repo.find(repoId: 1)?.editedAt == got.editedAt)
     }
 
     // MARK: - updateContent
@@ -117,18 +150,25 @@ struct RepoNoteRepositoryTests {
         #expect(after.libraryUpdatedAt == beforeUpdatedAt)
     }
 
-    @Test("updateContent: nil 表示清空内容（status 保留）")
+    @Test("updateContent: 正文未变时保留时间，清空正文时更新")
     func updateContentNil() async throws {
         let (repo, db) = try makeRepo()
         try await db.insertRepoFixture(id: 1)
-        try await repo.updateContent(repoId: 1, content: "draft")
-        try await repo.updateStatus(repoId: 1, status: .read)
+        let originalEdit = "2026-05-30T10:00:00Z"
+        try await repo.upsert(RepoNote(
+            repoId: 1, content: "draft", status: RepoStatus.read.rawValue,
+            isAIGenerated: false, editedAt: originalEdit
+        ))
 
+        try await repo.updateContent(repoId: 1, content: "draft")
+        #expect(try await repo.find(repoId: 1)?.editedAt == originalEdit)
         try await repo.updateContent(repoId: 1, content: nil)
         let got = try #require(try await repo.find(repoId: 1))
         #expect(got.content == nil)
         #expect(got.status == "read")
         #expect(got.isAIGenerated == false)
+        let clearedEdit = try #require(got.editedAt)
+        #expect(clearedEdit != originalEdit)
     }
 
     @Test("updateContent: AI 确认保存会设置来源标记")
@@ -168,18 +208,24 @@ struct RepoNoteRepositoryTests {
         let got = try #require(try await repo.find(repoId: 1))
         #expect(got.status == "using")
         #expect(got.content == nil)
+        #expect(got.editedAt == nil)
     }
 
     @Test("updateStatus: 行已存在 → 仅改 status，content 保留")
     func updateStatusExisting() async throws {
         let (repo, db) = try makeRepo()
         try await db.insertRepoFixture(id: 1)
-        try await repo.updateContent(repoId: 1, content: "已写笔记")
+        let originalEdit = "2026-05-30T10:00:00Z"
+        try await repo.upsert(RepoNote(
+            repoId: 1, content: "已写笔记", status: RepoStatus.unread.rawValue,
+            isAIGenerated: false, editedAt: originalEdit
+        ))
 
         try await repo.updateStatus(repoId: 1, status: .using)
         let got = try #require(try await repo.find(repoId: 1))
         #expect(got.content == "已写笔记")
         #expect(got.status == "using")
+        #expect(got.editedAt == originalEdit)
         #expect(got.libraryState == LibraryState.inLibrary.rawValue)
         #expect(got.libraryUpdatedAt != nil)
     }
@@ -270,6 +316,7 @@ struct RepoNoteRepositoryTests {
         let got = try #require(try await repo.find(repoId: 1))
         #expect(got.status == RepoStatus.unread.rawValue)
         #expect(got.content == nil)
+        #expect(got.editedAt == nil)
         #expect(got.libraryState == LibraryState.inLibrary.rawValue)
         #expect(got.libraryUpdatedAt != nil)
     }
@@ -420,7 +467,7 @@ struct RepoNoteRepositoryTests {
         let got = try #require(try await repo.find(repoId: 1))
         #expect(got.status == "read")
         #expect(got.content == nil)
-        #expect(got.editedAt != nil)
+        #expect(got.editedAt == nil)
     }
 
     @Test("markAsReadIfNeeded: unread → read 升级")
@@ -432,6 +479,7 @@ struct RepoNoteRepositoryTests {
         try await repo.markAsReadIfNeeded(repoId: 1)
         let got = try #require(try await repo.find(repoId: 1))
         #expect(got.status == "read")
+        #expect(got.editedAt == nil)
     }
 
     @Test("markAsReadIfNeeded: read 行幂等不变")
@@ -444,7 +492,6 @@ struct RepoNoteRepositoryTests {
         try await repo.markAsReadIfNeeded(repoId: 1)
         let after = try #require(try await repo.find(repoId: 1))
         #expect(after.status == "read")
-        // editedAt 不应被无意义擦动（保留首次 read 时间）
         #expect(after.editedAt == before.editedAt)
     }
 

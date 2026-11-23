@@ -1424,6 +1424,7 @@ struct GitHubNotificationCommentCard: View, @MainActor Equatable {
                     zh: "用 Markdown 编辑…",
                     en: "Edit with Markdown…"
                 ),
+                font: editFont,
                 isEditable: !isSavingEdit,
                 maximumHeight: editEditorMaxHeight,
                 shouldBecomeFirstResponder: true,
@@ -1472,12 +1473,21 @@ struct GitHubNotificationCommentCard: View, @MainActor Equatable {
         }
     }
 
+    /// 输入与高度上限必须使用同一字体，否则大字档会少显示几行。
+    private var editFont: NSFont {
+        MarkdownTypography.nativeFont(
+            scale: dependencies.settings.interfaceScale,
+            adjustment: dependencies.settings.readmeFontSizeAdjustment,
+            baseline: .compact
+        )
+    }
+
     private var editEditorMaxHeight: CGFloat {
-        ceil(NSFont.systemFont(ofSize: NSFont.systemFontSize).pointSize * 12)
+        ceil(editFont.pointSize * 12)
     }
 
     private var editEditorHeight: CGFloat {
-        let minHeight = ceil(NSFont.systemFont(ofSize: NSFont.systemFontSize).pointSize * 4)
+        let minHeight = ceil(editFont.pointSize * 4)
         let measured = measuredEditorHeight > 0 ? measuredEditorHeight : minHeight
         return min(max(measured, minHeight), editEditorMaxHeight)
     }
@@ -2116,7 +2126,7 @@ private struct GitHubNotificationCommentComposer: View {
                     zh: "留下评论…",
                     en: "Leave a comment…"
                 ))
-                .font(.subheadline)
+                .starcatMarkdownBodyFont(baseline: .compact)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 Spacer(minLength: 0)
@@ -2373,7 +2383,11 @@ private struct GitHubNotificationCommentComposer: View {
     /// 收起态对齐 RAG composer：默认 3 行，随正文长高，到上限后内部滚动。
     /// 点展开后由父视图收起会话列表，输入区吃掉右栏剩余高度。
     private var composerFont: NSFont {
-        .systemFont(ofSize: NSFont.systemFontSize)
+        MarkdownTypography.nativeFont(
+            scale: dependencies.settings.interfaceScale,
+            adjustment: dependencies.settings.readmeFontSizeAdjustment,
+            baseline: .compact
+        )
     }
 
     private var composerLineHeight: CGFloat {
@@ -2401,12 +2415,14 @@ private struct GitHubNotificationCommentComposer: View {
                 ScrollView {
                     if trimmed.isEmpty {
                         Text(verbatim: GitHubNotificationMapper.copy(locale, zh: "没什么可预览的", en: "Nothing to preview"))
+                            .starcatMarkdownBodyFont(baseline: .compact)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                     } else {
                         GitHubNotificationMarkdown(
                             content: draft,
-                            repositoryFullName: repositoryFullName
+                            repositoryFullName: repositoryFullName,
+                            baseline: .compact
                         )
                     }
                 }
@@ -2419,6 +2435,7 @@ private struct GitHubNotificationCommentComposer: View {
                         zh: "用 Markdown 写下评论，支持从剪切板上传图片…",
                         en: "Write a comment with Markdown. You can paste images from the clipboard…"
                     ),
+                    font: composerFont,
                     isEditable: !isPosting && !isGenerating,
                     maximumHeight: composerCollapsedMaxHeight,
                     shouldBecomeFirstResponder: true,
@@ -2898,6 +2915,7 @@ private struct GitHubNotificationCommentComposer: View {
 private struct GitHubNotificationMarkdown: View {
     let content: String
     let repositoryFullName: String
+    var baseline: MarkdownTypography.BodyBaseline = .standard
 
     var body: some View {
         Markdown(
@@ -2906,6 +2924,7 @@ private struct GitHubNotificationMarkdown: View {
                 repositoryFullName: repositoryFullName
             )
         )
+        .starcatMarkdownStyle(baseline: baseline)
         .markdownImageProvider(GitHubNotificationImageProvider())
         .frame(maxWidth: .infinity, alignment: .leading)
         .environment(\.openURL, OpenURLAction { url in
@@ -2918,6 +2937,8 @@ private struct GitHubNotificationMarkdown: View {
 
 /// 单卡片文字选择弹层：显示当前卡片实际可见内容，原列表继续由 MarkdownUI 负责视觉。
 private struct GitHubNotificationSelectableTextPopover: View {
+    @Environment(\.starcatInterfaceScale) private var interfaceScale
+    @Environment(AppSettings.self) private var settings: AppSettings?
     let text: String
     let locale: Locale
 
@@ -2933,7 +2954,9 @@ private struct GitHubNotificationSelectableTextPopover: View {
             ))
             .font(.caption)
             .foregroundStyle(.secondary)
-            GitHubNotificationSelectableTextView(text: text)
+            GitHubNotificationSelectableTextView(text: text, font: MarkdownTypography.nativeFont(
+                scale: interfaceScale, adjustment: settings?.readmeFontSizeAdjustment ?? 0
+            ))
                 .frame(width: 500, height: 320)
         }
         .padding(14)
@@ -2957,6 +2980,7 @@ private struct GitHubNotificationSelectableTextPopover: View {
 /// NSTextView 原生维护选择范围，和外层 LazyVStack / AttributeGraph 没有选择状态关联。
 private struct GitHubNotificationSelectableTextView: NSViewRepresentable {
     let text: String
+    let font: NSFont
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -2966,7 +2990,7 @@ private struct GitHubNotificationSelectableTextView: NSViewRepresentable {
         textView.isRichText = false
         textView.drawsBackground = false
         textView.backgroundColor = .clear
-        textView.font = .systemFont(ofSize: NSFont.systemFontSize)
+        MarkdownTypography.applyEditorFont(font, to: textView)
         textView.textColor = .labelColor
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.textContainer?.lineFragmentPadding = 0
@@ -2989,9 +3013,9 @@ private struct GitHubNotificationSelectableTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView,
-              textView.string != text
-        else { return }
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        MarkdownTypography.applyEditorFont(font, to: textView)
+        guard textView.string != text else { return }
         let selectedRanges = textView.selectedRanges
         textView.string = text
         let upperBound = (text as NSString).length

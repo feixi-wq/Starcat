@@ -83,25 +83,25 @@ struct SidebarView: View {
     @Environment(\.locale) private var locale
 
     /// 当前打开/收起 Languages 组的状态。
-    @State private var languagesExpanded: Bool = true
+    @State private var languagesExpanded = true
     /// W4 A6：Tags 组展开/收起状态，由主窗口持有以支持跨窗口导航后展开。
     /// 默认 **折叠**（2026-06-11 dong4j 体验优化）：tag 数量多时全展开会挤掉
     /// Languages / Activity / Trending 等同级 section 的视觉权重，初始折叠让用户
     /// 一眼看到全局结构，需要时再展开。会话内不持久化，重启 App 后仍回到折叠默认值。
     @Binding var tagsExpanded: Bool
     /// GitHub Stars List（Repository groups）展开/收起状态。默认折叠，与 Tags 一致。
-    @State private var githubStarListsExpanded: Bool = false
+    @State private var githubStarListsExpanded = false
     /// Trending 语言列表展开/收起状态。和 Manage 的 Languages 分开，避免互相影响。
-    @State private var trendingLanguagesExpanded: Bool = true
+    @State private var trendingLanguagesExpanded = true
     /// Explore 发现模块主题分类展开/收起状态。
-    @State private var exploreTopicsExpanded: Bool = true
+    @State private var exploreTopicsExpanded = true
     /// Explore 发现模块平台分类展开/收起状态。
-    @State private var explorePlatformsExpanded: Bool = true
+    @State private var explorePlatformsExpanded = true
     /// 每日热点子分类展开/收起状态；「全部主题」行常驻，仅子分类折叠（2026-11-04 对齐其他分组）。
-    @State private var dailyRadarCategoriesExpanded: Bool = true
+    @State private var dailyRadarCategoriesExpanded = true
     @State private var recommendationOlderDatesExpanded = false
     /// Activity 分类列表展开/收起状态。Activity 是独立 root，不能复用 Trending 的展开态。
-    @State private var activityCategoriesExpanded: Bool = true
+    @State private var activityCategoriesExpanded = true
     @Binding var selectedPage: SidebarRootPage
     @Binding var selectedExploreMode: ExploreMode
     @Binding var selectedTrendingLanguage: TrendingLanguage
@@ -144,6 +144,7 @@ struct SidebarView: View {
     let recommendationHistoryModel: RecommendationHistoryListModel
     /// 新功能标识状态由主窗口持有；侧栏只读展示，并在系统 List 选中时写入首次点击记录。
     var newFeatureBadgeStore: NewFeatureBadgeStore
+    var onOpenTagGraph: () -> Void = {}
     var onOpenFollowGraph: (FollowGraphRelation) -> Void = { _ in }
 
     /// HOM-73：控制登录 sheet 的显示。
@@ -263,14 +264,17 @@ struct SidebarView: View {
         .background(.bar)
         .task {
             await dependencies.linuxDoStore.restoreCatalog()
-            // 公共来源索引不依赖进入发现页；长期前台使用也按 TTL 低频更新。
+        }
+        .task(id: "\(isShowingLinuxDoCatalog):\(dependencies.linuxDoStore.providerID)") {
+            guard !isShowingLinuxDoCatalog else { return }
+            // 跨分类来源标识需要低频校验。进入 Linux.do 时，中栏和侧栏只依赖目录。
             while !Task.isCancelled {
                 await dependencies.linuxDoStore.refreshProvenance()
                 do { try await Task.sleep(for: .seconds(30 * 60)) } catch { return }
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await dependencies.linuxDoStore.refreshProvenance() } }
+            if phase == .active, !isShowingLinuxDoCatalog { Task { await dependencies.linuxDoStore.refreshProvenance() } }
         }
         .task(id: "\(dependencies.databaseScopeRevision):\(settings.exploreCatalogPreferences.hiddenWeeklySources.sorted())") {
             // 首帧 bulk meta 可能尚未落盘；nil 时保留旧值，等 Weekly 列表加载后由
@@ -1201,7 +1205,7 @@ struct SidebarView: View {
         }
     }
 
-    /// 洞察主题继续使用系统 Sidebar selection，不手绘选中背景。
+    /// 与其他侧栏菜单共用系统选中反馈和键盘导航。
     @ViewBuilder
     private var insightsSidebarContent: some View {
         Section("insights.sidebar.section") {
@@ -1219,7 +1223,7 @@ struct SidebarView: View {
                     .foregroundStyle(
                         SidebarSemanticIconStyle(semanticColor: topic.semanticIconColor)
                     )
-                        .frame(width: 16, height: 16)
+                    .frame(width: 16, height: 16)
                 }
                 .tag(topic)
             }
@@ -1332,7 +1336,7 @@ struct SidebarView: View {
                 if id == "linuxDo" {
                     exploreSelectableRow(
                         selection: .linuxDo,
-                        count: dependencies.linuxDoStore.provenance?.payload.origins?.count ?? 0
+                        count: dependencies.linuxDoStore.total
                     ) {
                         // 官方圆形占画布的 5/6；17.6pt 画布使可见直径与相邻 16pt 业务图标一致。
                         // 外层仍用原来的 16pt 图标槽，品牌原色不参与选中态染色。
@@ -1888,6 +1892,25 @@ struct SidebarView: View {
             .focusEffectDisabled()
             .help(Text("sidebar.tagManagement"))
 
+            Button(action: onOpenTagGraph) {
+                ZStack {
+                    // 外圈与加号用同一字号，单独缩小更宽的连线符号。
+                    Image(systemName: "circle.fill")
+                        .font(interfaceScale.font(.iconMedium, weight: .medium))
+                        .foregroundStyle(.secondary.opacity(0.2))
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(interfaceScale.font(.iconSmall, weight: .medium))
+                        .scaleEffect(0.68)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .accessibilityLabel(Text("tagGraph.window.title"))
+            .help(Text("tagGraph.window.title"))
+
             // HOM-179：仅当有 tag 被选中时显示"清除"按钮，避免空状态下噪声。
             // 与 `+` / chevron 同款 14pt hierarchical 语言，hover 反馈复用 pressableHover。
             if !viewModel.selectedTagIds.isEmpty {
@@ -2332,12 +2355,16 @@ struct SidebarView: View {
         }
     }
 
+    private var isShowingLinuxDoCatalog: Bool {
+        selectedPage == .trending && selectedExploreMode == .discover && dependencies.linuxDoStore.selectedSource == .linuxDo
+    }
+
     private func exploreLanguageRow(_ language: DiscoveryLanguageDTO?, isLinuxDo: Bool = false) -> some View {
         let key = language?.key
         // 「其他」/感兴趣语言由客户端聚合而来，count 优先用 DTO 自带值；
         // 「全部」回退到 catalog total。
         let count: Int? = language?.count ?? (isLinuxDo
-            ? dependencies.linuxDoStore.repositories.count
+            ? dependencies.linuxDoStore.total
             : dependencies.exploreCatalogStore.total(for: exploreLanguageMode))
         // 语言 logo 不是 SF Symbol，不能塞进 systemImage 字符串；仍走 Label icon 槽，
         // 与趋势/周刊语言行、星标主导航同一套 sidebar 图标列对齐。
@@ -2824,10 +2851,11 @@ struct SidebarView: View {
                 .frame(width: Self.trailingFixedWidth, alignment: .trailing)
             }
         } icon: {
-            // 优先 user-defined SF Symbol；否则 fallback "tag.fill"。
-            // tags 注册条目转 Lucide 资产时（批量阶段），此处需一并改为 BusinessIcon 渲染。
-            Image(systemName: tag.icon ?? "tag.fill")
-                .font(interfaceScale.font(.iconSmall, weight: .semibold))
+            TagIconView(
+                identifier: tag.icon ?? "tag.fill",
+                size: interfaceScale.scaled(StarcatTypography.iconSmall.pointSize),
+                weight: .semibold
+            )
                 .foregroundStyle(
                     SidebarSemanticIconStyle(
                         semanticColor: Color(hex: tag.color ?? TagColorPalette.defaultHex) ?? .accentColor

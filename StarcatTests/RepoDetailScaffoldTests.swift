@@ -2,7 +2,7 @@
 //  RepoDetailScaffoldTests.swift
 //  StarcatTests
 //
-//  详情页 Hero 折叠门控与 progress 映射的单元测试。
+//  详情页计数展示、Hero 折叠门控与 progress 映射的单元测试。
 //
 
 import SwiftUI
@@ -11,6 +11,34 @@ import XCTest
 
 @MainActor
 final class RepoDetailScaffoldTests: XCTestCase {
+
+    func testCountStartsAtZeroAndRetainsDisplayedValueDuringRefresh() {
+        let entering = RollingCountText.Presentation.entering.display(for: 2_745, reduceMotion: false)
+        XCTAssertEqual(entering.value, 0)
+        XCTAssertEqual(entering.opacity, 1)
+
+        let refreshing = RollingCountText.Presentation.showing(2_745).display(for: 2_746, reduceMotion: false)
+        XCTAssertEqual(refreshing.value, 2_745)
+        XCTAssertEqual(refreshing.opacity, 1)
+    }
+
+    func testConfirmedZeroFadesInOnEntry() {
+        let entering = RollingCountText.Presentation.entering.display(for: 0, reduceMotion: false)
+        XCTAssertEqual(entering.value, 0)
+        XCTAssertEqual(entering.opacity, 0)
+
+        let showing = RollingCountText.Presentation.showing(0).display(for: 0, reduceMotion: false)
+        XCTAssertEqual(showing.value, 0)
+        XCTAssertEqual(showing.opacity, 1)
+    }
+
+    func testCountShowsTargetImmediatelyWithReduceMotion() {
+        for count in [0, 2_745] {
+            let display = RollingCountText.Presentation.entering.display(for: count, reduceMotion: true)
+            XCTAssertEqual(display.value, count)
+            XCTAssertEqual(display.opacity, 1)
+        }
+    }
 
     // MARK: - scroll report stabilization
 

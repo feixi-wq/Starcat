@@ -97,20 +97,16 @@ final class HomeViewModel {
                 DispatchQueue.main.async { [weak self] in
                     self?.skipListRowReveal = false
                 }
-            } else if isGitHubStarListSwitchLoading {
-                isGitHubStarListSwitchLoading = false
             }
-
             if effectiveGlobalFilterState.wikiAvailabilityFilter == .unknown,
                !effectiveGlobalFilterState.hasInsightsDrillDownFilters,
-               let cached = listCache[selection], !cached.isExpired {
-                if isGitHubStarListSwitchLoading { isGitHubStarListSwitchLoading = false }
+               let cached = listCache[selection] {
                 self.rawItems = cached.rawItems
                 self.statusMap = cached.statusMap
                 self.libraryStateMap = cached.libraryStateMap
                 self.applyView()             // items / itemsRevision 同步就位
                 if self.isLoading { self.isLoading = false }
-                if self.isRefreshing { self.isRefreshing = false }    // 只用缓存瞬切；真实变更路径再显式 force refresh。
+                isRefreshing = cached.isExpired
                 if self.loadError != nil { self.loadError = nil }
                 #if DEBUG
                 AppLog.ui.notice("[switch-cat] T0' eager cache load done (items=\(self.items.count)) +\(Self.msSinceT0, format: .fixed(precision: 1))ms")
@@ -124,29 +120,15 @@ final class HomeViewModel {
                 AppLog.ui.notice("[switch-cat] T0' eager DB snapshot load done (items=\(self.items.count)) +\(Self.msSinceT0, format: .fixed(precision: 1))ms")
                 #endif
             } else if isKnownEmptyGitHubStarListSelection {
-                if isGitHubStarListSwitchLoading { isGitHubStarListSwitchLoading = false }
                 // Sidebar 计数已经确认目标分组为空时，立即进入空态，避免先渲染上一组 repo。
                 reloadCoordinator.cancelAll()
-                rawItems = []
-                filteredSorted = []
-                visibleRepoTotalCount = 0
-                currentPage = 1
-                hasMore = false
-                statusMap = [:]
-                libraryStateMap = [:]
-                if !items.isEmpty {
-                    items = []
-                    itemsRevision &+= 1
-                }
+                clearCategoryItems()
                 if self.isLoading { self.isLoading = false }
                 if self.isRefreshing { self.isRefreshing = false }
                 if self.loadError != nil { self.loadError = nil }
             } else {
-                if selection.isGitHubStarListContext {
-                    isGitHubStarListSwitchLoading = true
-                }
-                // 无缓存或过期 → 切到骨架屏，等 reloadItems 拉新数据。
-                // 这里同步设 isLoading=true，避免「先渲列表壳一帧再渲骨架屏」的闪烁。
+                // 旧分类的行不能充当新分类的刷新快照。同步撤掉旧行，冷加载失败也能进入错误态。
+                clearCategoryItems()
                 if !self.isLoading { self.isLoading = true }
                 if self.isRefreshing { self.isRefreshing = false }
                 if self.loadError != nil { self.loadError = nil }
@@ -156,6 +138,21 @@ final class HomeViewModel {
             if !searchQuery.isEmpty { searchQuery = "" }
             // 切换分类时清除临时置顶卡片：置顶语义只对「定位时所在分类」的列表有意义。
             temporaryPinnedRepo = nil
+        }
+    }
+
+    /// 分类缺少可展示快照时使行、总量与分页游标同时失效，同分类刷新不走这里。
+    private func clearCategoryItems() {
+        rawItems = []
+        filteredSorted = []
+        visibleRepoTotalCount = 0
+        currentPage = 1
+        hasMore = false
+        statusMap = [:]
+        libraryStateMap = [:]
+        if !items.isEmpty {
+            items = []
+            itemsRevision &+= 1
         }
     }
 
@@ -221,18 +218,12 @@ final class HomeViewModel {
     /// 用户会看到明显闪烁。这个旁路只覆盖仓库分组切换，排序 / 过滤仍保留原快照动画。
     private(set) var skipListRowReveal = false
 
-    /// GitHub Stars List 分组切换期间的短暂占位状态。
-    ///
-    /// 从 0 repo 分组切到有数据分组时，`items` 在 DB 返回前仍为空；若直接走通用 loading
-    /// 分支会闪一下骨架屏 / 空态。这里让 View 层显示透明占位，等 rows 到位后直接显示列表。
-    private(set) var isGitHubStarListSwitchLoading = false
-
     /// R-07（2026-06-15）：客户端分页 —— 当前已展示到第几页（1-based）。
     /// `items.count` ≈ `currentPage * pageSize`（最后一页可能不足）。
     private(set) var currentPage: Int = 1
 
     /// R-07：是否还有更多页可追加。
-    /// `RepoListView` 根据这个值决定是否 attach `.onAppear` 触发 `loadMoreIfNeeded()`。
+    /// `RepoListView` 按当前尾部可见位置决定是否请求下一页。
     private(set) var hasMore: Bool = false
 
     /// 自动分页统一观察的 busy 状态；数据库 append 也必须暴露，否则尾部 row 在该阶段出现后
@@ -241,18 +232,8 @@ final class HomeViewModel {
         isLoading || isRefreshing || isDatabasePageAppendInFlight
     }
 
-    /// 同步刷新扩张了一个用户已经滚到底的列表时，视图需要主动补一页。
-    ///
-    /// 这里必须区分“真实的深滚动恢复”和“首次首页从无数据变成有下一页”：后者如果也自动
-    /// load more，就会出现 40 条先上屏、紧接着 80 条再次发布的“双刷新”体感。
-    private(set) var shouldRecoverPaginationAfterRefresh = false
-
-    /// R-07：客户端分页页大小。
-    ///
-    /// R-07.5：Manage 已改成 DB `OFFSET + append` 后，单页查询和状态读取成本稳定；
-    /// 把 pageSize 从 20 提到 40，可以把 1800+ 仓库滚到底的 append 次数近似减半。
-    /// SwiftUI List 仍只渲染可见行，多保留 20 条模型数据属于明确的空间换时间。
-    static let pageSize: Int = 40
+    /// 数据库 OFFSET 和内存切片使用同一中栏页大小。
+    static let pageSize = ListPaginationPolicy.repoCardPageSize
 
     /// Manage 普通分类的数据库分页模式。
     ///
@@ -2179,35 +2160,267 @@ final class HomeViewModel {
     }
 
     /// 统计规则命中仓库数（scope 查询 + 完整 rule filter）。
+    ///
+    /// 单规则入口每次新建共享缓存；总览页多条规则的批量入口见数组版
+    /// `countRepos(matching:)`，同一批内共享重复取数。
     func countRepos(matching rule: SmartCollectionRule) async throws -> Int {
-        let (repos, semanticHitMap) = try await fetchRepos(matching: rule)
+        try await countRepos(matching: rule, sharing: SmartCollectionCountBatch())
+    }
+
+    /// 批量统计多条规则命中数，按输入顺序返回。
+    ///
+    /// **为什么共享**：逐条调单规则版会为每条规则重复执行规则无关查询（状态表 /
+    /// 非空笔记 ID 表）、同 scope 候选取数与 FTS / 语义搜索；共享后收敛为
+    /// 「每类数据一批一次」。完全相同的规则只求值一次，首现计数的 `now` 快照
+    /// 被复用，避免同批内时间窗 predicate 因求值时刻不同产生临界差异。
+    /// 缓存生命周期 = 本次数组调用，不做跨调用缓存。
+    /// 单条失败记 0（如语义索引缺 API key），与旧版逐条 `try?` 的兜底语义对等，
+    /// 其余规则继续。用 Equatable 线性查重而非字典键：刻意不给 Scope / Rule 补
+    /// Hashable，用户集合数量级（两位数内）下比较开销可忽略。
+    func countRepos(matching rules: [SmartCollectionRule]) async -> [Int] {
+        let batch = SmartCollectionCountBatch()
+        var counts = Array(repeating: 0, count: rules.count)
+        var evaluated: [(rule: SmartCollectionRule, count: Int)] = []
+        for (index, rule) in rules.enumerated() {
+            if let hit = evaluated.first(where: { $0.rule == rule }) {
+                counts[index] = hit.count
+                continue
+            }
+            let count = (try? await countRepos(matching: rule, sharing: batch)) ?? 0
+            evaluated.append((rule: rule, count: count))
+            counts[index] = count
+        }
+        return counts
+    }
+
+    /// 共享取数缓存的计数实现；单规则调用传新建缓存，批量调用传同一实例。
+    private func countRepos(
+        matching rule: SmartCollectionRule,
+        sharing batch: SmartCollectionCountBatch
+    ) async throws -> Int {
+        let (repos, semanticHitMap) = try await fetchRepos(matching: rule, sharing: batch)
         let context = try await buildSmartCollectionFilterContext(
             for: repos,
             rule: rule,
-            semanticHitMap: semanticHitMap
+            semanticHitMap: semanticHitMap,
+            sharing: batch
         )
-        return SmartCollectionRuleFilter.apply(repos: repos, rule: rule, context: context).count
+        // 规则求值是逐 repo 的纯 CPU 循环（topics JSON 解码 + ISO8601 日期解析），
+        // 大库时留在 MainActor 会卡住侧栏 / 贡献草坪；Sendable 快照交给并发执行器。
+        return await Self.evaluateRuleCountOnConcurrentExecutor(
+            repos: repos,
+            rule: rule,
+            context: context
+        )
     }
 
-    func buildSmartCollectionFilterContext(
+    /// 一次批量计数内的共享取数缓存（生命周期 = 单次数组版 `countRepos` 调用）。
+    ///
+    /// 三层共享，消除总览页逐规则重复取数：
+    /// - 规则无关查询：状态表 / 非空笔记 ID 表，一批只取一次；
+    /// - scope 候选与 FTS 命中：候选由 scope 决定、FTS 由 query 决定（全局搜索
+    ///   不带 scope），各自去重共享；
+    /// - 取数键 (scope, query, searchMode)：候选过滤结果与 health / OpenSSF /
+    ///   release 上下文，同键规则只取一次。
+    @MainActor
+    private final class SmartCollectionCountBatch {
+        /// 取数键：候选过滤与上下文部件完全由这三个字段决定。
+        private struct FetchKey: Equatable {
+            let scope: SmartCollectionRule.Scope
+            let query: String?
+            let searchMode: SmartSearchMode
+        }
+
+        /// 同一取数键的共享结果；health 等上下文部件按需填充。
+        private final class FetchRecord {
+            let repos: [Repo]
+            let semanticHitMap: [Int64: SemanticSearchHit]
+            var healthSnapshots: [Int64: RepoHealthSnapshot]?
+            var openSSFScores: [Int64: Double]?
+            var latestReleasePublishedAt: [Int64: String]?
+
+            init(repos: [Repo], semanticHitMap: [Int64: SemanticSearchHit]) {
+                self.repos = repos
+                self.semanticHitMap = semanticHitMap
+            }
+        }
+
+        private var records: [(key: FetchKey, record: FetchRecord)] = []
+        private var bases: [(scope: SmartCollectionRule.Scope, repos: [Repo])] = []
+        private var ftsCache: [(query: String, hits: [Repo])] = []
+        private var statusMapCache: [Int64: RepoStatus]?
+        private var noteIDsCache: Set<Int64>?
+
+        private func key(for rule: SmartCollectionRule) -> FetchKey {
+            FetchKey(
+                scope: rule.scope,
+                query: rule.query?.trimmingCharacters(in: .whitespacesAndNewlines),
+                searchMode: rule.searchMode
+            )
+        }
+
+        /// 已缓存的取数键结果；未命中返回 nil（调用方取数后 store）。
+        func fetchResult(
+            for rule: SmartCollectionRule
+        ) -> (repos: [Repo], semanticHitMap: [Int64: SemanticSearchHit])? {
+            guard let record = records.first(where: { $0.key == key(for: rule) })?.record else { return nil }
+            return (repos: record.repos, semanticHitMap: record.semanticHitMap)
+        }
+
+        func storeResult(
+            _ result: (repos: [Repo], semanticHitMap: [Int64: SemanticSearchHit]),
+            for rule: SmartCollectionRule
+        ) {
+            let fetchKey = key(for: rule)
+            guard !records.contains(where: { $0.key == fetchKey }) else { return }
+            records.append(
+                (key: fetchKey, record: FetchRecord(repos: result.repos, semanticHitMap: result.semanticHitMap))
+            )
+        }
+
+        /// 按 rule 找共享 record；计数路径总是先 fetchRepos 再取部件，理论上必存在，
+        /// 未命中时取数但不缓存属于防御分支。
+        private func record(for rule: SmartCollectionRule) -> FetchRecord? {
+            records.first(where: { $0.key == key(for: rule) })?.record
+        }
+
+        // MARK: 上下文部件（按取数键缓存，首个需要的规则取数，其余复用）
+
+        func healthSnapshots(
+            for rule: SmartCollectionRule,
+            orFetch fetch: @MainActor () async throws -> [Int64: RepoHealthSnapshot]
+        ) async throws -> [Int64: RepoHealthSnapshot] {
+            if let cached = record(for: rule)?.healthSnapshots { return cached }
+            let value = try await fetch()
+            record(for: rule)?.healthSnapshots = value
+            return value
+        }
+
+        func openSSFScores(
+            for rule: SmartCollectionRule,
+            orFetch fetch: @MainActor () async throws -> [Int64: Double]
+        ) async throws -> [Int64: Double] {
+            if let cached = record(for: rule)?.openSSFScores { return cached }
+            let value = try await fetch()
+            record(for: rule)?.openSSFScores = value
+            return value
+        }
+
+        func latestReleasePublishedAt(
+            for rule: SmartCollectionRule,
+            orFetch fetch: @MainActor () async throws -> [Int64: String]
+        ) async throws -> [Int64: String] {
+            if let cached = record(for: rule)?.latestReleasePublishedAt { return cached }
+            let value = try await fetch()
+            record(for: rule)?.latestReleasePublishedAt = value
+            return value
+        }
+
+        // MARK: scope 候选与 FTS 命中
+
+        func baseRepos(for scope: SmartCollectionRule.Scope) -> [Repo]? {
+            bases.first(where: { $0.scope == scope })?.repos
+        }
+
+        func storeBaseRepos(_ repos: [Repo], for scope: SmartCollectionRule.Scope) {
+            guard !bases.contains(where: { $0.scope == scope }) else { return }
+            bases.append((scope: scope, repos: repos))
+        }
+
+        func ftsHits(for query: String) -> [Repo]? {
+            ftsCache.first(where: { $0.query == query })?.hits
+        }
+
+        func storeFTSHits(_ hits: [Repo], for query: String) {
+            guard !ftsCache.contains(where: { $0.query == query }) else { return }
+            ftsCache.append((query: query, hits: hits))
+        }
+
+        // MARK: 规则无关查询（一批一次）
+
+        func statusMap(
+            orFetch fetch: @MainActor () async throws -> [Int64: RepoStatus]
+        ) async throws -> [Int64: RepoStatus] {
+            if let statusMapCache { return statusMapCache }
+            let value = try await fetch()
+            statusMapCache = value
+            return value
+        }
+
+        func repoIdsWithNonEmptyNotes(
+            orFetch fetch: @MainActor () async throws -> Set<Int64>
+        ) async throws -> Set<Int64> {
+            if let noteIDsCache { return noteIDsCache }
+            let value = try await fetch()
+            noteIDsCache = value
+            return value
+        }
+    }
+
+    /// 并发执行器上的纯 CPU 规则求值；输入输出均为 Sendable 值，不触碰任何 actor 状态。
+    @concurrent
+    private nonisolated static func evaluateRuleCountOnConcurrentExecutor(
+        repos: [Repo],
+        rule: SmartCollectionRule,
+        context: SmartCollectionRuleFilterContext
+    ) async -> Int {
+        SmartCollectionRuleFilter.apply(repos: repos, rule: rule, context: context).count
+    }
+
+    private func buildSmartCollectionFilterContext(
         for repos: [Repo],
         rule: SmartCollectionRule? = nil,
-        semanticHitMap: [Int64: SemanticSearchHit] = [:]
+        semanticHitMap: [Int64: SemanticSearchHit] = [:],
+        sharing batch: SmartCollectionCountBatch? = nil
     ) async throws -> SmartCollectionRuleFilterContext {
-        async let statusMap = repoNoteRepository.fetchAllStatusMap()
-        async let noteIDs = repoNoteRepository.fetchRepoIdsWithNonEmptyContent()
+        let statusMap: [Int64: RepoStatus]
+        let noteIDs: Set<Int64>
+        if let batch {
+            // 批量计数：状态表 / 非空笔记 ID 表与规则无关，一批只取一次。
+            statusMap = try await batch.statusMap(orFetch: { [repoNoteRepository] in
+                try await repoNoteRepository.fetchAllStatusMap()
+            })
+            noteIDs = try await batch.repoIdsWithNonEmptyNotes(orFetch: { [repoNoteRepository] in
+                try await repoNoteRepository.fetchRepoIdsWithNonEmptyContent()
+            })
+        } else {
+            // 列表加载路径保持两查并行。
+            async let statusMapQuery = repoNoteRepository.fetchAllStatusMap()
+            async let noteIDsQuery = repoNoteRepository.fetchRepoIdsWithNonEmptyContent()
+            statusMap = try await statusMapQuery
+            noteIDs = try await noteIDsQuery
+        }
         let repoIds = repos.map(\.id)
 
         let shouldLoadHealth = rule == nil || rule?.needsHealthSnapshots == true
         let health: [Int64: RepoHealthSnapshot]
-        if let repoHealthRepository, !repos.isEmpty, shouldLoadHealth {
-            health = try await repoHealthRepository.snapshots(for: repoIds)
+        if let rule, rule.needsHealthSnapshots, let batch {
+            // 批量计数：同取数键规则共享一份 health 快照，首个需要的规则取数。
+            health = try await batch.healthSnapshots(for: rule, orFetch: { [repoHealthRepository, repoIds] in
+                guard let repoHealthRepository, !repoIds.isEmpty else { return [:] }
+                return try await repoHealthRepository.snapshots(for: repoIds)
+            })
+        } else if shouldLoadHealth {
+            if let repoHealthRepository, !repos.isEmpty {
+                health = try await repoHealthRepository.snapshots(for: repoIds)
+            } else {
+                health = [:]
+            }
         } else {
             health = [:]
         }
 
         let openSSFScores: [Int64: Double]
-        if rule?.needsOpenSSFContext == true, let openSSFScoreRepository, !repoIds.isEmpty {
+        if let rule, rule.needsOpenSSFContext, let batch {
+            openSSFScores = try await batch.openSSFScores(for: rule, orFetch: { [openSSFScoreRepository, repoIds] in
+                guard let openSSFScoreRepository, !repoIds.isEmpty else { return [:] }
+                let records = try await openSSFScoreRepository.records(for: repoIds)
+                return records.compactMapValues { record in
+                    guard record.fetchStatus == .success, let score = record.aggregateScore else { return nil }
+                    return score
+                }
+            })
+        } else if rule?.needsOpenSSFContext == true, let openSSFScoreRepository, !repoIds.isEmpty {
             let records = try await openSSFScoreRepository.records(for: repoIds)
             openSSFScores = records.compactMapValues { record in
                 guard record.fetchStatus == .success, let score = record.aggregateScore else { return nil }
@@ -2218,17 +2431,25 @@ final class HomeViewModel {
         }
 
         let latestReleasePublishedAt: [Int64: String]
-        if rule?.needsReleaseContext == true, let releaseRepository, !repoIds.isEmpty {
+        if let rule, rule.needsReleaseContext, let batch {
+            latestReleasePublishedAt = try await batch.latestReleasePublishedAt(
+                for: rule,
+                orFetch: { [releaseRepository, repoIds] in
+                    guard let releaseRepository, !repoIds.isEmpty else { return [:] }
+                    return try await releaseRepository.latestPublishedAtByRepoIds(repoIds)
+                }
+            )
+        } else if rule?.needsReleaseContext == true, let releaseRepository, !repoIds.isEmpty {
             latestReleasePublishedAt = try await releaseRepository.latestPublishedAtByRepoIds(repoIds)
         } else {
             latestReleasePublishedAt = [:]
         }
 
         return SmartCollectionRuleFilterContext(
-            statusMap: try await statusMap,
+            statusMap: statusMap,
             repoTagsMap: repoTagsMap,
             healthSnapshots: health,
-            repoIdsWithNotes: try await noteIDs,
+            repoIdsWithNotes: noteIDs,
             openSSFScores: openSSFScores,
             latestReleasePublishedAt: latestReleasePublishedAt,
             semanticHitMap: semanticHitMap,
@@ -2609,37 +2830,61 @@ final class HomeViewModel {
         )) ?? []
     }
 
-    private func fetchRepos(matching rule: SmartCollectionRule) async throws -> (repos: [Repo], semanticHitMap: [Int64: SemanticSearchHit]) {
+    private func fetchRepos(
+        matching rule: SmartCollectionRule,
+        sharing batch: SmartCollectionCountBatch? = nil
+    ) async throws -> (repos: [Repo], semanticHitMap: [Int64: SemanticSearchHit]) {
+        if let cached = batch?.fetchResult(for: rule) { return cached }
+
         let base: [Repo]
-        switch rule.scope {
-        case .allStars:
-            base = try await repository.fetchAllStarred()
-        case .untagged:
-            base = try await repository.fetchUntagged()
-        case .language(let language):
-            base = try await repository.fetchByLanguage(language)
-        case .tag(let tagID):
-            base = try await repoTagRepository.fetchRepos(forTag: tagID)
+        if let cachedBase = batch?.baseRepos(for: rule.scope) {
+            base = cachedBase
+        } else {
+            switch rule.scope {
+            case .allStars:
+                base = try await repository.fetchAllStarred()
+            case .untagged:
+                base = try await repository.fetchUntagged()
+            case .language(let language):
+                base = try await repository.fetchByLanguage(language)
+            case .tag(let tagID):
+                base = try await repoTagRepository.fetchRepos(forTag: tagID)
+            }
+            batch?.storeBaseRepos(base, for: rule.scope)
         }
 
         guard let query = rule.query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
-            return (base, [:])
+            let result = (repos: base, semanticHitMap: [:] as [Int64: SemanticSearchHit])
+            batch?.storeResult(result, for: rule)
+            return result
         }
 
         if rule.searchMode == .semantic {
             guard let semanticSearchService else {
                 throw SemanticSearchError.missingAPIKey
             }
-            let ftsHitIDs = Set((try await repository.searchFTS(query: query)).map(\.id))
+            let ftsHitIDs = Set(try await ftsHits(for: query, sharing: batch).map(\.id))
             let hits = try await semanticSearchService.search(query: query, candidates: base, ftsHitIDs: ftsHitIDs)
-            return (
+            let result = (
                 repos: hits.map(\.repo),
                 semanticHitMap: Dictionary(uniqueKeysWithValues: hits.map { ($0.repo.id, $0) })
             )
+            batch?.storeResult(result, for: rule)
+            return result
         } else {
-            let hitIDs = Set((try await repository.searchFTS(query: query)).map(\.id))
-            return (base.filter { hitIDs.contains($0.id) }, [:])
+            let hitIDs = Set(try await ftsHits(for: query, sharing: batch).map(\.id))
+            let result = (repos: base.filter { hitIDs.contains($0.id) }, semanticHitMap: [:] as [Int64: SemanticSearchHit])
+            batch?.storeResult(result, for: rule)
+            return result
         }
+    }
+
+    /// FTS 命中按 query 缓存；`sharing` 为 nil 时现场查询（单规则原行为）。
+    private func ftsHits(for query: String, sharing batch: SmartCollectionCountBatch?) async throws -> [Repo] {
+        if let cached = batch?.ftsHits(for: query) { return cached }
+        let hits = try await repository.searchFTS(query: query)
+        batch?.storeFTSHits(hits, for: query)
+        return hits
     }
 
     private func currentSemanticIndexScopeForSearch() -> SemanticIndexScope {
@@ -3071,12 +3316,7 @@ final class HomeViewModel {
                 // statusMap），则**只更新底层 rawItems / statusMap 引用，不调用 applyView**。
                 //
                 // 为什么这样做：
-                // - applyView 会无条件 `itemsRevision += 1`，这会触发：
-                //   ① `RepoListView.contentAnimationID` 变化 → 外层 `.transition` 重跑 0.22s 动画
-                //   ② 旧实现的 `List.id(itemsRevision)` → 完整重建 1800+ 行 View tree（~100ms）
-                //   ③ 每行 `listRowReveal` 重新走 0.22s stagger 入场动画
-                // - 用户感受：缓存命中分类后 ~140ms 看到数据，然后 ~735ms（bg fetch 完成）又跑一遍同样
-                //   的动画，叠加感受 ~1s 卡顿，但其实数据没变。
+                // - 保留快照和 revision 能让内存分页列表维持身份，避免相同结果重建列表或重读行徽标。
                 //
                 // 比较策略（fail-fast）：先比 ID 序列长度，再 zip 比每个 ID。statusMap 字典等值用 ==。
                 // 这两步对 1800+ 条数据测下来 < 5ms，远低于一次 applyView + UI 重建的代价。
@@ -3190,13 +3430,6 @@ final class HomeViewModel {
             }
             // TTL 过期只代表需要后台更新，不代表旧首屏不可用。
             isRefreshing = true
-        }
-
-        let wasDeepScrolledToEnd = reason == .refreshPreservingPage &&
-            !hasMore && items.count > Self.pageSize
-
-        if reason != .refreshPreservingPage {
-            shouldRecoverPaginationAfterRefresh = false
         }
 
         if reason == .reset {
@@ -3322,10 +3555,6 @@ final class HomeViewModel {
             else { return }
             self.isLoading = false
             self.isRefreshing = false
-            if self.isGitHubStarListSwitchLoading {
-                self.isGitHubStarListSwitchLoading = false
-            }
-
             switch result {
             case .success(let (
                 rowsWithSentinel,
@@ -3364,7 +3593,6 @@ final class HomeViewModel {
                         self.visibleRepoTotalCount = queryTotalCount
                         self.items = visibleRows
                         self.hasMore = nextHasMore
-                        self.shouldRecoverPaginationAfterRefresh = wasDeepScrolledToEnd && nextHasMore
                         self.currentPage = max(1, Int(ceil(Double(visibleRows.count) / Double(Self.pageSize))))
                         if !idsIdentical {
                             self.itemsRevision &+= 1
@@ -3682,7 +3910,6 @@ final class HomeViewModel {
         resetPage: Bool = true,
         preservingSidebarLanguageCounts: Bool = false
     ) {
-        let wasDeepScrolledToEnd = !resetPage && !hasMore && items.count > Self.pageSize
         let newFilteredSorted = computeFilteredSorted()
         visibleRepoTotalCount = newFilteredSorted.count
 
@@ -3718,7 +3945,6 @@ final class HomeViewModel {
         }
 
         sliceToCurrentPage(reason: .recompute)
-        shouldRecoverPaginationAfterRefresh = wasDeepScrolledToEnd && hasMore
 
         // selection 清理始终要做：即便 items 没换，statusFilter / hideArchived 改了也可能让选中行隐身
         if let id = selectedRepoID, !filteredSorted.contains(where: { $0.id == id }) {
@@ -4087,16 +4313,6 @@ final class HomeViewModel {
         }
     }
 
-    /// 只消费一次“刷新后恢复深滚动”的加载意图。
-    ///
-    /// `RepoListView` 仍监听 `hasMore` 的 false→true 边沿，但是否真的追加由 ViewModel 的
-    /// 刷新上下文决定。这样既保留同步期间滚到底后的恢复能力，也消除首次首页的自动第二页。
-    func recoverPaginationAfterRefreshIfNeeded() {
-        guard shouldRecoverPaginationAfterRefresh else { return }
-        shouldRecoverPaginationAfterRefresh = false
-        loadMoreIfNeeded()
-    }
-
     /// 为 Search Center / Companion 等外部入口准备目标 repo 对应的中栏行。
     ///
     /// 数据库分页模式下 `filteredSorted` 只镜像已加载页，旧的 `ensureRepoVisible`
@@ -4180,6 +4396,11 @@ final class HomeViewModel {
     /// - Health 缺失时保守降级：不会把 repo 算进 High Value，但 archived / 元数据缺失
     ///   仍能进入 Needs Review。
     /// - 日期窗口使用固定天数，后续如需用户可调再提升到设置项。
+    ///
+    /// `nonisolated`：纯函数谓词，除主线程视图外，也被智能集合计数的
+    /// `@concurrent` 求值（`SmartCollectionSystemCountsLoader.counts`）在并发执行器调用；
+    /// 只访问 Sendable 值字段与每次调用都返回新实例的 `ISO8601DateFormatter.shared`。
+    nonisolated
     static func matchesSmartCollection(
         repo: Repo,
         health: RepoHealthSnapshot?,

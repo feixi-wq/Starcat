@@ -18,8 +18,16 @@ final class UndoStarViewModel {
     private(set) var loadError: String?
     /// 即将被清理的记录数
     private(set) var expiringCount: Int = 0
+    /// 排序结果就绪时递增，驱动 `listRowReveal` 只在排序切换后重播行入场。
     private(set) var rowRevealRevision = 0
-    private var loadedSortOption: UndoStarSortOption?
+    private(set) var loadedSortOption: UndoStarSortOption?
+    private(set) var visibleLimit = ListPaginationPolicy.repoCardPageSize
+
+    var quickSearchQuery = "" {
+        didSet {
+            if quickSearchQuery != oldValue { visibleLimit = ListPaginationPolicy.repoCardPageSize }
+        }
+    }
 
     /// 只有没有可浏览记录时才用骨架；刷新和排序期间保留原列表及其选择状态。
     var showsSkeleton: Bool { isLoading && records.isEmpty }
@@ -30,6 +38,7 @@ final class UndoStarViewModel {
 
     private let repository: any UndoStarHistoryRepositoryProtocol
     private let settings: AppSettings
+    private var reloadGeneration = 0
 
     init(repository: any UndoStarHistoryRepositoryProtocol, settings: AppSettings) {
         self.repository = repository
@@ -37,22 +46,29 @@ final class UndoStarViewModel {
     }
 
     func reload() async {
+        reloadGeneration &+= 1
+        let generation = reloadGeneration
         isLoading = true
         loadError = nil
         let requestedSort = sortOption
+        defer {
+            if generation == reloadGeneration { isLoading = false }
+        }
         do {
             let fetched = try await repository.fetchAll(sort: requestedSort)
+            guard generation == reloadGeneration, !Task.isCancelled else { return }
             // 排序结果真正就绪后才重播行入场，避免对仍在显示的旧顺序提前播放。
             if loadedSortOption != requestedSort {
                 loadedSortOption = requestedSort
                 rowRevealRevision &+= 1
+                visibleLimit = ListPaginationPolicy.repoCardPageSize
             }
             records = fetched
             await refreshExpiringCount()
         } catch {
+            guard generation == reloadGeneration, !Task.isCancelled else { return }
             loadError = error.localizedDescription
         }
-        isLoading = false
     }
 
     /// 刷新即将被清理的记录数。
@@ -66,6 +82,11 @@ final class UndoStarViewModel {
     }
 
     func load() async { await reload() }
+
+    /// 历史总数和 Cmd+A 仍使用完整匹配结果，只有列表行按页展示。
+    func loadMore() {
+        visibleLimit += ListPaginationPolicy.repoCardPageSize
+    }
 
     func clearAll() async {
         do {
@@ -115,7 +136,6 @@ struct UndoStarContentView: View {
     @State private var showClearAllConfirm = false
     @State private var isQuickSearchExpanded = false
     @State private var quickSearchDraft = ""
-    @State private var quickSearchQuery = ""
 
     init(
         repository: any UndoStarHistoryRepositoryProtocol,
@@ -137,8 +157,12 @@ struct UndoStarContentView: View {
         VStack(spacing: 0) {
             filterBar
             Divider()
-            content
-                .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.18), value: viewModel.showsSkeleton)
+            MiddleListPresentation(
+                showsSkeleton: viewModel.showsSkeleton,
+                rowCount: 5
+            ) {
+                content
+            }
         }
         .toast(message: $toastMessage, icon: "checkmark.circle.fill")
         .alert("activity.undoStar.clearAll.confirmTitle", isPresented: $showClearAllConfirm) {
@@ -181,7 +205,7 @@ struct UndoStarContentView: View {
 
             if let starredID {
                 // 恢复 Star：只定向移除对应记录
-                withAnimation(.easeOut(duration: 0.3)) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
                     viewModel.removeRecords(ghRepoIds: [starredID])
                 }
                 // 如果当前详情页展示的 repo 已被 star，关闭详情或切到第一条
@@ -267,14 +291,14 @@ struct UndoStarContentView: View {
         QuickSearchToolbarContent(
             isExpanded: $isQuickSearchExpanded,
             draft: $quickSearchDraft,
-            committedQuery: quickSearchQuery,
+            committedQuery: viewModel.quickSearchQuery,
             placeholder: "list.quickSearch.activityPlaceholder",
             onSubmit: { query in
                 let normalizedQuery = QuickSearchTextMatcher.normalized(query)
-                quickSearchQuery = normalizedQuery
+                viewModel.quickSearchQuery = normalizedQuery
                 quickSearchDraft = normalizedQuery
             },
-            onClear: { quickSearchQuery = "" }
+            onClear: { viewModel.quickSearchQuery = "" }
         ) {
             // 排序菜单（与星标模块同款组件）
             UnifiedSortMenu(
@@ -313,27 +337,23 @@ struct UndoStarContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        if viewModel.showsSkeleton {
-            RepoSkeletonListView(rowCount: 5)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity)
-        } else if let error = viewModel.loadError, viewModel.records.isEmpty {
+        let records = matchingRecords
+        if let error = viewModel.loadError, viewModel.records.isEmpty {
             emptyState(systemImage: "exclamationmark.triangle", text: error)
         } else if viewModel.records.isEmpty {
             emptyState(systemImage: "clock.arrow.circlepath", titleKey: "activity.undoStar.empty")
-        } else if visibleRecords.isEmpty {
+        } else if records.isEmpty {
             emptyState(systemImage: "magnifyingglass", titleKey: "list.quickSearch.empty")
         } else {
-            recordList
-                .transition(.opacity)
+            recordList(records)
         }
     }
 
     /// Undo Star 已一次性加载完整历史，因此可直接在内存中匹配仓库主信息。
-    private var visibleRecords: [UndoStarRecord] {
+    private var matchingRecords: [UndoStarRecord] {
         viewModel.records.filter { record in
             QuickSearchTextMatcher.matches(
-                quickSearchQuery,
+                viewModel.quickSearchQuery,
                 candidates: [
                     record.fullName,
                     record.owner,
@@ -345,12 +365,14 @@ struct UndoStarContentView: View {
         }
     }
 
-    private var recordList: some View {
+    private func recordList(_ records: [UndoStarRecord]) -> some View {
         let store = dependencies.undoStarMultiSelectionStore
+        let rows = records.prefix(viewModel.visibleLimit)
+        let identity = "\(viewModel.rowRevealRevision):\(viewModel.quickSearchQuery)"
         // 只在查询变化时重播；恢复星标、计数更新和后台刷新不重播整列。
-        let snapshotID = "\(viewModel.rowRevealRevision):\(quickSearchQuery)".hashValue
+        let snapshotID = identity.hashValue
         return List {
-            ForEach(Array(visibleRecords.enumerated()), id: \.element.id) { index, record in
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, record in
                 let isStarring = starringRepoIDs.contains(record.ghRepoId)
                 Button {
                     if store.isActive {
@@ -376,18 +398,27 @@ struct UndoStarContentView: View {
                 .listRowReveal(index: index, snapshotID: snapshotID, replayAfterSnapshotCommit: true)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                // 单个 Star 操作（非多选模式下的行内 Star 按钮需要额外处理，
+                .automaticListPagination(appearingIndex: index)
                 // 这里先走详情页 Star，后续可加行尾 Star 按钮）
             }
         }
         .listStyle(.inset)
         .alternatingRowBackgrounds()
         .scrollContentBackground(.hidden)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: visibleRecords.map(\.id))
+        .linuxDoSourceBadges(for: rows.map(\.ghRepoId))
+        .automaticListPagination(
+            visibleItemCount: rows.count,
+            loadedItemCount: rows.count,
+            hasMore: rows.count < records.count,
+            isLoading: viewModel.isLoading,
+            identity: identity
+        ) {
+            viewModel.loadMore()
+        }
         .background {
             let store = dependencies.undoStarMultiSelectionStore
             Button {
-                let snapshots = visibleRecords.map {
+                let snapshots = records.map {
                     SelectionSnapshot(ghRepoId: $0.ghRepoId, owner: $0.owner, name: $0.name)
                 }
                 store.selectAll(snapshots)
